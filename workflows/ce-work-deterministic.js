@@ -844,9 +844,10 @@ log(`Reviewers: ${reviewers.map((r) => r.key).join(', ')}`)
 // each reviewer completes (pipeline stage 2, no cross-reviewer barrier), so a
 // duplicate never consumes a verifier spawn. Same-defect rule: same file AND
 // either both lines positive within 5 of each other (titles irrelevant), or at
-// least one line-less and the normalized titles share a 30-char prefix (only
-// when both normalized titles are >=15 chars — short generic titles like
-// "race condition" would otherwise absorb distinct defects across the file).
+// least one line-less and the normalized titles share a real 30-char prefix
+// (both titles >=30 chars), falling back to exact normalized-title equality
+// when either is shorter — a degraded prefix would let a short title like
+// "cache poisoning bypass" absorb distinct defects across the file.
 // JS is single-threaded, so mutating these shared accumulators inside
 // concurrently-progressing stage closures is safe; bucket-winner and drop
 // selection follow reviewer completion order — accepted because every drop and
@@ -863,8 +864,8 @@ const sameDefect = (a, b) => {
   if (a.file !== b.file) return false
   if (a.line > 0 && b.line > 0) return Math.abs(a.line - b.line) <= 5
   const ta = normTitle(a.title), tb = normTitle(b.title)
-  const k = Math.min(30, ta.length, tb.length)
-  return k >= 15 && ta.slice(0, k) === tb.slice(0, k) // k degrades to the shorter title's length; below 15 chars a prefix match is noise, not identity
+  if (ta.length >= 30 && tb.length >= 30) return ta.slice(0, 30) === tb.slice(0, 30)
+  return ta.length > 0 && ta === tb // a degraded (shorter) prefix would merge any title that prefixes a longer one; short titles must match exactly
 }
 // Resolves to the SAME kept-entry object (never a fresh spread) so severity and
 // persona merges from later-completing reviewers stay visible to the fixer batch.
@@ -900,7 +901,12 @@ const processFindings = (findings, key) => {
       dupes++
       log(`Duplicate finding absorbed into ${findingRef(match)}: ${findingRef(f)} (${key})`)
       const escalates = f.severity === 'blocking' && match.severity !== 'blocking'
-      if (escalates) match.severity = 'blocking'
+      if (escalates) {
+        match.severity = 'blocking'
+        // Refund the suggested-only budget slot: the entry is now blocking and
+        // exempt from MAX_VERIFY, so its slot must not starve a later suggested finding.
+        if (match.suggestedSlot) { match.suggestedSlot = false; verifySlots++ }
+      }
       match.persona = `${match.persona}+${key}`
       // Keep the absorbed finding's distinct wording — a false merge of two
       // nearby defects must still surface both write-ups to the verifier
@@ -945,6 +951,7 @@ const processFindings = (findings, key) => {
       log(`Verify cap (${MAX_VERIFY}) reached — dropping unverified suggested finding ${findingRef(f)}`)
     } else {
       verifySlots--
+      entry.suggestedSlot = true // consumed a MAX_VERIFY slot; refunded if a later duplicate escalates this entry to blocking
       toVerify.push(() => spawnVerifier(entry, key))
     }
   }
