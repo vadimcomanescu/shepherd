@@ -43,6 +43,22 @@ Before authoring, editing, running, or reviewing **ANY** dynamic workflow in thi
 
 ---
 
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues on `vadimcomanescu/nadia`, via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Canonical defaults: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
+---
+
 ## Repo Context
 
-This repository contains only the dynamic-workflow documentation under [`docs/workflows/`](docs/workflows/) — there is no application code. The principles above are not advisory; they are structural requirements for any workflow you author. Violating coordinator I/O rules, using unbounded loops, or skipping adversarial verification can silently corrupt results or cause runaway agent usage. Read the docs before writing any workflow.
+This repository contains the dynamic-workflow rules under [`docs/workflows/`](docs/workflows/), subagent persona definitions under [`agents/`](agents/) (symlinked into `.claude/agents`), coordinator scripts and their tests under [`workflows/`](workflows/), and the domain glossary in [`CONTEXT.md`](CONTEXT.md). Product direction lives in [`STRATEGY.md`](STRATEGY.md). The principles above are not advisory; they are structural requirements for any workflow you author. Violating coordinator I/O rules, using unbounded loops, or skipping adversarial verification can silently corrupt results or cause runaway agent usage. Read the docs before writing any workflow.
