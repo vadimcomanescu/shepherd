@@ -166,6 +166,16 @@ S('S1 happy path: 4 units, mixed routing, all merged + validated', async () => {
   assert.equal(types['review-codex'], 'codex-reviewer', 'codex second-model reviewer dispatched')
   assert.equal(types['review-removed-behavior'], undefined, 'removed-behavior reviewer is inline, no agentType')
   assert.equal(types['review-cross-file'], undefined, 'cross-file reviewer is inline, no agentType')
+  // inline angle reviewers: base review prompt + grounding + angle text + FINDINGS_SCHEMA
+  const removedBehavior = trace.calls.find((c) => c.label === 'review-removed-behavior')
+  assert.ok(removedBehavior.prompt.includes('invariant or behavior it enforced'), 'removed-behavior angle text appended')
+  assert.ok(removedBehavior.prompt.includes('/repo/.worktrees/test-plan') && removedBehavior.prompt.includes('docs/plans/test.md'), 'removed-behavior prompt carries worktree + plan grounding')
+  assert.ok(removedBehavior.prompt.includes('failure_scenario'), 'removed-behavior carries the base review prompt')
+  assert.ok(removedBehavior.schema && removedBehavior.schema.properties.findings, 'removed-behavior uses FINDINGS_SCHEMA')
+  const crossFile = trace.calls.find((c) => c.label === 'review-cross-file')
+  assert.ok(crossFile.prompt.includes('find its callers'), 'cross-file angle text appended')
+  assert.ok(crossFile.prompt.includes('/repo/.worktrees/test-plan') && crossFile.prompt.includes('docs/plans/test.md'), 'cross-file prompt carries worktree + plan grounding')
+  assert.ok(crossFile.schema && crossFile.schema.properties.findings, 'cross-file uses FINDINGS_SCHEMA')
   assert.equal(types['ci-watch-1'], 'ci-watcher')
   // full lfg tail ran
   assert.equal(result.proof.status, 'pass')
@@ -174,7 +184,7 @@ S('S1 happy path: 4 units, mixed routing, all merged + validated', async () => {
   assert.equal(result.ci.status, 'green')
   assert.equal(result.compound.documented, false)
   assert.deepEqual(result.residualReviewFindings, [])
-  assert.deepEqual(result.reviewStats, { candidates: 0, verified: 0, refuted: 0, dupes: 0, budgetDropped: 0 }, 'reviewStats present with clean-review zeros')
+  assert.deepEqual(result.reviewStats, { candidates: 0, verified: 0, refuted: 0, dupes: 0, budgetDropped: 0, verifierFailed: 0 }, 'reviewStats present with clean-review zeros')
   const shipCall = trace.calls.find((c) => c.label === 'ship')
   assert.ok(shipCall.prompt.includes('Post-Deploy Monitoring & Validation') && shipCall.prompt.includes('watch error rates'), 'PR body carries post-deploy plan')
   assert.ok(shipCall.prompt.includes('status: completed'), 'ship flips plan status')
@@ -676,10 +686,12 @@ S('S27 cross-reviewer dedup: same file+title from two reviewers is one finding, 
   assert.equal(fixes.length, 1)
   assert.equal((fixes[0].prompt.match(/unchecked race/g) || []).length, 1, 'one line, not two')
   assert.ok(fixes[0].prompt.includes('blocking'), 'merged finding keeps the higher severity')
-  assert.ok(fixes[0].prompt.includes('(blocking, PLAUSIBLE,'), 'verdict comes from the single verifier of the first-kept entry — duplicates are never re-verified')
+  assert.ok(fixes[0].prompt.includes('(blocking, PLAUSIBLE,'), 'verdict comes from the single verifier of the first-kept entry')
+  assert.ok(fixes[0].prompt.includes('Verifier evidence: consistent but unproven'), 'verifier evidence reaches the fixer')
+  assert.ok(fixes[0].prompt.includes('Failure scenario: concurrent writes without lock -> data corruption'), 'failure_scenario reaches the fixer')
   assert.ok(fixes[0].prompt.includes('correctness+codex') || fixes[0].prompt.includes('codex+correctness'), 'both personas credited')
   assert.deepEqual(result.residualReviewFindings, [], 'single fixed title accounts for the merged finding exactly once')
-  assert.deepEqual(result.reviewStats, { candidates: 2, verified: 1, refuted: 0, dupes: 1, budgetDropped: 0 })
+  assert.deepEqual(result.reviewStats, { candidates: 2, verified: 1, refuted: 0, dupes: 1, budgetDropped: 0, verifierFailed: 0 })
   // Two DISTINCT problems sharing a title at different lines must NOT collapse —
   // the second would otherwise be silently dropped before any fixer saw it.
   const d2 = makeDispatcher({
@@ -713,7 +725,7 @@ S('S34 proximity dedup: same file lines 101/103 with different titles merge befo
   assert.ok(fixes[0].prompt.includes('(blocking,'), 'merged finding keeps the blocking severity')
   assert.ok(fixes[0].prompt.includes('correctness+testing'), 'both personas credited')
   assert.deepEqual(result.residualReviewFindings, [])
-  assert.deepEqual(result.reviewStats, { candidates: 2, verified: 1, refuted: 0, dupes: 1, budgetDropped: 0 })
+  assert.deepEqual(result.reviewStats, { candidates: 2, verified: 1, refuted: 0, dupes: 1, budgetDropped: 0, verifierFailed: 0 })
   return 'different titles 2 lines apart merged; one verify; blocking kept'
 })
 
@@ -730,7 +742,7 @@ S('S35 no over-merge: same title at lines 10 and 400 stays two findings', async 
   assert.equal(result.confirmedReviewFindings, 2, '|10-400| > 5 keeps them distinct despite the shared title')
   const fix = trace.calls.find((c) => c.label.startsWith('fix-'))
   assert.ok(fix.prompt.includes('first site swallows the error') && fix.prompt.includes('second site swallows the error'), 'both details reach the fixer')
-  assert.deepEqual(result.reviewStats, { candidates: 2, verified: 2, refuted: 0, dupes: 0, budgetDropped: 0 })
+  assert.deepEqual(result.reviewStats, { candidates: 2, verified: 2, refuted: 0, dupes: 0, budgetDropped: 0, verifierFailed: 0 })
   return 'titles are irrelevant when both lines are positive and far apart'
 })
 
@@ -748,7 +760,7 @@ S('S36 line-less dedup: 30-char normalized-title prefix merges; different title 
   const verifies = trace.calls.filter((c) => c.label.startsWith('verify-'))
   assert.equal(verifies.length, 2, 'merged pair verified once; distinct title verified separately')
   assert.equal(result.confirmedReviewFindings, 2)
-  assert.deepEqual(result.reviewStats, { candidates: 3, verified: 2, refuted: 0, dupes: 1, budgetDropped: 0 })
+  assert.deepEqual(result.reviewStats, { candidates: 3, verified: 2, refuted: 0, dupes: 1, budgetDropped: 0, verifierFailed: 0 })
   return 'line-0 finding merges on normalized title prefix, not with a different-title one'
 })
 
@@ -764,7 +776,7 @@ S('S37 verify budget: 30 suggested findings -> 25 verified, 5 dropped with logge
   assert.equal(verifies.length, 25, 'verifier spawns capped at MAX_VERIFY')
   assert.equal(result.confirmedReviewFindings, 25, 'budget-dropped findings are not confirmed')
   assert.equal(result.reviewStats.budgetDropped, 5)
-  assert.deepEqual(result.reviewStats, { candidates: 30, verified: 25, refuted: 0, dupes: 0, budgetDropped: 5 })
+  assert.deepEqual(result.reviewStats, { candidates: 30, verified: 25, refuted: 0, dupes: 0, budgetDropped: 5, verifierFailed: 0 })
   for (let i = 26; i <= 30; i++) {
     assert.ok(trace.logs.some((m) => m.includes(`src/f${i}.js:10 — finding-${i}`)), `dropped finding-${i} identity logged`)
   }
@@ -785,7 +797,7 @@ S('S38 blocking exemption: slots exhausted, later blocking finding still gets a 
   const verifies = trace.calls.filter((c) => c.label.startsWith('verify-'))
   assert.equal(verifies.length, 26, 'blocking finding bypasses the exhausted suggested-severity budget')
   assert.equal(result.confirmedReviewFindings, 26)
-  assert.deepEqual(result.reviewStats, { candidates: 26, verified: 26, refuted: 0, dupes: 0, budgetDropped: 0 })
+  assert.deepEqual(result.reviewStats, { candidates: 26, verified: 26, refuted: 0, dupes: 0, budgetDropped: 0, verifierFailed: 0 })
   return '25 suggested fill the slots; the blocking finding still verifies (26 spawns)'
 })
 
@@ -801,7 +813,7 @@ S('S39 budget-dropped finding escalated to blocking by a later duplicate gets ve
   const verifies = trace.calls.filter((c) => c.label.startsWith('verify-'))
   assert.equal(verifies.length, 26, '25 budget spawns + 1 late spawn for the escalated entry')
   assert.equal(result.confirmedReviewFindings, 26, 'escalated entry rejoins the confirmed set')
-  assert.deepEqual(result.reviewStats, { candidates: 27, verified: 26, refuted: 0, dupes: 1, budgetDropped: 0 }, 'late-verified entry leaves the budgetDropped bucket')
+  assert.deepEqual(result.reviewStats, { candidates: 27, verified: 26, refuted: 0, dupes: 1, budgetDropped: 0, verifierFailed: 0 }, 'late-verified entry leaves the budgetDropped bucket')
   const fix26 = trace.calls.find((c) => c.label.startsWith('fix-') && c.prompt.includes('finding-26'))
   assert.ok(fix26 && fix26.prompt.includes('(blocking,') && fix26.prompt.includes('correctness+testing'), 'escalated entry reaches the fixer as blocking with both personas')
   return 'blocking duplicate revives a budget-dropped entry: verifier spawned, stats rebalanced'
@@ -851,7 +863,7 @@ S('S42 sweep candidate in the same proximity bucket as a verified finding merges
   const { result, trace, error } = await run(d)
   assert.ifError(error)
   assert.ok(!trace.calls.some((c) => c.label.startsWith('verify-sweep-')), 'duplicate sweep candidate spawns NO verifier')
-  assert.deepEqual(result.reviewStats, { candidates: 2, verified: 1, refuted: 0, dupes: 1, budgetDropped: 0 }, 'sweep duplicate counted in dupes')
+  assert.deepEqual(result.reviewStats, { candidates: 2, verified: 1, refuted: 0, dupes: 1, budgetDropped: 0, verifierFailed: 0 }, 'sweep duplicate counted in dupes')
   const fix = trace.calls.find((c) => c.label.startsWith('fix-'))
   assert.ok(fix.prompt.includes('correctness+sweep'), 'sweep credited on the merged finding')
   assert.ok(trace.logs.some((m) => /Sweep: 0 new candidate\(s\), 0 survived verification/.test(m)), 'dupe-only sweep yields zero new candidates')
@@ -890,10 +902,83 @@ S('S44 exhausted verify budget: suggested sweep candidate lands in budgetDropped
   const { result, trace, error } = await run(d)
   assert.ifError(error)
   assert.ok(!trace.calls.some((c) => c.label.startsWith('verify-sweep-')), 'budget-dropped sweep candidate spawns no verifier')
-  assert.deepEqual(result.reviewStats, { candidates: 26, verified: 25, refuted: 0, dupes: 0, budgetDropped: 1 }, 'sweep drop visible in reviewStats')
+  assert.deepEqual(result.reviewStats, { candidates: 26, verified: 25, refuted: 0, dupes: 0, budgetDropped: 1, verifierFailed: 0 }, 'sweep drop visible in reviewStats')
   assert.ok(trace.logs.some((m) => m.includes('src/sweep.js:7 — late sweep find')), 'dropped sweep candidate identity logged')
   assert.ok(!trace.calls.some((c) => c.label.startsWith('fix-') && c.prompt.includes('late sweep find')), 'dropped candidate never reaches a fixer')
   return 'sweep respects the shared verify budget; drop is logged, never silent'
+})
+
+S('S45 sweep over-cap: 10 candidates -> first 8 processed, the 2 dropped logged with identities', async () => {
+  const sweepFindings = Array.from({ length: 10 }, (_, i) => ({ title: `gap-${i + 1}`, file: `src/g${i + 1}.js`, line: 5, severity: 'suggested', detail: `d${i + 1}`, failure_scenario: `gap ${i + 1} trigger` }))
+  const d = makeDispatcher({
+    sweep: () => ({ findings: sweepFindings }),
+    'fix-': (p, o, label) => ({ fixed: sweepFindings.map((f) => f.title).filter((t) => p.includes(t)), skipped: [], detail: 'ok' }),
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  const sweepVerifies = trace.calls.filter((c) => c.label.startsWith('verify-sweep-'))
+  assert.equal(sweepVerifies.length, 8, 'only the first 8 sweep candidates reach verification')
+  assert.equal(result.reviewStats.candidates, 8, 'over-cap candidates never enter processFindings')
+  assert.ok(trace.logs.some((m) => m.includes('src/g9.js:5 — gap-9') && m.includes('src/g10.js:5 — gap-10')), 'dropped candidates logged with file:line — title identities')
+  assert.ok(!trace.calls.some((c) => c.label.startsWith('fix-') && c.prompt.includes('gap-9')), 'dropped candidate never reaches a fixer')
+  return '10 sweep candidates -> 8 kept, 2 dropped with logged identities'
+})
+
+S('S46 sweep agent dies: failure logged, confirmed findings and stats unaffected', async () => {
+  const d = makeDispatcher({
+    'review-correctness': () => ({ findings: [{ title: 'reviewer-found', file: 'src/u1.js', line: 10, severity: 'blocking', detail: 'd', failure_scenario: 'empty input indexes past the array end' }] }),
+    sweep: () => { throw new Error('sweep died') },
+    'fix-': () => ({ fixed: ['reviewer-found'], skipped: [], detail: 'ok' }),
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  assert.ok(trace.logs.some((m) => /Sweep agent failed — no gap candidates collected/.test(m)), 'dead sweep logged')
+  assert.equal(result.confirmedReviewFindings, 1, 'reviewer finding unaffected by the dead sweep')
+  assert.deepEqual(result.reviewStats, { candidates: 1, verified: 1, refuted: 0, dupes: 0, budgetDropped: 0, verifierFailed: 0 })
+  assert.ok(result.validation.testsPass, 'run continues to validation')
+  return 'dead sweep does not crash Quality; fixes and validation proceed'
+})
+
+S('S47 fixer-skipped title matching no finding -> residual with sentinel verdict UNKNOWN', async () => {
+  const d = makeDispatcher({
+    'review-correctness': () => ({ findings: [{ title: 'real-finding', file: 'src/u1.js', line: 10, severity: 'blocking', detail: 'd', failure_scenario: 'null input crashes the handler' }] }),
+    'fix-': () => ({ fixed: ['real-finding'], skipped: [{ title: 'never-reported', reason: 'phantom skip' }], detail: 'ok' }),
+  })
+  const { result, error } = await run(d)
+  assert.ifError(error)
+  assert.equal(result.residualReviewFindings.length, 1)
+  const r = result.residualReviewFindings[0]
+  assert.equal(r.title, 'never-reported')
+  assert.equal(r.verdict, 'UNKNOWN', 'no verifier graded this title — sentinel, not a fabricated PLAUSIBLE')
+  assert.equal(r.file, 'src/u1.js')
+  assert.equal(r.reason, 'phantom skip')
+  return 'unmatched skip title -> UNKNOWN-verdict residual; no invented verifier grade'
+})
+
+S('S48 blocking sweep duplicate of a REFUTED finding revives it: re-verified with the merged write-up', async () => {
+  const d = makeDispatcher({
+    'review-correctness': () => ({ findings: [{ title: 'weak write-up of the defect', file: 'src/u1.js', line: 10, severity: 'suggested', detail: 'vague claim', failure_scenario: 'vague trigger' }] }),
+    'verify-correctness': () => ({ verdict: 'REFUTED', evidence: 'could not reproduce from the weak wording' }),
+    sweep: () => ({ findings: [{ title: 'same defect, sharper', file: 'src/u1.js', line: 12, severity: 'blocking', detail: 'sharp claim', failure_scenario: 'concrete trigger: empty queue double-pop' }] }),
+    'verify-sweep': () => ({ verdict: 'CONFIRMED', evidence: 'quoted the offending line' }),
+    'fix-': () => ({ fixed: ['weak write-up of the defect'], skipped: [], detail: 'ok' }),
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  // the refuted first-pass finding appears labeled in the sweep exclusion list
+  const sweepCall = trace.calls.find((c) => c.label === 'sweep')
+  assert.ok(sweepCall.prompt.includes('src/u1.js:10 — weak write-up of the defect') && sweepCall.prompt.includes('refuted'), 'refuted finding excluded-with-label in the sweep prompt')
+  // absorption is logged, and the blocking duplicate revives the refuted entry
+  assert.ok(trace.logs.some((m) => m.includes('Duplicate finding absorbed') && m.includes('same defect, sharper')), 'absorbed duplicate identity logged')
+  const reverify = trace.calls.find((c) => c.label.startsWith('verify-sweep-'))
+  assert.ok(reverify, 'refuted entry re-verified on blocking escalation')
+  assert.ok(reverify.prompt.includes('concrete trigger: empty queue double-pop'), 'duplicate failure_scenario reaches the re-verifier')
+  assert.equal(result.confirmedReviewFindings, 1, 'revived entry rejoins the confirmed set')
+  assert.deepEqual(result.reviewStats, { candidates: 2, verified: 1, refuted: 0, dupes: 1, budgetDropped: 0, verifierFailed: 0 }, 'revived entry leaves the refuted bucket')
+  const fix = trace.calls.find((c) => c.label.startsWith('fix-'))
+  assert.ok(fix.prompt.includes('sharp claim'), 'absorbed detail reaches the fixer')
+  assert.deepEqual(result.residualReviewFindings, [])
+  return 'REFUTED + blocking duplicate -> logged, re-verified with merged evidence, fixed'
 })
 
 S('S29 verdict ladder: REFUTED filtered out, PLAUSIBLE reaches fixer with verdict-conditional policy', async () => {
@@ -917,8 +1002,9 @@ S('S29 verdict ladder: REFUTED filtered out, PLAUSIBLE reaches fixer with verdic
   assert.ok(fixes[0].prompt.includes('local and behavior-preserving'), 'verdict-conditional fix policy present')
   assert.ok(!fixes[0].prompt.includes('refuted-race'), 'REFUTED finding never reaches a fixer')
   assert.deepEqual(result.residualReviewFindings, [], 'REFUTED finding leaves no residual either')
-  assert.deepEqual(result.reviewStats, { candidates: 2, verified: 1, refuted: 1, dupes: 0, budgetDropped: 0 }, 'refuted finding counted in stats')
-  // a dead verifier counts as refuted — fail if uncertain
+  assert.deepEqual(result.reviewStats, { candidates: 2, verified: 1, refuted: 1, dupes: 0, budgetDropped: 0, verifierFailed: 0 }, 'refuted finding counted in stats')
+  // a dead verifier still drops the finding (fail if uncertain) but is counted
+  // as an infra failure, never as a code-based refutation
   const dead = makeDispatcher({
     'review-correctness': () => ({ findings: [{ title: 'unverifiable', file: 'src/u1.js', line: 10, severity: 'suggested', detail: 'd', failure_scenario: 'claimed leak on early return' }] }),
     'verify-correctness': () => { throw new Error('verifier died') },
@@ -926,7 +1012,9 @@ S('S29 verdict ladder: REFUTED filtered out, PLAUSIBLE reaches fixer with verdic
   const b = await run(dead)
   assert.ifError(b.error)
   assert.equal(b.result.confirmedReviewFindings, 0, 'dead verifier confirms nothing')
-  assert.equal(b.result.reviewStats.refuted, 1, 'dead verifier counted as refuted')
+  assert.equal(b.result.reviewStats.refuted, 0, 'a crashed verifier is NOT a refutation')
+  assert.equal(b.result.reviewStats.verifierFailed, 1, 'crash counted in its own bucket')
+  assert.ok(b.trace.logs.some((m) => m.includes('Verifier agent died for src/u1.js:10 — unverifiable')), 'dead verifier logged with the finding identity')
   return 'three-state ladder filters REFUTED only; fixer sees verdicts and the conditional policy'
 })
 
