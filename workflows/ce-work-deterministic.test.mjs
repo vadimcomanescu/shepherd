@@ -105,7 +105,7 @@ function makeDispatcher(overrides = {}, opts = {}) {
     if (label.startsWith('simplify-wave-')) return 'nothing to simplify'
     if (label === 'review-codex') return { ran: true, findings: [], detail: 'clean' }
     if (label.startsWith('review-')) return { findings: [] }
-    if (label.startsWith('verify-')) return { refuted: false, reason: 'confirmed' }
+    if (label.startsWith('verify-')) return { verdict: 'CONFIRMED', evidence: 'e' }
     if (label.startsWith('fix-')) return { fixed: [], skipped: [], detail: 'fixed' }
     if (label === 'final-validation') return VALIDATION
     if (label === 'proof' || label === 'proof-retest') return { status: 'pass', routes: [{ route: '/', result: 'pass', detail: 'renders' }], detail: 'ok' }
@@ -306,7 +306,7 @@ S('S10 review findings: nit dropped, blocking verified -> sequential fix, no res
       { title: 'off-by-one', file: 'src/u1.js', line: 10, severity: 'blocking', detail: 'd' },
       { title: 'naming', file: 'src/u1.js', line: 12, severity: 'nit', detail: 'd' },
     ] }),
-    'verify-correctness': () => ({ refuted: false, reason: 'real' }),
+    'verify-correctness': () => ({ verdict: 'CONFIRMED', evidence: 'real' }),
     'fix-': () => ({ fixed: ['off-by-one'], skipped: [], detail: 'ok' }),
   })
   const { result, trace, error } = await run(d)
@@ -584,8 +584,8 @@ S('S21 proof: missing agent-browser skips cleanly; failing route gets one fix ro
   return 'skip is honest; full trace re-grounded after fix; dead re-validation fails closed on both gates'
 })
 
-S('S22 codex second-model reviewer: findings verified by claude refuter; ran=false logged', async () => {
-  // (a) codex finds a blocking issue -> skeptical-refuter verifies -> fixer dispatched
+S('S22 codex second-model reviewer: findings verified by claude verifier; ran=false logged', async () => {
+  // (a) codex finds a blocking issue -> finding-verifier verifies -> fixer dispatched
   const finds = makeDispatcher({
     'review-codex': () => ({ ran: true, findings: [{ title: 'unchecked race', file: 'src/u1.js', line: 4, severity: 'blocking', detail: 'd' }], detail: 'found 1' }),
     'fix-': () => ({ fixed: ['unchecked race'], skipped: [], detail: 'ok' }),
@@ -594,7 +594,7 @@ S('S22 codex second-model reviewer: findings verified by claude refuter; ran=fal
   assert.ifError(a.error)
   assert.equal(a.result.confirmedReviewFindings, 1)
   const verify = a.trace.calls.find((c) => c.label.startsWith('verify-codex-'))
-  assert.equal(verify.agentType, 'skeptical-refuter', 'codex finding cross-verified by claude')
+  assert.equal(verify.agentType, 'finding-verifier', 'codex finding cross-verified by claude')
   // (b) codex review fails to run -> logged, zero findings, run unaffected
   const broken = makeDispatcher({ 'review-codex': () => ({ ran: false, findings: [], detail: 'codex binary crashed' }) })
   const b = await run(broken)
@@ -641,6 +641,8 @@ S('S27 cross-reviewer dedup: same file+title from two reviewers is one finding, 
   const d = makeDispatcher({
     'review-correctness': () => ({ findings: [finding] }),
     'review-codex': () => ({ ran: true, findings: [{ ...finding, severity: 'blocking' }], detail: 'found 1' }),
+    'verify-correctness': () => ({ verdict: 'PLAUSIBLE', evidence: 'consistent but unproven' }),
+    'verify-codex': () => ({ verdict: 'CONFIRMED', evidence: 'quoted the offending line' }),
     'fix-': () => ({ fixed: ['unchecked race'], skipped: [], detail: 'ok' }),
   })
   const { result, trace, error } = await run(d)
@@ -650,6 +652,7 @@ S('S27 cross-reviewer dedup: same file+title from two reviewers is one finding, 
   assert.equal(fixes.length, 1)
   assert.equal((fixes[0].prompt.match(/unchecked race/g) || []).length, 1, 'one line, not two')
   assert.ok(fixes[0].prompt.includes('blocking'), 'merged finding keeps the higher severity')
+  assert.ok(fixes[0].prompt.includes('(blocking, CONFIRMED,'), 'merged finding keeps the stronger verdict (CONFIRMED beats PLAUSIBLE)')
   assert.ok(fixes[0].prompt.includes('correctness+codex') || fixes[0].prompt.includes('codex+correctness'), 'both personas credited')
   assert.deepEqual(result.residualReviewFindings, [], 'single fixed title accounts for the merged finding exactly once')
   // Two DISTINCT problems sharing a title at different lines must NOT collapse —
@@ -667,6 +670,80 @@ S('S27 cross-reviewer dedup: same file+title from two reviewers is one finding, 
   const fix2 = r2.trace.calls.find((c) => c.label.startsWith('fix-'))
   assert.ok(fix2.prompt.includes('race at line 4') && fix2.prompt.includes('different race at line 99'), 'both distinct details reach the fixer')
   return 'fingerprint dedup merges true dups, keeps distinct same-title findings'
+})
+
+S('S29 verdict ladder: REFUTED filtered out, PLAUSIBLE reaches fixer with verdict-conditional policy', async () => {
+  const d = makeDispatcher({
+    'review-correctness': () => ({ findings: [
+      { title: 'plausible-leak', file: 'src/u1.js', line: 10, severity: 'blocking', detail: 'connection may leak' },
+      { title: 'refuted-race', file: 'src/u1.js', line: 20, severity: 'blocking', detail: 'race on init' },
+    ] }),
+    'verify-correctness': (prompt) => (prompt.includes('plausible-leak')
+      ? { verdict: 'PLAUSIBLE', evidence: 'consistent with the code, trigger not constructed' }
+      : { verdict: 'REFUTED', evidence: 'guard on line 18 prevents it' }),
+    'fix-': () => ({ fixed: ['plausible-leak'], skipped: [], detail: 'ok' }),
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  assert.equal(result.confirmedReviewFindings, 1, 'only the non-REFUTED finding survives')
+  const fixes = trace.calls.filter((c) => c.label.startsWith('fix-'))
+  assert.equal(fixes.length, 1)
+  assert.ok(fixes[0].prompt.includes('plausible-leak'), 'PLAUSIBLE finding reaches the fixer')
+  assert.ok(fixes[0].prompt.includes('(blocking, PLAUSIBLE,'), 'fix prompt carries the finding verdict')
+  assert.ok(fixes[0].prompt.includes('local and behavior-preserving'), 'verdict-conditional fix policy present')
+  assert.ok(!fixes[0].prompt.includes('refuted-race'), 'REFUTED finding never reaches a fixer')
+  assert.deepEqual(result.residualReviewFindings, [], 'REFUTED finding leaves no residual either')
+  return 'three-state ladder filters REFUTED only; fixer sees verdicts and the conditional policy'
+})
+
+S('S30 REFUTED finding never becomes a residual, even when the fixer dies', async () => {
+  const d = makeDispatcher({
+    'review-correctness': () => ({ findings: [
+      { title: 'real-issue', file: 'src/u1.js', line: 10, severity: 'blocking', detail: 'd' },
+      { title: 'phantom-issue', file: 'src/u1.js', line: 20, severity: 'blocking', detail: 'd' },
+    ] }),
+    'verify-correctness': (prompt) => (prompt.includes('phantom-issue')
+      ? { verdict: 'REFUTED', evidence: 'invariant prevents it' }
+      : { verdict: 'CONFIRMED', evidence: 'quoted the offending line' }),
+    'fix-': () => { throw new Error('fixer died') },
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  assert.equal(result.residualReviewFindings.length, 1, 'only the confirmed finding becomes a residual')
+  assert.equal(result.residualReviewFindings[0].title, 'real-issue')
+  assert.equal(result.residualReviewFindings[0].verdict, 'CONFIRMED', 'residual carries the verdict')
+  assert.ok(!trace.calls.some((c) => c.label.startsWith('fix-') && c.prompt.includes('phantom-issue')), 'REFUTED finding in no fix prompt')
+  const shipCall = trace.calls.find((c) => c.label === 'ship')
+  assert.ok(shipCall.prompt.includes('(blocking, CONFIRMED) src/u1.js'), 'PR-body residual line carries the verdict')
+  assert.ok(!shipCall.prompt.includes('phantom-issue'), 'REFUTED finding never reaches the PR body')
+  return 'REFUTED findings are dropped before fixers and residuals; residual lines carry verdicts'
+})
+
+S('S31 skipped PLAUSIBLE finding produces a residual carrying verdict PLAUSIBLE', async () => {
+  const d = makeDispatcher({
+    'review-correctness': () => ({ findings: [{ title: 'maybe-leak', file: 'src/u1.js', line: 10, severity: 'suggested', detail: 'd' }] }),
+    'verify-correctness': () => ({ verdict: 'PLAUSIBLE', evidence: 'could not construct the trigger' }),
+    'fix-': () => ({ fixed: [], skipped: [{ title: 'maybe-leak', reason: 'fix is not local' }], detail: '' }),
+  })
+  const { result, error } = await run(d)
+  assert.ifError(error)
+  assert.equal(result.residualReviewFindings.length, 1)
+  assert.equal(result.residualReviewFindings[0].verdict, 'PLAUSIBLE', 'skipped residual keeps its verdict')
+  assert.equal(result.residualReviewFindings[0].reason, 'fix is not local')
+  return 'skipped PLAUSIBLE finding -> residual with verdict PLAUSIBLE'
+})
+
+S('S32 verify- calls dispatch the finding-verifier persona', async () => {
+  const d = makeDispatcher({
+    'review-correctness': () => ({ findings: [{ title: 't1', file: 'src/u1.js', line: 1, severity: 'blocking', detail: 'd' }] }),
+    'fix-': () => ({ fixed: ['t1'], skipped: [], detail: 'ok' }),
+  })
+  const { trace, error } = await run(d)
+  assert.ifError(error)
+  const verifies = trace.calls.filter((c) => c.label.startsWith('verify-'))
+  assert.ok(verifies.length >= 1, 'at least one verification dispatched')
+  for (const v of verifies) assert.equal(v.agentType, 'finding-verifier', `${v.label} uses finding-verifier`)
+  return `${verifies.length} verify call(s), all finding-verifier`
 })
 
 S('S26 tail budget floor: waves finish but Proof/Ship/Compound are skipped with logs', async () => {

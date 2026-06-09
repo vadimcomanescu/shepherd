@@ -170,8 +170,8 @@ const FINDINGS_SCHEMA = {
 
 const VERDICT_SCHEMA = {
   type: 'object',
-  properties: { refuted: { type: 'boolean' }, reason: { type: 'string' } },
-  required: ['refuted', 'reason'],
+  properties: { verdict: { enum: ['CONFIRMED', 'PLAUSIBLE', 'REFUTED'] }, evidence: { type: 'string' } },
+  required: ['verdict', 'evidence'],
 }
 
 const CODEX_REVIEW_SCHEMA = {
@@ -248,7 +248,7 @@ const TRIAGE_SCHEMA = {
 
 // ============================================================
 // Shared prompt blocks. Personas live in agents/*.md (task-splitter,
-// executor-router, unit-executor, codex-runner, skeptical-refuter), resolved
+// executor-router, unit-executor, codex-runner, finding-verifier), resolved
 // via agentType. Prompts below carry only per-run grounding.
 // ============================================================
 const WORKTREE_HOWTO = (repoRoot, integrationBranch) => `
@@ -793,7 +793,7 @@ and enough detail that a fixer who has not seen your reasoning can act.`
 
 // Reviewer roster = persona reviewers + (when codex is usable) the Codex CLI as
 // a second-model reviewer: a different model family catches what same-family
-// review rationalizes away, and its findings face the same Claude refuter.
+// review rationalizes away, and its findings face the same Claude verifier.
 const reviewers = personas.map((p) => ({
   key: p.key,
   spawn: () => agent(reviewPrompt(p), { label: `review-${p.key}`, phase: 'Quality', agentType: p.type, schema: FINDINGS_SCHEMA }),
@@ -838,9 +838,14 @@ const reviewed = await pipeline(
         `Finding (${f.severity}) ${f.file}${f.line ? ':' + f.line : ''} — ${f.title}
 ${f.detail}
 
-Where to look: the worktree at ${INTEGRATION_WT} (branch ${INTEGRATION_BRANCH}, base ${BASE}).`,
-        { label: `verify-${rv.key}-${f.file.split('/').pop()}`, phase: 'Quality', model: 'sonnet', agentType: 'skeptical-refuter', schema: VERDICT_SCHEMA },
-      ).then((v) => (v && !v.refuted ? { ...f, persona: rv.key } : null)),
+Where to look: the worktree at ${INTEGRATION_WT} (branch ${INTEGRATION_BRANCH}, base ${BASE}).
+Read the actual code there; never take the finding's word for anything.
+Verdict ladder — CONFIRMED only when you can name the concrete triggering
+inputs/state AND quote the offending line; REFUTED only when the refutation is
+constructible from the code (quote the disproving line, invariant, or guard);
+otherwise PLAUSIBLE, the default for realistic-but-unproven findings.`,
+        { label: `verify-${rv.key}-${f.file.split('/').pop()}`, phase: 'Quality', model: 'sonnet', agentType: 'finding-verifier', schema: VERDICT_SCHEMA },
+      ).then((v) => (v && v.verdict !== 'REFUTED' ? { ...f, persona: rv.key, verdict: v.verdict } : null)),
     )).then((vs) => vs.filter(Boolean))
   },
 )
@@ -854,7 +859,7 @@ for (const f of reviewed.filter(Boolean).flat()) {
   const key = `${f.file}::${f.line || 0}::${f.title}`
   const prev = byFingerprint.get(key)
   if (!prev) byFingerprint.set(key, f)
-  else byFingerprint.set(key, { ...prev, severity: prev.severity === 'blocking' || f.severity === 'blocking' ? 'blocking' : prev.severity, persona: `${prev.persona}+${f.persona}` })
+  else byFingerprint.set(key, { ...prev, severity: prev.severity === 'blocking' || f.severity === 'blocking' ? 'blocking' : prev.severity, persona: `${prev.persona}+${f.persona}`, verdict: prev.verdict === 'CONFIRMED' || f.verdict === 'CONFIRMED' ? 'CONFIRMED' : prev.verdict })
 }
 const confirmed = [...byFingerprint.values()]
 confirmedCount = confirmed.length
@@ -868,23 +873,27 @@ if (confirmed.length) {
   for (const [file, fs] of Object.entries(byFile)) {
     const fx = await agent(
       `In the worktree ${INTEGRATION_WT} (branch ${INTEGRATION_BRANCH}): fix these
-confirmed review findings in ${file}. Make the smallest correct fix for each, run
+verified review findings in ${file}. Make the smallest correct fix for each, run
 ${recon.testCommand}, stage ONLY the files you changed, and commit
 ("fix: address review findings in ${file}").
-If a finding turns out to be wrong once you read the code, skip it and say why.
+Each finding carries a verifier verdict; apply the verdict-conditional policy:
+- CONFIRMED findings: fix them unless you can prove from the code that the
+  finding is wrong; if you skip one, say exactly why it is provably wrong.
+- PLAUSIBLE findings: fix only when the fix is local and behavior-preserving;
+  otherwise skip it and include the verifier's confirmation note in your skip reason.
 Report every finding as either fixed (by title) or skipped (title + reason).
-${fs.map((f) => `- (${f.severity}, ${f.persona}) ${f.title}: ${f.detail}`).join('\n')}`,
+${fs.map((f) => `- (${f.severity}, ${f.verdict}, ${f.persona}) ${f.title}: ${f.detail}`).join('\n')}`,
       { label: `fix-${file.split('/').pop()}`, phase: 'Quality', schema: FIX_SCHEMA },
     )
     // Anything not verifiably fixed becomes a residual — durable in the PR body.
-    if (!fx) residuals.push(...fs.map((f) => ({ title: f.title, file: f.file, severity: f.severity, reason: 'fixer agent failed' })))
+    if (!fx) residuals.push(...fs.map((f) => ({ title: f.title, file: f.file, severity: f.severity, verdict: f.verdict, reason: 'fixer agent failed' })))
     else {
       residuals.push(...fx.skipped.map((s) => {
         const orig = fs.find((f) => f.title === s.title)
-        return { title: s.title, file, severity: orig ? orig.severity : 'suggested', reason: s.reason }
+        return { title: s.title, file, severity: orig ? orig.severity : 'suggested', verdict: orig ? orig.verdict : 'PLAUSIBLE', reason: s.reason }
       }))
       const unaccounted = fs.filter((f) => !fx.fixed.includes(f.title) && !fx.skipped.some((s) => s.title === f.title))
-      residuals.push(...unaccounted.map((f) => ({ title: f.title, file, severity: f.severity, reason: 'fixer did not account for this finding' })))
+      residuals.push(...unaccounted.map((f) => ({ title: f.title, file, severity: f.severity, verdict: f.verdict, reason: 'fixer did not account for this finding' })))
     }
   }
   if (residuals.length) log(`${residuals.length} review residual(s) will be recorded in the PR body`)
@@ -1058,7 +1067,7 @@ if (!SHIP_ENABLED) {
     phase('Ship')
     const reqLines = (validation.requirements || []).map((r) => `- ${r.id}: ${r.verdict} — ${r.evidence}`)
     const residualLines = [
-      ...residuals.map((f) => `- (${f.severity}) ${f.file} — ${f.title}: ${f.reason}`),
+      ...residuals.map((f) => `- (${f.severity}, ${f.verdict}) ${f.file} — ${f.title}: ${f.reason}`),
       ...Object.entries(results).filter(([, r]) => r.status !== 'merged').map(([id, r]) => `- task ${id}: ${r.status} — ${r.detail}`),
       ...droppedUnits.map((u) => `- unit ${u.uid} (${u.name}): splitter failed — never executed`),
       ...preSkipped.map((t) => `- task ${t.id}: skipped — ${t.skipReason}`),
