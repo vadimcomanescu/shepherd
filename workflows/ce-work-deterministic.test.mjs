@@ -151,6 +151,8 @@ S('S1 happy path: 4 units, mixed routing, all merged + validated', async () => {
   assert.ok(mergeU1 < execU2, 'U1 merged before U2 executes')
   // migrations persona selected
   assert.ok(trace.calls.some((c) => c.label === 'review-migrations'), 'migrations reviewer ran')
+  assert.ok(trace.calls.some((c) => c.label === 'review-removed-behavior'), 'removed-behavior inline reviewer ran')
+  assert.ok(trace.calls.some((c) => c.label === 'review-cross-file'), 'cross-file inline reviewer ran')
   // extracted agent personas dispatched via agentType
   const types = Object.fromEntries(trace.calls.map((c) => [c.label, c.agentType]))
   assert.equal(types['split-U1'], 'task-splitter')
@@ -161,6 +163,8 @@ S('S1 happy path: 4 units, mixed routing, all merged + validated', async () => {
   assert.equal(types['review-standards'], 'compound-engineering:ce-project-standards-reviewer')
   assert.equal(types['review-adversarial'], 'compound-engineering:ce-adversarial-reviewer', 'adversarial persona on (120 lines >= 50)')
   assert.equal(types['review-codex'], 'codex-reviewer', 'codex second-model reviewer dispatched')
+  assert.equal(types['review-removed-behavior'], undefined, 'removed-behavior reviewer is inline, no agentType')
+  assert.equal(types['review-cross-file'], undefined, 'cross-file reviewer is inline, no agentType')
   assert.equal(types['ci-watch-1'], 'ci-watcher')
   // full lfg tail ran
   assert.equal(result.proof.status, 'pass')
@@ -206,6 +210,8 @@ S('S3 codex circuit breaker: 3+ failures in one wave trip it; fallbacks still me
   assert.ok(!trace.calls.some((c) => c.label.startsWith('simplify-wave-')), 'no mid-run simplify after the final wave')
   // tripped breaker also removes the codex second-model reviewer
   assert.ok(!trace.calls.some((c) => c.label === 'review-codex'), 'codex reviewer dropped when breaker tripped')
+  assert.ok(trace.calls.some((c) => c.label === 'review-removed-behavior'), 'removed-behavior reviewer still runs when codex is unavailable')
+  assert.ok(trace.calls.some((c) => c.label === 'review-cross-file'), 'cross-file reviewer still runs when codex is unavailable')
   return 'breaker tripped, all 4 recovered via claude fallback with cleanup preamble'
 })
 
@@ -893,12 +899,12 @@ S('S33 codex-reviewer doc requires and prompts for failure_scenario', async () =
 })
 
 S('S26 tail budget floor: waves finish but Proof/Ship/Compound are skipped with logs', async () => {
-  // Single unit; diffstat lowered so reviewer roster is fixed at 6 (no adversarial).
+  // Single unit; diffstat lowered so reviewer roster is fixed at 8 (no adversarial).
   // Call ledger at 10k/call: parse+recon(2) setup(3) split(4) route(5) exec(6) merge(7)
-  // diffstat(8) reviews x6 (14) final-validation(15) = 150k spent entering the tail.
-  // budgetTotal 175k -> remaining 25k <= 30k floor at Proof: tail must skip, not throw.
+  // diffstat(8) reviews x8 (16) final-validation(17) = 170k spent entering the tail.
+  // budgetTotal 195k -> remaining 25k <= 30k floor at Proof: tail must skip, not throw.
   const d = makeDispatcher({ diffstat: () => ({ lines: 10 }) }, { units: { units: [UNITS().units[0]] } })
-  const { result, trace, error } = await run(d, { budgetTotal: 175000 })
+  const { result, trace, error } = await run(d, { budgetTotal: 195000 })
   assert.ifError(error)
   assert.equal(result.tasks.U1.status, 'merged', 'execution itself completed under budget')
   assert.equal(result.budgetHalted, false, 'wave-level floor never hit')

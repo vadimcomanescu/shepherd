@@ -827,6 +827,24 @@ ${CODEX_POLL_BLOCK}`,
 } else {
   log(`Codex second-model review skipped (${codexBroken ? 'circuit breaker tripped' : 'codex unavailable'})`)
 }
+reviewers.push({
+  key: 'removed-behavior',
+  spawn: () => agent(
+    reviewPrompt({}) + `
+
+Angle — removed behavior: For every line the diff DELETES or replaces, name the invariant or behavior it enforced, then search the new code for where that invariant is re-established. If you can't find it, that's a candidate: a removed guard, a dropped error path, a narrowed validation, a deleted test that was covering a real case.`,
+    { label: 'review-removed-behavior', phase: 'Quality', schema: FINDINGS_SCHEMA },
+  ),
+})
+reviewers.push({
+  key: 'cross-file',
+  spawn: () => agent(
+    reviewPrompt({}) + `
+
+Angle — cross-file: For each function the diff changes, find its callers (Grep for the symbol) and check whether the change breaks any call site: a new precondition, a changed return shape, a new exception, a timing/ordering dependency. Also check callees: does a parallel change in the same PR make a call unsafe?`,
+    { label: 'review-cross-file', phase: 'Quality', schema: FINDINGS_SCHEMA },
+  ),
+})
 log(`Reviewers: ${reviewers.map((r) => r.key).join(', ')}`)
 
 // Pre-verification dedup + capped verifier budget. Dedup runs streaming, as
