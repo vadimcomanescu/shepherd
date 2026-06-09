@@ -784,7 +784,7 @@ if (changedLines >= 50 || planDoc.riskSurfaces.some((s) => ['auth', 'payments'].
   personas.push({ key: 'adversarial', type: 'compound-engineering:ce-adversarial-reviewer' })
 }
 
-const reviewPrompt = (p) => `
+const reviewPrompt = () => `
 Review the changes on branch ${INTEGRATION_BRANCH} relative to ${BASE}.
 Work inside the worktree at ${INTEGRATION_WT}; diff with: git diff origin/${BASE}...HEAD
 (fall back to ${BASE}). The work implements the plan at ${PLAN}.
@@ -800,7 +800,7 @@ Pass every candidate with a nameable failure scenario through — do not silentl
 // review rationalizes away, and its findings face the same Claude verifier.
 const reviewers = personas.map((p) => ({
   key: p.key,
-  spawn: () => agent(reviewPrompt(p), { label: `review-${p.key}`, phase: 'Quality', agentType: p.type, schema: FINDINGS_SCHEMA }),
+  spawn: () => agent(reviewPrompt(), { label: `review-${p.key}`, phase: 'Quality', agentType: p.type, schema: FINDINGS_SCHEMA }),
 }))
 if (codexUsable && !codexBroken) {
   reviewers.push({
@@ -827,24 +827,17 @@ ${CODEX_POLL_BLOCK}`,
 } else {
   log(`Codex second-model review skipped (${codexBroken ? 'circuit breaker tripped' : 'codex unavailable'})`)
 }
-reviewers.push({
-  key: 'removed-behavior',
-  spawn: () => agent(
-    reviewPrompt({}) + `
-
-Angle — removed behavior: For every line the diff DELETES or replaces, name the invariant or behavior it enforced, then search the new code for where that invariant is re-established. If you can't find it, that's a candidate: a removed guard, a dropped error path, a narrowed validation, a deleted test that was covering a real case.`,
-    { label: 'review-removed-behavior', phase: 'Quality', schema: FINDINGS_SCHEMA },
-  ),
-})
-reviewers.push({
-  key: 'cross-file',
-  spawn: () => agent(
-    reviewPrompt({}) + `
-
-Angle — cross-file: For each function the diff changes, find its callers (Grep for the symbol) and check whether the change breaks any call site: a new precondition, a changed return shape, a new exception, a timing/ordering dependency. Also check callees: does a parallel change in the same PR make a call unsafe?`,
-    { label: 'review-cross-file', phase: 'Quality', schema: FINDINGS_SCHEMA },
-  ),
-})
+// Inline angle reviewers — single-angle prompts with no persona file.
+const inlineAngles = [
+  ['removed-behavior', `Angle — removed behavior: For every line the diff DELETES or replaces, name the invariant or behavior it enforced, then search the new code for where that invariant is re-established. If you can't find it, that's a candidate: a removed guard, a dropped error path, a narrowed validation, a deleted test that was covering a real case.`],
+  ['cross-file', `Angle — cross-file: For each function the diff changes, find its callers (Grep for the symbol) and check whether the change breaks any call site: a new precondition, a changed return shape, a new exception, a timing/ordering dependency. Also check callees: does a parallel change in the same PR make a call unsafe?`],
+]
+for (const [key, angle] of inlineAngles) {
+  reviewers.push({
+    key,
+    spawn: () => agent(`${reviewPrompt()}\n\n${angle}`, { label: `review-${key}`, phase: 'Quality', schema: FINDINGS_SCHEMA }),
+  })
+}
 log(`Reviewers: ${reviewers.map((r) => r.key).join(', ')}`)
 
 // Pre-verification dedup + capped verifier budget. Dedup runs streaming, as
@@ -860,6 +853,7 @@ const MAX_VERIFY = 25         // suggested-severity verifier cap; blocking findi
 let verifySlots = MAX_VERIFY
 const kept = []               // every non-duplicate entry, INCLUDING budget-dropped ones, so later duplicates of a dropped finding still register as dupes
 let candidates = 0, dupes = 0, budgetDropped = 0, refutedCount = 0
+const findingRef = (f) => `${f.file}:${f.line || 0} — ${f.title}`
 const normTitle = (t) => String(t || '').toLowerCase().replace(/[^a-z0-9\s]+/g, '').replace(/\s+/g, ' ').trim()
 const sameDefect = (a, b) => {
   if (a.file !== b.file) return false
@@ -916,7 +910,7 @@ const processFindings = (findings, key) => {
     } else if (verifySlots <= 0) {
       entry.dropped = true
       budgetDropped++
-      log(`Verify cap (${MAX_VERIFY}) reached — dropping unverified suggested finding ${f.file}:${f.line || 0} — ${f.title}`)
+      log(`Verify cap (${MAX_VERIFY}) reached — dropping unverified suggested finding ${findingRef(f)}`)
     } else {
       verifySlots--
       toVerify.push(() => spawnVerifier(entry, key))
@@ -940,7 +934,7 @@ await pipeline(
 if (changedLines < 50) {
   log(`Sweep skipped: diff is ${changedLines} lines (<50)`)
 } else {
-  const verifiedLines = kept.filter((e) => e.verdict).map((e) => `${e.file}:${e.line || 0} — ${e.title}`)
+  const verifiedLines = kept.filter((e) => e.verdict).map(findingRef)
   const sweep = await agent(
     `Hunt for gaps a first review pass MISSED in the changes on branch ${INTEGRATION_BRANCH} relative to ${BASE}.
 Work inside the worktree at ${INTEGRATION_WT}; diff with: git diff origin/${BASE}...HEAD
@@ -963,7 +957,7 @@ If nothing new, return an empty list — do not pad.`,
   } else {
     let sweepFindings = sweep.findings
     if (sweepFindings.length > 8) {
-      log(`Sweep returned ${sweepFindings.length} candidates — keeping the first 8, dropping ${sweepFindings.slice(8).map((f) => `${f.file}:${f.line || 0} — ${f.title}`).join('; ')}`)
+      log(`Sweep returned ${sweepFindings.length} candidates — keeping the first 8, dropping ${sweepFindings.slice(8).map(findingRef).join('; ')}`)
       sweepFindings = sweepFindings.slice(0, 8)
     }
     const keptBefore = kept.length
