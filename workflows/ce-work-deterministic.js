@@ -939,14 +939,15 @@ ${fs.map((f) => `- (${f.severity}, ${f.verdict}, ${f.persona}) ${f.title}: ${f.d
       { label: `fix-${file.split('/').pop()}`, phase: 'Quality', schema: FIX_SCHEMA },
     )
     // Anything not verifiably fixed becomes a residual — durable in the PR body.
-    if (!fx) residuals.push(...fs.map((f) => ({ title: f.title, file: f.file, severity: f.severity, verdict: f.verdict, reason: 'fixer agent failed' })))
+    const residualOf = (f, reason) => ({ title: f.title, file: f.file, severity: f.severity, verdict: f.verdict, reason })
+    if (!fx) residuals.push(...fs.map((f) => residualOf(f, 'fixer agent failed')))
     else {
-      residuals.push(...fx.skipped.map((s) => {
-        const orig = fs.find((f) => f.title === s.title)
-        return { title: s.title, file, severity: orig ? orig.severity : 'suggested', verdict: orig ? orig.verdict : 'PLAUSIBLE', reason: s.reason }
-      }))
+      residuals.push(...fx.skipped.map((s) => residualOf(
+        fs.find((f) => f.title === s.title) || { title: s.title, file, severity: 'suggested', verdict: 'PLAUSIBLE' },
+        s.reason,
+      )))
       const unaccounted = fs.filter((f) => !fx.fixed.includes(f.title) && !fx.skipped.some((s) => s.title === f.title))
-      residuals.push(...unaccounted.map((f) => ({ title: f.title, file, severity: f.severity, verdict: f.verdict, reason: 'fixer did not account for this finding' })))
+      residuals.push(...unaccounted.map((f) => residualOf(f, 'fixer did not account for this finding')))
     }
   }
   if (residuals.length) log(`${residuals.length} review residual(s) will be recorded in the PR body`)
