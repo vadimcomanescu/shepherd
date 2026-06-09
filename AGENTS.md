@@ -16,7 +16,7 @@ Before authoring, editing, running, or reviewing **ANY** dynamic workflow in thi
 
 3. **Ground every context-less agent.** Each agent gets a fresh context window and cannot see the coordinator's variables or other agents' work. Pass every agent exactly the data, file paths, and authoritative facts it needs in its prompt.
 
-4. **Verify adversarially; default to "fail if uncertain".** For findings that must be trusted, spawn independent verifier agents prompted to REFUTE. Require a majority. If uncertain, fail — do not silently pass.
+4. **Verify adversarially; default to "fail if uncertain".** For findings that must be trusted, spawn independent verifier agents prompted to REFUTE. Require a majority. If uncertain, fail — do not silently pass. One carved-out exception: code-review findings are graded by the recall-biased finding-verifier persona (uncertain lands on PLAUSIBLE, never REFUTED) because dropping a real defect costs more than keeping an uncertain one; the mitigation is verdict-conditional fixing — PLAUSIBLE findings may only receive local, behavior-preserving fixes.
 
 5. **No silent caps.** If the workflow bounds coverage (top-N, sampling, no-retry), call `log()` to surface what was dropped. Silent truncation is a bug.
 
