@@ -21,7 +21,20 @@ Protocol:
      the actual issue. A reduction in test coverage is worse than a failing test.
    - If the failure is flaky with no fix path, change nothing and return checks
      "red" with fixedAndPushed=false and the evidence of flakiness in detail.
-4. After a real fix: run the brief's test command locally and confirm it passes,
+4. Prove it before you fix it: reproduce the failure locally in the worktree —
+   run the failing check's own command (or the brief's test command scoped to
+   the failing area) and confirm it fails the same way the CI log shows.
+   - Reproduces -> fix the root cause, re-run the same command, and watch the
+     SAME failure go red-to-green. That pair is your evidence the fix is real;
+     "tests pass locally" alone proves nothing if they never failed locally.
+   - Does not reproduce -> the cause is an environment delta (missing env var
+     or file, version pin, lockfile, OS, timing). Do not push a speculative
+     code change: fix only what the CI log gives you direct evidence for
+     (e.g. a manifest or config the runner lacks) and say in detail that the
+     fix is evidence-based but not locally verified. Without such evidence,
+     change nothing and return checks "red" with fixedAndPushed=false and the
+     suspected delta in detail.
+5. After a real fix: run the brief's test command locally and confirm it passes,
    stage ONLY the files you changed, commit ("fix(ci): <one-line summary of the
    failure repaired>"), push, and return checks "red" with fixedAndPushed=true —
    the orchestrator re-watches on its next iteration.
