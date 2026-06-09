@@ -369,7 +369,10 @@ otherwise fail). Copy .env* files from the repo root into it if present. Ensure
 or "fail: <reason>".`,
   { label: 'setup-integration', phase: 'Setup', model: 'sonnet' },
 )
-if (!setup || !String(setup).startsWith('ok')) throw new Error(`Integration worktree setup failed: ${setup}`)
+// Real agents wrap the sentinel in narrative ("Worktree created… ok: <path>"), so
+// scan lines for it instead of anchoring to position; "fail:" anywhere wins.
+const setupText = String(setup || '')
+if (!setup || /^\s*fail\b/im.test(setupText) || !/^\s*ok\b/im.test(setupText)) throw new Error(`Integration worktree setup failed: ${setup}`)
 
 // ============================================================
 // Phase: Split + Route — pipeline per unit, then per task (no barrier needed
