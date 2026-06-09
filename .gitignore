@@ -1,0 +1,6 @@
+# Per-unit worktrees created by Nadia's implement leaves (isolation:"worktree").
+# The harness places them here; they must never be committed.
+.claude/worktrees/
+
+# Node
+node_modules/
