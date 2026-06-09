@@ -106,6 +106,7 @@ function makeDispatcher(overrides = {}, opts = {}) {
     if (label.startsWith('simplify-wave-')) return 'nothing to simplify'
     if (label === 'review-codex') return { ran: true, findings: [], detail: 'clean' }
     if (label.startsWith('review-')) return { findings: [] }
+    if (label === 'sweep') return { findings: [] }
     if (label.startsWith('verify-')) return { verdict: 'CONFIRMED', evidence: 'e' }
     if (label.startsWith('fix-')) return { fixed: [], skipped: [], detail: 'fixed' }
     if (label === 'final-validation') return VALIDATION
@@ -804,6 +805,95 @@ S('S39 budget-dropped finding escalated to blocking by a later duplicate gets ve
   const fix26 = trace.calls.find((c) => c.label.startsWith('fix-') && c.prompt.includes('finding-26'))
   assert.ok(fix26 && fix26.prompt.includes('(blocking,') && fix26.prompt.includes('correctness+testing'), 'escalated entry reaches the fixer as blocking with both personas')
   return 'blocking duplicate revives a budget-dropped entry: verifier spawned, stats rebalanced'
+})
+
+S('S40 sweep gate: diff under 50 lines skips the sweep with a log', async () => {
+  const d = makeDispatcher({ diffstat: () => ({ lines: 40 }) })
+  const { trace, error } = await run(d)
+  assert.ifError(error)
+  assert.ok(!trace.calls.some((c) => c.label === 'sweep'), 'no sweep call under the 50-line gate')
+  assert.ok(trace.logs.some((m) => /Sweep skipped: diff is 40 lines \(<50\)/.test(m)), 'gate skip logged — no silent cap')
+  return '40-line diff: simplify still runs, sweep skipped with a log'
+})
+
+S('S41 sweep candidate at a new location is verified and joins the fix set, after reviewer verification and before fixes', async () => {
+  const d = makeDispatcher({
+    'review-correctness': () => ({ findings: [{ title: 'reviewer-found', file: 'src/u1.js', line: 10, severity: 'blocking', detail: 'd', failure_scenario: 'empty input indexes past the array end' }] }),
+    sweep: () => ({ findings: [{ title: 'dropped guard in extracted helper', file: 'src/u2.js', line: 30, severity: 'blocking', detail: 'extracted helper lost the null check', failure_scenario: 'null payload reaches the helper and crashes the handler' }] }),
+    'fix-': () => ({ fixed: ['reviewer-found', 'dropped guard in extracted helper'], skipped: [], detail: 'ok' }),
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  const sweepIdx = trace.calls.findIndex((c) => c.label === 'sweep')
+  assert.ok(sweepIdx >= 0, 'sweep dispatched (120-line diff opens the gate)')
+  const reviewerVerifyIdxs = trace.calls.map((c, i) => (c.label.startsWith('verify-') && !c.label.startsWith('verify-sweep') ? i : -1)).filter((i) => i >= 0)
+  assert.ok(reviewerVerifyIdxs.length >= 1 && reviewerVerifyIdxs.every((i) => i < sweepIdx), 'sweep runs after reviewer verification settles')
+  const firstFixIdx = trace.calls.findIndex((c) => c.label.startsWith('fix-'))
+  assert.ok(firstFixIdx > sweepIdx, 'sweep runs before fix batching')
+  const verifySweep = trace.calls.find((c) => c.label.startsWith('verify-sweep-'))
+  assert.ok(verifySweep, 'sweep survivor verified')
+  assert.equal(verifySweep.agentType, 'finding-verifier', 'sweep candidates face the same verifier')
+  assert.ok(verifySweep.prompt.includes('null payload reaches the helper'), 'sweep failure_scenario reaches verification')
+  const fixU2 = trace.calls.find((c) => c.label === 'fix-u2.js')
+  assert.ok(fixU2 && fixU2.prompt.includes('dropped guard in extracted helper'), 'confirmed sweep candidate joins the fix set')
+  assert.ok(fixU2.prompt.includes('CONFIRMED'), 'sweep survivor carries its verdict into the fix prompt')
+  assert.equal(result.confirmedReviewFindings, 2, 'reviewer finding + sweep survivor both confirmed')
+  assert.ok(trace.logs.some((m) => /Sweep: 1 new candidate\(s\), 1 survived verification/.test(m)), 'sweep outcome logged')
+  return 'sweep ordered after verification, before fixes; survivor fixed in the same pass'
+})
+
+S('S42 sweep candidate in the same proximity bucket as a verified finding merges, no verifier spawned', async () => {
+  const d = makeDispatcher({
+    'review-correctness': () => ({ findings: [{ title: 'reviewer-found', file: 'src/u1.js', line: 10, severity: 'blocking', detail: 'd', failure_scenario: 'empty input indexes past the array end' }] }),
+    sweep: () => ({ findings: [{ title: 'same defect re-spotted', file: 'src/u1.js', line: 12, severity: 'suggested', detail: 'd', failure_scenario: 'empty input still indexes past the end' }] }),
+    'fix-': () => ({ fixed: ['reviewer-found'], skipped: [], detail: 'ok' }),
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  assert.ok(!trace.calls.some((c) => c.label.startsWith('verify-sweep-')), 'duplicate sweep candidate spawns NO verifier')
+  assert.deepEqual(result.reviewStats, { candidates: 2, verified: 1, refuted: 0, dupes: 1, budgetDropped: 0 }, 'sweep duplicate counted in dupes')
+  const fix = trace.calls.find((c) => c.label.startsWith('fix-'))
+  assert.ok(fix.prompt.includes('correctness+sweep'), 'sweep credited on the merged finding')
+  assert.ok(trace.logs.some((m) => /Sweep: 0 new candidate\(s\), 0 survived verification/.test(m)), 'dupe-only sweep yields zero new candidates')
+  return 'proximity dedup absorbs the sweep duplicate; one finding, one verifier total'
+})
+
+S('S43 sweep prompt grounding: verified-findings list, gap-focus text, cap, no agentType', async () => {
+  const d = makeDispatcher({
+    'review-correctness': () => ({ findings: [{ title: 'reviewer-found', file: 'src/u1.js', line: 10, severity: 'blocking', detail: 'd', failure_scenario: 'empty input indexes past the array end' }] }),
+    'fix-': () => ({ fixed: ['reviewer-found'], skipped: [], detail: 'ok' }),
+  })
+  const { trace, error } = await run(d)
+  assert.ifError(error)
+  const sweepCall = trace.calls.find((c) => c.label === 'sweep')
+  assert.ok(sweepCall, 'sweep dispatched')
+  assert.equal(sweepCall.agentType, undefined, 'sweep is an inline-prompt agent, no agentType')
+  assert.ok(sweepCall.prompt.includes('src/u1.js:10 — reviewer-found'), 'verified findings rendered as file:line — title')
+  assert.ok(sweepCall.prompt.includes('do NOT re-derive or re-confirm these'), 'verified list carries the exclusion instruction')
+  assert.ok(sweepCall.prompt.includes('setup/teardown asymmetry'), 'gap-focus list present')
+  assert.ok(sweepCall.prompt.includes('config defaults flipped'), 'gap-focus list complete')
+  assert.ok(sweepCall.prompt.includes('at most 8'), 'candidate cap stated')
+  assert.ok(sweepCall.prompt.includes('return an empty list — do not pad'), 'no-padding instruction present')
+  assert.ok(sweepCall.prompt.includes('failure_scenario'), 'failure_scenario requirement stated')
+  assert.ok(sweepCall.prompt.includes('/repo/.worktrees/test-plan') && sweepCall.prompt.includes('docs/plans/test.md'), 'worktree and plan paths grounded')
+  assert.ok(sweepCall.schema && sweepCall.schema.properties.findings, 'sweep uses FINDINGS_SCHEMA')
+  return 'sweep prompt fully grounded; inline persona'
+})
+
+S('S44 exhausted verify budget: suggested sweep candidate lands in budgetDropped, no verifier', async () => {
+  const findings = Array.from({ length: 25 }, (_, i) => ({ title: `finding-${i + 1}`, file: `src/f${i + 1}.js`, line: 10, severity: 'suggested', detail: `detail ${i + 1}`, failure_scenario: `bad input ${i + 1} produces wrong output` }))
+  const d = makeDispatcher({
+    'review-correctness': () => ({ findings }),
+    sweep: () => ({ findings: [{ title: 'late sweep find', file: 'src/sweep.js', line: 7, severity: 'suggested', detail: 'd', failure_scenario: 'stale config default flips behavior on restart' }] }),
+    'fix-': () => ({ fixed: findings.map((f) => f.title), skipped: [], detail: 'ok' }),
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  assert.ok(!trace.calls.some((c) => c.label.startsWith('verify-sweep-')), 'budget-dropped sweep candidate spawns no verifier')
+  assert.deepEqual(result.reviewStats, { candidates: 26, verified: 25, refuted: 0, dupes: 0, budgetDropped: 1 }, 'sweep drop visible in reviewStats')
+  assert.ok(trace.logs.some((m) => m.includes('src/sweep.js:7 — late sweep find')), 'dropped sweep candidate identity logged')
+  assert.ok(!trace.calls.some((c) => c.label.startsWith('fix-') && c.prompt.includes('late sweep find')), 'dropped candidate never reaches a fixer')
+  return 'sweep respects the shared verify budget; drop is logged, never silent'
 })
 
 S('S29 verdict ladder: REFUTED filtered out, PLAUSIBLE reaches fixer with verdict-conditional policy', async () => {
