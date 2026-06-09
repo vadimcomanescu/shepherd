@@ -110,7 +110,7 @@ function makeDispatcher(overrides = {}, opts = {}) {
     if (label === 'final-validation') return VALIDATION
     if (label === 'proof' || label === 'proof-retest') return { status: 'pass', routes: [{ route: '/', result: 'pass', detail: 'renders' }], detail: 'ok' }
     if (label === 'proof-fix') return { committed: true, detail: 'fixed and committed' }
-    if (label === 'proof-revalidate') return { testsPass: true, lintPasses: true, detail: 'green after proof fix' }
+    if (label === 'proof-revalidate') return { ...VALIDATION, notes: 're-validated after proof fix' }
     if (label === 'ship') return { pushed: true, prUrl: 'https://github.com/o/r/pull/7', prCreated: true, planStatusFlipped: true, detail: 'shipped' }
     if (label === 'ci-residual') return 'recorded in PR body'
     if (label.startsWith('ci-watch-')) return { checks: 'green', fixedAndPushed: false, detail: 'all checks green' }
@@ -481,7 +481,37 @@ S('S20 CI exhaustion and CI fix-impossible both end with durable PR residuals', 
   assert.ifError(e.error)
   assert.equal(e.result.ci.residualRecorded, false, 'a dead recorder is not a recorded residual')
   assert.ok(e.trace.logs.some((m) => /recorder FAILED/.test(m)))
-  return 'exhausted after 3; unfixable stops at 1; ciRounds clamped at 10; dead recorder reported honestly'
+  // (f) ci-watch agent dies (null) -> 'unknown' state on a live PR still records a residual
+  const watcherDead = makeDispatcher({
+    'ci-watch-': () => null,
+  })
+  const f = await run(watcherDead)
+  assert.ifError(f.error)
+  assert.equal(f.result.ci.status, 'unknown')
+  assert.equal(f.result.ci.residualRecorded, true, 'unknown CI state on a live PR is still recorded')
+  assert.ok(f.trace.calls.find((c) => c.label === 'ci-residual').prompt.includes('UNVERIFIED'))
+  return 'exhausted after 3; unfixable stops at 1; clamped at 10; dead recorder + dead watcher both honest'
+})
+
+S('S28 CI never watched (budget floor before first watch) still records a live-PR residual', async () => {
+  // Single unit so the diff is small; budget tuned to survive through Ship but
+  // hit the floor at the first CI watch. Ship pushed + PR exists -> unwatched
+  // checks must not be silently dropped.
+  const d = makeDispatcher({ diffstat: () => ({ lines: 10 }) }, { units: { units: [UNITS().units[0]] } })
+  // Find the call index of the first ci-watch under unlimited budget, then set
+  // the budget so the floor trips exactly at it.
+  const probe = await run(d)
+  assert.ifError(probe.error)
+  const ciIdx = probe.trace.calls.findIndex((c) => c.label === 'ci-watch-1')
+  assert.ok(ciIdx > 0, 'ci-watch-1 dispatched under unlimited budget')
+  const { result, trace, error } = await run(d, { budgetTotal: 10000 * ciIdx + 25000 }) // remaining 25k <= 30k floor at the CI watch
+  assert.ifError(error)
+  assert.equal(result.ship.pushed, true, 'shipped before the floor')
+  assert.equal(result.ci.status, 'skipped', 'CI never watched')
+  assert.equal(result.ci.attempts, 0)
+  assert.equal(result.ci.residualRecorded, true, 'unwatched live PR is recorded, not silently dropped')
+  assert.ok(trace.calls.find((c) => c.label === 'ci-residual').prompt.includes('never watched'))
+  return 'budget floor before first CI watch -> durable PR note, no silent drop'
 })
 
 S('S21 proof: missing agent-browser skips cleanly; failing route gets one fix round', async () => {
@@ -498,7 +528,7 @@ S('S21 proof: missing agent-browser skips cleanly; failing route gets one fix ro
   // (b) initial proof fails one route -> fix agent + retest, retest result wins
   const failing = makeDispatcher({
     'proof-retest': () => ({ status: 'pass', routes: [{ route: '/users', result: 'pass', detail: 'renders after fix' }], detail: 'ok' }),
-    'proof-revalidate': () => ({ testsPass: true, lintPasses: true, detail: 'green after proof fix' }),
+    'proof-revalidate': () => ({ ...VALIDATION, requirements: [{ id: 'R1', verdict: 'partial', evidence: 'changed by proof fix' }], notes: 're-validated after proof fix' }),
     'proof-fix': () => ({ committed: true, detail: 'fixed and committed' }),
     proof: () => FAIL_PROOF,
   })
@@ -508,15 +538,18 @@ S('S21 proof: missing agent-browser skips cleanly; failing route gets one fix ro
   assert.ok(fix && fix.prompt.includes('/users') && fix.prompt.includes('500 on render'), 'fixer grounded with the failing route')
   assert.ok(b.trace.calls.some((c) => c.label === 'proof-retest'))
   assert.equal(b.result.proof.status, 'pass', 'retest verdict replaces the failed one')
-  // the fix commit landed after validation: gate facts must be re-established
+  // the fix commit landed after validation: the FULL trace must be re-grounded,
+  // not just tests+lint — the PR body must reflect the post-fix requirements.
   assert.ok(b.trace.calls.some((c) => c.label === 'proof-revalidate'), 'ship gate re-validated after proof fix')
   assert.match(b.result.validation.notes, /re-validated after proof fix/)
+  assert.equal(b.result.validation.requirements[0].verdict, 'partial', 'requirements trace re-grounded, not stale')
+  assert.ok(b.trace.calls.find((c) => c.label === 'ship').prompt.includes('R1: partial'), 'PR body carries the re-grounded requirement, not the pre-fix snapshot')
   // the successful fix round is compound material; an un-fixed one is not
   assert.ok(b.trace.calls.find((c) => c.label === 'compound').prompt.includes('browser-proof failures diagnosed and fixed'))
   // (c) retest STILL failing -> failure becomes a durable PR residual, not compound material
   const stillFailing = makeDispatcher({
     'proof-retest': () => ({ status: 'fail', routes: [{ route: '/users', result: 'fail', detail: 'still 500' }], detail: 'broken' }),
-    'proof-revalidate': () => ({ testsPass: true, lintPasses: true, detail: 'green after proof fix' }),
+    'proof-revalidate': () => ({ ...VALIDATION, notes: 're-validated after proof fix' }),
     'proof-fix': () => ({ committed: true, detail: 'fixed and committed' }),
     proof: () => FAIL_PROOF,
   })
@@ -536,7 +569,19 @@ S('S21 proof: missing agent-browser skips cleanly; failing route gets one fix ro
   assert.ok(!e.trace.calls.some((x) => x.label === 'proof-revalidate'), 'no re-gate without a fix commit')
   assert.equal(e.result.proof.status, 'fail', 'original honest failure kept')
   assert.ok(e.trace.logs.some((m) => /landed no commit/.test(m)))
-  return 'skip is honest; fail -> one grounded fix round -> retest; survivors become residuals; commit-less fix rounds change nothing'
+  // (e) re-validation agent dies after a fix commit -> fail closed on BOTH tests AND lint
+  const regateDead = makeDispatcher({
+    'proof-retest': () => ({ status: 'pass', routes: [{ route: '/users', result: 'pass', detail: 'ok' }], detail: 'ok' }),
+    'proof-fix': () => ({ committed: true, detail: 'fixed and committed' }),
+    'proof-revalidate': () => { throw new Error('revalidate died') },
+    proof: () => FAIL_PROOF,
+  })
+  const f = await run(regateDead)
+  assert.ifError(f.error)
+  assert.equal(f.result.validation.testsPass, false, 'fail closed on tests')
+  assert.equal(f.result.validation.lintPasses, false, 'fail closed on lint too — not left stale-green')
+  assert.equal(f.result.ship.pushed, false, 'dead re-validation blocks ship')
+  return 'skip is honest; full trace re-grounded after fix; dead re-validation fails closed on both gates'
 })
 
 S('S22 codex second-model reviewer: findings verified by claude refuter; ran=false logged', async () => {
@@ -607,7 +652,21 @@ S('S27 cross-reviewer dedup: same file+title from two reviewers is one finding, 
   assert.ok(fixes[0].prompt.includes('blocking'), 'merged finding keeps the higher severity')
   assert.ok(fixes[0].prompt.includes('correctness+codex') || fixes[0].prompt.includes('codex+correctness'), 'both personas credited')
   assert.deepEqual(result.residualReviewFindings, [], 'single fixed title accounts for the merged finding exactly once')
-  return 'fingerprint dedup prevents double-count and dropped residuals'
+  // Two DISTINCT problems sharing a title at different lines must NOT collapse —
+  // the second would otherwise be silently dropped before any fixer saw it.
+  const d2 = makeDispatcher({
+    'review-correctness': () => ({ findings: [
+      { title: 'unchecked race', file: 'src/u1.js', line: 4, severity: 'blocking', detail: 'race at line 4' },
+      { title: 'unchecked race', file: 'src/u1.js', line: 99, severity: 'blocking', detail: 'different race at line 99' },
+    ] }),
+    'fix-': () => ({ fixed: ['unchecked race'], skipped: [], detail: 'ok' }),
+  })
+  const r2 = await run(d2)
+  assert.ifError(r2.error)
+  assert.equal(r2.result.confirmedReviewFindings, 2, 'distinct lines stay two findings')
+  const fix2 = r2.trace.calls.find((c) => c.label.startsWith('fix-'))
+  assert.ok(fix2.prompt.includes('race at line 4') && fix2.prompt.includes('different race at line 99'), 'both distinct details reach the fixer')
+  return 'fingerprint dedup merges true dups, keeps distinct same-title findings'
 })
 
 S('S26 tail budget floor: waves finish but Proof/Ship/Compound are skipped with logs', async () => {

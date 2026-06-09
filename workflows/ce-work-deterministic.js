@@ -844,12 +844,14 @@ Where to look: the worktree at ${INTEGRATION_WT} (branch ${INTEGRATION_BRANCH}, 
     )).then((vs) => vs.filter(Boolean))
   },
 )
-// Cross-reviewer dedup (mirrors ce-code-review's fingerprint): the same
-// file+title from two reviewers is ONE issue — merge it, keep the higher
-// severity, credit both personas — so fixer accounting cannot double-count.
+// Cross-reviewer dedup (mirrors ce-code-review's fingerprint): the SAME issue
+// from two reviewers is ONE — merge it, keep the higher severity, credit both
+// personas. Fingerprint on file + line + title so two DISTINCT problems that
+// share a short title at different lines are not collapsed (which would silently
+// drop the second before any fixer sees it).
 const byFingerprint = new Map()
 for (const f of reviewed.filter(Boolean).flat()) {
-  const key = `${f.file}::${f.title}`
+  const key = `${f.file}::${f.line || 0}::${f.title}`
   const prev = byFingerprint.get(key)
   if (!prev) byFingerprint.set(key, f)
   else byFingerprint.set(key, { ...prev, severity: prev.severity === 'blocking' || f.severity === 'blocking' ? 'blocking' : prev.severity, persona: `${prev.persona}+${f.persona}` })
@@ -889,11 +891,26 @@ ${fs.map((f) => `- (${f.severity}, ${f.persona}) ${f.title}: ${f.detail}`).join(
 }
 
 // ============================================================
-// Phase: Validate — full suite, lint, requirements trace
+// Phase: Validate — full suite, lint, requirements trace. A function so the
+// Proof phase can re-run the WHOLE trace after a fix commit lands — re-grounding
+// only tests+lint would leave the requirements/deferred/post-deploy evidence in
+// the PR body asserting the pre-fix snapshot.
 // ============================================================
-phase('Validate')
-validation = await agent(
-  `Final validation in ${INTEGRATION_WT} (branch ${INTEGRATION_BRANCH}, base ${BASE}).
+const VALIDATION_SCHEMA = {
+  type: 'object',
+  properties: {
+    testsPass: { type: 'boolean' },
+    lintPasses: { type: 'boolean' },
+    requirements: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, verdict: { enum: ['satisfied', 'partial', 'unmet'] }, evidence: { type: 'string' } }, required: ['id', 'verdict', 'evidence'] } },
+    units: { type: 'array', items: { type: 'object', properties: { uid: { type: 'string' }, verdict: { enum: ['verified', 'partial', 'unmet'] }, evidence: { type: 'string' } }, required: ['uid', 'verdict', 'evidence'] } },
+    deferredQuestions: { type: 'array', items: { type: 'object', properties: { question: { type: 'string' }, resolved: { type: 'boolean' }, evidence: { type: 'string' } }, required: ['question', 'resolved', 'evidence'] } },
+    postDeployChecks: { type: 'array', items: { type: 'string' } },
+    notes: { type: 'string' },
+  },
+  required: ['testsPass', 'lintPasses', 'requirements', 'units', 'deferredQuestions', 'postDeployChecks', 'notes'],
+}
+const runValidation = (label, preamble) => agent(
+  `${preamble}Validation in ${INTEGRATION_WT} (branch ${INTEGRATION_BRANCH}, base ${BASE}).
 1. Run the full test suite: ${recon.testCommand}
 2. Run lint: ${recon.lintCommand}
 3. Requirements trace — for each requirement below, check the merged diff
@@ -910,24 +927,11 @@ ${(planDoc.deferredQuestions || []).map((q) => `   - ${q}`).join('\n') || '   (n
    things to monitor or manually validate after this deploys (metrics, logs,
    user flows). These go into the PR body verbatim.
 Do not fix anything; report honestly.`,
-  {
-    label: 'final-validation',
-    phase: 'Validate',
-    schema: {
-      type: 'object',
-      properties: {
-        testsPass: { type: 'boolean' },
-        lintPasses: { type: 'boolean' },
-        requirements: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, verdict: { enum: ['satisfied', 'partial', 'unmet'] }, evidence: { type: 'string' } }, required: ['id', 'verdict', 'evidence'] } },
-        units: { type: 'array', items: { type: 'object', properties: { uid: { type: 'string' }, verdict: { enum: ['verified', 'partial', 'unmet'] }, evidence: { type: 'string' } }, required: ['uid', 'verdict', 'evidence'] } },
-        deferredQuestions: { type: 'array', items: { type: 'object', properties: { question: { type: 'string' }, resolved: { type: 'boolean' }, evidence: { type: 'string' } }, required: ['question', 'resolved', 'evidence'] } },
-        postDeployChecks: { type: 'array', items: { type: 'string' } },
-        notes: { type: 'string' },
-      },
-      required: ['testsPass', 'lintPasses', 'requirements', 'units', 'deferredQuestions', 'postDeployChecks', 'notes'],
-    },
-  },
+  { label, phase: 'Validate', schema: VALIDATION_SCHEMA },
 )
+
+phase('Validate')
+validation = await runValidation('final-validation', 'Final ')
 
 // ============================================================
 // Tail phases — the rest of the lfg pipeline (browser proof, compound, ship,
@@ -988,21 +992,13 @@ ${failedRoutes.map((r) => `- ${r.route}: ${r.detail}`).join('\n')}`,
       if (retest) proof = retest
       proofFixSucceeded = !!retest && retest.routes.every((r) => r.result !== 'fail')
       log(`Proof after fix round: ${proof ? proof.status : 'unknown'} — one round only; remaining failures become PR residuals`)
-      // The fix round committed code AFTER final validation — re-establish the
-      // ship gate's facts instead of shipping on stale evidence. A single
-      // agent's in-prompt test run is not ground truth; fail closed if unsure.
-      const regate = await agent(
-        `In the worktree ${INTEGRATION_WT} (branch ${INTEGRATION_BRANCH}): a fix commit landed
-after final validation. Re-run the gate checks FRESH and report honestly:
-1. Full test suite: ${recon.testCommand}
-2. Lint: ${recon.lintCommand}
-Do not fix anything.`,
-        { label: 'proof-revalidate', phase: 'Proof', model: 'sonnet', schema: { type: 'object', properties: { testsPass: { type: 'boolean' }, lintPasses: { type: 'boolean' }, detail: { type: 'string' } }, required: ['testsPass', 'lintPasses', 'detail'] } },
-      )
+      // The fix round committed code AFTER final validation — re-run the FULL
+      // validation so every trace the PR body prints (tests, lint, requirements,
+      // deferred questions, post-deploy) reflects the post-fix tree, not stale
+      // pre-fix evidence. Fail closed if the re-validation agent dies.
+      const regate = await runValidation('proof-revalidate', 'Re-')
       if (validation) {
-        validation = regate
-          ? { ...validation, testsPass: regate.testsPass, lintPasses: regate.lintPasses, notes: `${validation.notes} [re-validated after proof fix: ${regate.detail}]` }
-          : { ...validation, testsPass: false, notes: `${validation.notes} [proof-fix re-validation agent failed — failing closed]` }
+        validation = regate || { ...validation, testsPass: false, lintPasses: false, notes: `${validation.notes} [proof-fix re-validation agent failed — failing closed]` }
       }
     } else {
       // No fix landed: retesting identical code invites a flaky pass that
@@ -1024,8 +1020,8 @@ if (COMPOUND_ENABLED) {
       ...Object.entries(results)
         .filter(([, r]) => r.status === 'merged' && r.executor && r.executor !== 'claude' && r.executor !== 'codex')
         .map(([id, r]) => `- task ${id} recovered via "${r.executor}": ${r.detail}`),
-      ...(fixedFindingCount > 0 ? [`- ${fixedFindingCount} review finding(s) survived adversarial verification and were fixed on the branch (see "fix: address review findings" commits)`] : []),
-      ...(proofFixSucceeded ? ['- browser-proof failures diagnosed and fixed (see "fix: repair browser-test failures" commit)'] : []),
+      ...(fixedFindingCount > 0 ? [`- ${fixedFindingCount} review finding(s) survived adversarial verification and were REPORTEDLY fixed (fixer self-report — confirm each against the actual "fix: address review findings" commits before documenting)`] : []),
+      ...(proofFixSucceeded ? ['- browser-proof failures diagnosed and fixed (see "fix: repair browser-test failures" commit; confirm against the diff)'] : []),
     ]
     compounded = await agent(
       `Compound the learnings from a finished implementation run.
@@ -1138,25 +1134,35 @@ Test command: ${recon.testCommand}`,
     if (!r.fixedAndPushed) { ciStop = 'no-fix-path'; break } // nothing was pushed — re-watching would loop on the same failure
     if (attempt === CI_ROUNDS) ciStop = 'rounds'
   }
-  if (ci.status === 'red') {
-    const stopReason = ciStop === 'budget' ? 'the token budget floor was reached'
-      : ciStop === 'no-fix-path' ? 'the failure has no fix path (e.g. flaky or external)'
-      : `the iteration cap (${CI_ROUNDS}) was reached`
+  // Record a durable PR residual for ANY terminal state that did not confirm
+  // green — red (loop exhausted/no fix path), unknown (watcher died), or
+  // skipped (budget floor hit before the first watch). Only confirmed green or
+  // a repo with no CI ('no-ci') needs no note. Leaving an unverified live PR
+  // unannotated would silently drop the autopilot contract.
+  const ciSituation = ci.status === 'red'
+    ? `checks were RED on the last watch; the autofix loop stopped because ${
+        ciStop === 'budget' ? 'the token budget floor was reached'
+        : ciStop === 'no-fix-path' ? 'the failure has no fix path (e.g. flaky or external)'
+        : `the iteration cap (${CI_ROUNDS}) was reached`}.${
+        ciLastFixPushed ? ' NOTE: a fix WAS pushed after that last watch and never re-watched — state that checks may yet turn green.' : ''}`
+    : ci.status === 'unknown' ? 'the CI-watch agent died before checks could be confirmed — the PR\'s check state is UNVERIFIED.'
+    : ci.status === 'skipped' ? 'CI was never watched — the token budget floor was reached before the first watch. The PR\'s checks are running unverified.'
+    : ''
+  if (ciSituation) {
     const recorded = await agent(
-      `A CI autofix loop stopped because ${stopReason}; checks were RED on the last
-watch of PR ${ship.prUrl}: ${ci.detail}
-${ciLastFixPushed ? 'NOTE: a fix WAS pushed after that last watch and never re-watched — state in the section that checks may yet turn green.' : ''}
+      `PR ${ship.prUrl} needs a durable note: ${ciSituation}
+Last detail: ${ci.detail || 'none'}
 Make this durable per the autopilot contract: from ${INTEGRATION_WT}, fetch the
 current PR body (gh pr view --json body), append or replace a
-"## CI Failures Unresolved" section listing each failing check with its link and
-failure summary, write the new body to a temp file, and apply it with
-gh pr edit --body-file. Do NOT change code.`,
+"## CI Status Unresolved" section stating the situation above and listing any
+failing checks with their links. Write the new body to a temp file and apply it
+with gh pr edit --body-file. Do NOT change code.`,
       { label: 'ci-residual', phase: 'CI', model: 'sonnet' },
     )
     ci.residualRecorded = !!recorded
     log(recorded
-      ? `CI still red (${stopReason}) — recorded in the PR body, not looping further`
-      : 'CI residual recorder FAILED — the PR body does NOT carry the unresolved failures')
+      ? `CI unresolved (${ci.status}) — recorded in the PR body, not looping further`
+      : 'CI residual recorder FAILED — the PR body does NOT carry the unresolved CI status')
   }
 } else if (ship.pushed) {
   ci.detail = 'branch pushed but no PR — nothing to watch'

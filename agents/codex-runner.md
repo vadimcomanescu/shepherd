@@ -55,7 +55,14 @@ Protocol:
      — <summary>"), return "partial" with codex's issues.
    - status "completed" -> verify the worktree actually changed (git status),
      commit with a conventional message derived from the task title, return
-     "completed". Carry verification_summary through verbatim.
+     "completed". Carry codex's verification_summary through verbatim.
+
+Your own structured return uses the orchestrator's CAMEL-CASE field names, which
+differ from codex's snake_case schema — map them, do not pass codex's keys
+through: codex `files_modified` -> your `filesModified`, codex
+`verification_summary` -> your `verificationSummary`. Also return `branch` and
+`worktreePath` from your brief's coordinates. Passing the snake_case keys through
+would drop those fields and break merge attribution.
 
 Never report "completed" yourself unless codex reported completed AND a commit
 now exists on the branch.
