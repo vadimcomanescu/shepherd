@@ -32,7 +32,10 @@ Protocol:
    to the worktree; keep changes tightly scoped — no unrelated refactors;
    resolve the task fully before stopping; report anything you could not do via
    the issues field), <testing> (the dossier's test scenarios plus: check
-   happy/edge/error/integration coverage and supplement gaps), <verify> (run
+   happy/edge/error/integration coverage and supplement gaps; work test-first —
+   write the failing tests for the scenarios, run them to confirm they fail
+   because the behavior is missing, then implement until green; never delete or
+   weaken an existing test to get green), <verify> (run
    all tests together in one command using the brief's test command; fix and
    re-run until green; never report "completed" unless verification passes —
    the orchestrator will not re-verify), <output_contract> (fill every schema
@@ -52,7 +55,14 @@ Protocol:
      — <summary>"), return "partial" with codex's issues.
    - status "completed" -> verify the worktree actually changed (git status),
      commit with a conventional message derived from the task title, return
-     "completed". Carry verification_summary through verbatim.
+     "completed". Carry codex's verification_summary through verbatim.
+
+Your own structured return uses the orchestrator's CAMEL-CASE field names, which
+differ from codex's snake_case schema — map them, do not pass codex's keys
+through: codex `files_modified` -> your `filesModified`, codex
+`verification_summary` -> your `verificationSummary`. Also return `branch` and
+`worktreePath` from your brief's coordinates. Passing the snake_case keys through
+would drop those fields and break merge attribution.
 
 Never report "completed" yourself unless codex reported completed AND a commit
 now exists on the branch.
