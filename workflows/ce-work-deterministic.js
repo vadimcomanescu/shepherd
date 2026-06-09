@@ -887,46 +887,90 @@ otherwise PLAUSIBLE, the default for realistic-but-unproven findings.`,
   refutedCount++              // a dead verifier counts as refuted — fail if uncertain
   return null
 })
+// Shared by the reviewer pipeline and the post-verification sweep so both
+// finding sources face the exact same dedup, budget, and verification path.
+const processFindings = (findings, key) => {
+  const toVerify = []
+  for (const f of findings.filter((x) => x.severity !== 'nit')) {
+    candidates++
+    const match = kept.find((k) => sameDefect(k, f))
+    if (match) {
+      dupes++
+      const escalates = f.severity === 'blocking' && match.severity !== 'blocking'
+      if (escalates) match.severity = 'blocking'
+      match.persona = `${match.persona}+${key}`
+      // A budget-dropped (never verified) entry escalated to blocking gets its
+      // verifier NOW — blocking findings always get one — and leaves the
+      // budgetDropped bucket so candidates === verified + refuted + dupes + budgetDropped holds.
+      if (match.dropped && escalates) {
+        match.dropped = false
+        budgetDropped--
+        toVerify.push(() => spawnVerifier(match, key))
+      }
+      continue
+    }
+    const entry = { ...f, persona: key }
+    kept.push(entry)
+    if (f.severity === 'blocking') {
+      toVerify.push(() => spawnVerifier(entry, key)) // blocking always verifies; no slot consumed
+    } else if (verifySlots <= 0) {
+      entry.dropped = true
+      budgetDropped++
+      log(`Verify cap (${MAX_VERIFY}) reached — dropping unverified suggested finding ${f.file}:${f.line || 0} — ${f.title}`)
+    } else {
+      verifySlots--
+      toVerify.push(() => spawnVerifier(entry, key))
+    }
+  }
+  return toVerify
+}
 await pipeline(
   reviewers,
   (rv) => rv.spawn(),
   (rev, rv) => {
     if (!rev || !rev.findings.length) return []
-    const toVerify = []
-    for (const f of rev.findings.filter((x) => x.severity !== 'nit')) {
-      candidates++
-      const match = kept.find((k) => sameDefect(k, f))
-      if (match) {
-        dupes++
-        const escalates = f.severity === 'blocking' && match.severity !== 'blocking'
-        if (escalates) match.severity = 'blocking'
-        match.persona = `${match.persona}+${rv.key}`
-        // A budget-dropped (never verified) entry escalated to blocking gets its
-        // verifier NOW — blocking findings always get one — and leaves the
-        // budgetDropped bucket so candidates === verified + refuted + dupes + budgetDropped holds.
-        if (match.dropped && escalates) {
-          match.dropped = false
-          budgetDropped--
-          toVerify.push(() => spawnVerifier(match, rv.key))
-        }
-        continue
-      }
-      const entry = { ...f, persona: rv.key }
-      kept.push(entry)
-      if (f.severity === 'blocking') {
-        toVerify.push(() => spawnVerifier(entry, rv.key)) // blocking always verifies; no slot consumed
-      } else if (verifySlots <= 0) {
-        entry.dropped = true
-        budgetDropped++
-        log(`Verify cap (${MAX_VERIFY}) reached — dropping unverified suggested finding ${f.file}:${f.line || 0} — ${f.title}`)
-      } else {
-        verifySlots--
-        toVerify.push(() => spawnVerifier(entry, rv.key))
-      }
-    }
-    return parallel(toVerify)
+    return parallel(processFindings(rev.findings, rv.key))
   },
 )
+
+// Gap-hunting sweep — a sequential post-pipeline step, NOT a reviewer pipeline
+// stage: it needs the COMPLETE verified set so it hunts only what the first
+// pass missed. Gated on diff size like simplify; the skip is logged because
+// the gate bounds coverage.
+if (changedLines < 50) {
+  log(`Sweep skipped: diff is ${changedLines} lines (<50)`)
+} else {
+  const verifiedLines = kept.filter((e) => e.verdict).map((e) => `${e.file}:${e.line || 0} — ${e.title}`)
+  const sweep = await agent(
+    `Hunt for gaps a first review pass MISSED in the changes on branch ${INTEGRATION_BRANCH} relative to ${BASE}.
+Work inside the worktree at ${INTEGRATION_WT}; diff with: git diff origin/${BASE}...HEAD
+(fall back to ${BASE}). The work implements the plan at ${PLAN}.
+
+These findings are already verified — do NOT re-derive or re-confirm these:
+${verifiedLines.join('\n') || '(none — the first pass confirmed nothing)'}
+
+Gap focus: moved/extracted code that dropped a guard or anchor; second-tier footguns (dataclass default evaluated once, hash() non-determinism, lock-scope shrink, predicate methods with side effects); setup/teardown asymmetry in tests; config defaults flipped.
+
+Report at most 8 candidates, each with file, line where possible, severity
+(blocking | suggested | nit), and enough detail that a fixer who has not seen
+your reasoning can act.
+Each finding must include a \`failure_scenario\`: the concrete inputs or state that produce the wrong outcome; for cleanup-style findings, state the concrete cost instead of a crash.
+If nothing new, return an empty list — do not pad.`,
+    { label: 'sweep', phase: 'Quality', schema: FINDINGS_SCHEMA },
+  )
+  if (!sweep) {
+    log('Sweep agent failed — no gap candidates collected')
+  } else {
+    let sweepFindings = sweep.findings
+    if (sweepFindings.length > 8) {
+      log(`Sweep returned ${sweepFindings.length} candidates — keeping the first 8, dropping ${sweepFindings.slice(8).map((f) => `${f.file}:${f.line || 0} — ${f.title}`).join('; ')}`)
+      sweepFindings = sweepFindings.slice(0, 8)
+    }
+    const keptBefore = kept.length
+    const survivors = (await parallel(processFindings(sweepFindings, 'sweep'))).filter(Boolean)
+    log(`Sweep: ${kept.length - keptBefore} new candidate(s), ${survivors.length} survived verification`)
+  }
+}
 // Confirmed = kept entries that were verified and not refuted. Budget-dropped
 // entries are NOT confirmed, NOT fixed, NOT residuals — logs and stats only.
 const confirmed = kept.filter((e) => e.verdict)
