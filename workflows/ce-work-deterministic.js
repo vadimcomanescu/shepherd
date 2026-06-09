@@ -160,8 +160,9 @@ const FINDINGS_SCHEMA = {
           line: { type: 'number' },
           severity: { enum: ['blocking', 'suggested', 'nit'] },
           detail: { type: 'string' },
+          failure_scenario: { type: 'string', description: 'concrete inputs/state -> wrong outcome; for cleanup-style findings, the concrete cost' },
         },
-        required: ['title', 'file', 'severity', 'detail'],
+        required: ['title', 'file', 'severity', 'detail', 'failure_scenario'],
       },
     },
   },
@@ -789,7 +790,9 @@ Work inside the worktree at ${INTEGRATION_WT}; diff with: git diff origin/${BASE
 Read the new and changed tests before the implementation — they reveal intended
 coverage and where it falls short.
 Report findings with file, line where possible, severity (blocking | suggested | nit),
-and enough detail that a fixer who has not seen your reasoning can act.`
+and enough detail that a fixer who has not seen your reasoning can act.
+Each finding must include a \`failure_scenario\`: the concrete inputs or state that produce the wrong outcome; for cleanup-style findings, state the concrete cost instead of a crash.
+Pass every candidate with a nameable failure scenario through — do not silently drop half-believed candidates; an independent verifier judges them next.`
 
 // Reviewer roster = persona reviewers + (when codex is usable) the Codex CLI as
 // a second-model reviewer: a different model family catches what same-family
@@ -837,6 +840,7 @@ const reviewed = await pipeline(
       agent(
         `Finding (${f.severity}) ${f.file}${f.line ? ':' + f.line : ''} — ${f.title}
 ${f.detail}
+Failure scenario: ${f.failure_scenario}
 
 Where to look: the worktree at ${INTEGRATION_WT} (branch ${INTEGRATION_BRANCH}, base ${BASE}).
 Read the actual code there; never take the finding's word for anything.

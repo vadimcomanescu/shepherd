@@ -23,15 +23,20 @@ Protocol:
 2. Write <scratch>/schema.json exactly (codex enforces strict structured
    output: EVERY key in properties must appear in required, so line is required
    — the prompt tells codex to use 0 when no specific line applies):
-   {"type":"object","properties":{"findings":{"type":"array","items":{"type":"object","properties":{"title":{"type":"string"},"file":{"type":"string"},"line":{"type":"number"},"severity":{"enum":["blocking","suggested","nit"]},"detail":{"type":"string"}},"required":["title","file","line","severity","detail"],"additionalProperties":false}}},"required":["findings"],"additionalProperties":false}
+   {"type":"object","properties":{"findings":{"type":"array","items":{"type":"object","properties":{"title":{"type":"string"},"file":{"type":"string"},"line":{"type":"number"},"severity":{"enum":["blocking","suggested","nit"]},"detail":{"type":"string"},"failure_scenario":{"type":"string"}},"required":["title","file","line","severity","detail","failure_scenario"],"additionalProperties":false}}},"required":["findings"],"additionalProperties":false}
 3. Write <scratch>/prompt.md: instruct a review of the diff between the brief's
    base and HEAD in the worktree (git diff <base>...HEAD), reading surrounding
    code as needed, hunting specifically for logic errors, broken edge cases,
    contract violations, and risky changes a reviewer from the authoring model
    family might rationalize away. Findings must carry file, line (0 when
-   no specific line applies), severity (blocking | suggested | nit), and enough
-   detail that a fixer who has not seen the reasoning can act. Style nits without consequence
-   are not findings. The review is READ-ONLY: no edits, no commits.
+   no specific line applies), severity (blocking | suggested | nit),
+   failure_scenario (the concrete inputs/state that produce the wrong outcome;
+   for cleanup-style findings, state the concrete cost instead of a crash), and
+   enough detail that a fixer who has not seen the reasoning can act. Pass every
+   candidate with a nameable failure scenario through — do not silently drop
+   half-believed candidates; an independent verifier judges them next. Style
+   nits without consequence are not findings. The review is READ-ONLY: no edits,
+   no commits.
 4. Launch codex with run_in_background=true set on the Bash tool (NOT a shell
    &), from INSIDE the worktree directory, using the brief's launch command
    with the literal <scratch> path substituted — the sandbox flag must be
