@@ -32,7 +32,10 @@ Protocol:
    to the worktree; keep changes tightly scoped — no unrelated refactors;
    resolve the task fully before stopping; report anything you could not do via
    the issues field), <testing> (the dossier's test scenarios plus: check
-   happy/edge/error/integration coverage and supplement gaps), <verify> (run
+   happy/edge/error/integration coverage and supplement gaps; work test-first —
+   write the failing tests for the scenarios, run them to confirm they fail
+   because the behavior is missing, then implement until green; never delete or
+   weaken an existing test to get green), <verify> (run
    all tests together in one command using the brief's test command; fix and
    re-run until green; never report "completed" unless verification passes —
    the orchestrator will not re-verify), <output_contract> (fill every schema

@@ -70,7 +70,9 @@ const UNITS = (overrides = {}) => ({
 const RECON = (overrides = {}) => ({
   repoRoot: '/repo', defaultBranch: 'main', testCommand: 'npm test', lintCommand: 'npm run lint',
   conventionsDigest: 'conventions', codexAvailable: true, codexPath: '/usr/local/bin/codex',
-  effortFloor: '', insideCodexSandbox: false, baselineClean: true, notes: [],
+  effortFloor: '', insideCodexSandbox: false, baselineClean: true,
+  ceSkillsRoot: '/plugins/compound-engineering/skills', agentBrowserAvailable: true, ghAvailable: true,
+  notes: [],
   ...overrides,
 })
 const EXEC_OK = (id) => ({
@@ -78,7 +80,7 @@ const EXEC_OK = (id) => ({
   filesModified: [`src/${id.toLowerCase()}.js`], verificationSummary: `tests ok for ${id}`, issues: [],
 })
 const SPLIT_ONE = (uid) => ({ tasks: [{ id: uid, uid, title: `${uid} work`, dependsOn: [], dossier: `dossier ${uid}`, files: [`src/${uid.toLowerCase()}.js`], risk: 'low', ambiguity: 'none', estDiffLines: 100, }] })
-const VALIDATION = { testsPass: true, lintPasses: true, requirements: [{ id: 'R1', verdict: 'satisfied', evidence: 'e' }], units: [], notes: 'ok' }
+const VALIDATION = { testsPass: true, lintPasses: true, requirements: [{ id: 'R1', verdict: 'satisfied', evidence: 'e' }], units: [], deferredQuestions: [], postDeployChecks: ['watch error rates'], notes: 'ok' }
 
 // default dispatcher: label-prefix routing; overrides win
 function makeDispatcher(overrides = {}, opts = {}) {
@@ -100,10 +102,19 @@ function makeDispatcher(overrides = {}, opts = {}) {
     if (label.startsWith('triage-')) return { verdict: 'continue', reason: 'local', evidence: [] }
     if (label === 'diffstat') return { lines: 120 }
     if (label === 'simplify') return 'nothing to simplify'
+    if (label.startsWith('simplify-wave-')) return 'nothing to simplify'
+    if (label === 'review-codex') return { ran: true, findings: [], detail: 'clean' }
     if (label.startsWith('review-')) return { findings: [] }
     if (label.startsWith('verify-')) return { refuted: false, reason: 'confirmed' }
-    if (label.startsWith('fix-')) return 'fixed'
+    if (label.startsWith('fix-')) return { fixed: [], skipped: [], detail: 'fixed' }
     if (label === 'final-validation') return VALIDATION
+    if (label === 'proof' || label === 'proof-retest') return { status: 'pass', routes: [{ route: '/', result: 'pass', detail: 'renders' }], detail: 'ok' }
+    if (label === 'proof-fix') return { committed: true, detail: 'fixed and committed' }
+    if (label === 'proof-revalidate') return { testsPass: true, lintPasses: true, detail: 'green after proof fix' }
+    if (label === 'ship') return { pushed: true, prUrl: 'https://github.com/o/r/pull/7', prCreated: true, planStatusFlipped: true, detail: 'shipped' }
+    if (label === 'ci-residual') return 'recorded in PR body'
+    if (label.startsWith('ci-watch-')) return { checks: 'green', fixedAndPushed: false, detail: 'all checks green' }
+    if (label === 'compound') return { documented: false, paths: [], detail: 'nothing qualifying' }
     throw Object.assign(new Error(`UNHANDLED LABEL: ${label}`), { __hardThrow: true })
   }
 }
@@ -146,7 +157,21 @@ S('S1 happy path: 4 units, mixed routing, all merged + validated', async () => {
   assert.equal(types['exec-U1-codex'], 'codex-runner')
   assert.equal(types['exec-U2-claude'], 'unit-executor')
   assert.equal(types['review-migrations'], 'compound-engineering:ce-data-migration-reviewer')
-  return `4/4 merged, ${trace.calls.length} agent calls, phases: ${[...new Set(trace.phases)].join('>')}`
+  assert.equal(types['review-standards'], 'compound-engineering:ce-project-standards-reviewer')
+  assert.equal(types['review-adversarial'], 'compound-engineering:ce-adversarial-reviewer', 'adversarial persona on (120 lines >= 50)')
+  assert.equal(types['review-codex'], 'codex-reviewer', 'codex second-model reviewer dispatched')
+  assert.equal(types['ci-watch-1'], 'ci-watcher')
+  // full lfg tail ran
+  assert.equal(result.proof.status, 'pass')
+  assert.equal(result.ship.pushed, true)
+  assert.match(result.ship.prUrl, /pull\/7/)
+  assert.equal(result.ci.status, 'green')
+  assert.equal(result.compound.documented, false)
+  assert.deepEqual(result.residualReviewFindings, [])
+  const shipCall = trace.calls.find((c) => c.label === 'ship')
+  assert.ok(shipCall.prompt.includes('Post-Deploy Monitoring & Validation') && shipCall.prompt.includes('watch error rates'), 'PR body carries post-deploy plan')
+  assert.ok(shipCall.prompt.includes('status: completed'), 'ship flips plan status')
+  return `4/4 merged + shipped, ${trace.calls.length} agent calls, phases: ${[...new Set(trace.phases)].join('>')}`
 })
 
 S('S2 splitter dies for U1: U2,U3 transitively skipped, U4 still runs', async () => {
@@ -175,6 +200,10 @@ S('S3 codex circuit breaker: 3+ failures in one wave trip it; fallbacks still me
   }
   assert.equal(result.codexCircuitBreakerTripped, true)
   assert.ok(trace.calls.every((c) => !c.label.includes('claude-fallback') || c.prompt.includes('worktree remove --force')), 'fallback prompts carry stale cleanup')
+  // single wave = final wave: 4 merges must NOT trigger simplify-as-you-go
+  assert.ok(!trace.calls.some((c) => c.label.startsWith('simplify-wave-')), 'no mid-run simplify after the final wave')
+  // tripped breaker also removes the codex second-model reviewer
+  assert.ok(!trace.calls.some((c) => c.label === 'review-codex'), 'codex reviewer dropped when breaker tripped')
   return 'breaker tripped, all 4 recovered via claude fallback with cleanup preamble'
 })
 
@@ -239,18 +268,23 @@ S('S7 plan-invalidating discovery halts after wave 1; quality/validate skipped',
   assert.equal(result.validation, null)
   assert.equal(result.confirmedReviewFindings, 0)
   assert.ok(!trace.calls.some((c) => c.label === 'diffstat'), 'quality phase skipped')
-  return 'stop-loss halt: partial work kept, hands back to human'
+  assert.ok(!trace.calls.some((c) => ['proof', 'ship', 'compound'].includes(c.label) || c.label.startsWith('ci-')), 'tail phases skipped on halt')
+  assert.equal(result.ship.pushed, false)
+  assert.match(result.ship.detail, /halted/)
+  return 'stop-loss halt: partial work kept, tail skipped, hands back to human'
 })
 
 S('S8 budget floor: wave 2 skipped cleanly, budgetHalted set', async () => {
   const d = makeDispatcher({}, { units: { units: UNITS().units.slice(0, 2) } }) // U1, U2(dep U1)
-  const { result, error } = await run(d, { budgetTotal: 100000 }) // 10k/call; floor hits before wave 2
+  // 10k/call: 7 calls before wave 1 (remaining 40k > floor), 9 before wave 2 (20k <= floor)
+  const { result, error } = await run(d, { budgetTotal: 110000 })
   assert.ifError(error)
   assert.equal(result.tasks.U1.status, 'merged')
   assert.equal(result.tasks.U2.status, 'skipped')
   assert.match(result.tasks.U2.detail, /budget exhausted/)
   assert.equal(result.budgetHalted, true)
   assert.equal(result.validation, null)
+  assert.equal(result.ship.pushed, false, 'budget halt does not ship')
   return 'clean partial result instead of mid-wave throws'
 })
 
@@ -266,13 +300,14 @@ S('S9 intra-unit dependency cycle throws a named error', async () => {
   return `throws: "${error.message}"`
 })
 
-S('S10 review findings: nit dropped, blocking verified -> sequential fix', async () => {
+S('S10 review findings: nit dropped, blocking verified -> sequential fix, no residual', async () => {
   const d = makeDispatcher({
     'review-correctness': () => ({ findings: [
       { title: 'off-by-one', file: 'src/u1.js', line: 10, severity: 'blocking', detail: 'd' },
       { title: 'naming', file: 'src/u1.js', line: 12, severity: 'nit', detail: 'd' },
     ] }),
     'verify-correctness': () => ({ refuted: false, reason: 'real' }),
+    'fix-': () => ({ fixed: ['off-by-one'], skipped: [], detail: 'ok' }),
   })
   const { result, trace, error } = await run(d)
   assert.ifError(error)
@@ -280,7 +315,8 @@ S('S10 review findings: nit dropped, blocking verified -> sequential fix', async
   const fixes = trace.calls.filter((c) => c.label.startsWith('fix-'))
   assert.equal(fixes.length, 1)
   assert.ok(fixes[0].prompt.includes('off-by-one') && !fixes[0].prompt.includes('naming'))
-  return '1 confirmed finding fixed; nit never verified'
+  assert.deepEqual(result.residualReviewFindings, [], 'fixed finding leaves no residual')
+  return '1 confirmed finding fixed; nit never verified; no residuals'
 })
 
 S('S11 determinism: identical inputs -> identical agent-call label sequence', async () => {
@@ -314,18 +350,17 @@ S('S13 codex unavailable: router picks codex but coordinator overrides to claude
   return 'override applied to every task'
 })
 
-S('S14 grounding: executor/runner prompts contain no unresolved placeholders', async () => {
+S('S14 grounding: NO dispatched prompt contains unresolved placeholders or "undefined"', async () => {
   const d = makeDispatcher({}, { routeExecutor: (id) => (id === 'U1' ? 'codex' : 'claude') })
   const { trace, error } = await run(d)
   assert.ifError(error)
-  const work = trace.calls.filter((c) => /^(exec|finish|redo|merge)-/.test(c.label))
-  for (const c of work) {
+  for (const c of trace.calls) {
     assert.ok(!/<TASK_ID>|<BRANCH>|\$\{|undefined/.test(c.prompt), `unresolved placeholder in ${c.label}:\n${(c.prompt.match(/.{0,40}(<TASK_ID>|<BRANCH>|\$\{|undefined).{0,40}/) || [])[0]}`)
   }
   const codexRun = trace.calls.find((c) => c.label === 'exec-U1-codex')
   assert.ok(codexRun.prompt.includes('--dangerously-bypass-approvals-and-sandbox'), 'yolo sandbox flag present')
   assert.ok(codexRun.prompt.includes(`model_reasoning_effort="medium"`), 'effort flag rendered')
-  return `${work.length} work prompts clean of placeholders/undefined`
+  return `all ${trace.calls.length} prompts clean of placeholders/undefined`
 })
 
 S('S15 effort floor: config floor high lifts a medium pick to high', async () => {
@@ -363,6 +398,248 @@ S('S17 triage agent itself dies: fail-open, execution continues', async () => {
   assert.equal(result.tasks.U2.status, 'merged', 'run continued despite dead triage')
   assert.equal(result.planInvalidation, null)
   return 'dead triage does not halt the run'
+})
+
+S('S18 ship gate: failing tests OR failing lint blocks push; CI and compound never run', async () => {
+  const d = makeDispatcher({
+    'final-validation': () => ({ ...VALIDATION, testsPass: false }),
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  assert.equal(result.ship.pushed, false)
+  assert.match(result.ship.detail, /gate failed: tests failing/)
+  assert.ok(!trace.calls.some((c) => c.label === 'ship'), 'ship agent never dispatched')
+  assert.ok(!trace.calls.some((c) => c.label === 'proof'), 'red validation also skips browser proof')
+  assert.equal(result.proof.status, 'skipped')
+  assert.match(result.proof.detail, /validation gate red/)
+  assert.ok(!trace.calls.some((c) => c.label.startsWith('ci-')), 'CI watch never runs without a PR')
+  assert.ok(!trace.calls.some((c) => c.label === 'compound'), 'nothing verified, nothing compounded')
+  assert.ok(trace.logs.some((m) => /Compound skipped: no verified work/.test(m)))
+  // lint half of the gate: green tests, red lint must also block (and compound, gated on tests only, may still run)
+  const lintRed = makeDispatcher({ 'final-validation': () => ({ ...VALIDATION, lintPasses: false }) })
+  const b = await run(lintRed)
+  assert.ifError(b.error)
+  assert.equal(b.result.ship.pushed, false)
+  assert.match(b.result.ship.detail, /gate failed: lint failing/)
+  assert.ok(!b.trace.calls.some((c) => c.label === 'ship'), 'lint-red branch never shipped')
+  assert.ok(!b.trace.calls.some((c) => c.label === 'proof'), 'lint-red also skips browser proof')
+  // compound may still document verified-tests work, but must NOT push an unshipped branch
+  const compoundB = b.trace.calls.find((c) => c.label === 'compound')
+  assert.ok(compoundB && compoundB.prompt.includes('Do NOT push'), 'compound never pushes — Ship owns pushing')
+  return 'red tests and red lint each keep the branch local'
+})
+
+S('S19 CI loop: red+fixed, red+fixed, green on third watch', async () => {
+  let watch = 0
+  const d = makeDispatcher({
+    'ci-watch-': () => {
+      watch++
+      return watch < 3 ? { checks: 'red', fixedAndPushed: true, detail: `failure ${watch} repaired` } : { checks: 'green', fixedAndPushed: false, detail: 'all green' }
+    },
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  assert.equal(result.ci.status, 'green')
+  assert.equal(result.ci.attempts, 3)
+  assert.equal(result.ci.residualRecorded, false)
+  assert.ok(!trace.calls.some((c) => c.label === 'ci-residual'), 'no residual section when CI ends green')
+  return 'bounded loop converges on green at attempt 3'
+})
+
+S('S20 CI exhaustion and CI fix-impossible both end with durable PR residuals', async () => {
+  // (a) 3 attempts, all red but each pushed a fix -> exhausted -> residual recorded
+  const exhausted = makeDispatcher({
+    'ci-watch-': () => ({ checks: 'red', fixedAndPushed: true, detail: 'still failing' }),
+  })
+  const a = await run(exhausted)
+  assert.ifError(a.error)
+  assert.equal(a.result.ci.status, 'red')
+  assert.equal(a.result.ci.residualRecorded, true)
+  assert.equal(a.result.ci.attempts, 3, 'capped at CI_ROUNDS')
+  const residualCall = a.trace.calls.find((c) => c.label === 'ci-residual')
+  assert.ok(residualCall && residualCall.prompt.includes('a fix WAS pushed after that last watch'), 'unwatched final push stated honestly')
+  // (b) red with nothing pushed (e.g. flaky, no fix path) -> stop after 1, residual recorded
+  const stuck = makeDispatcher({
+    'ci-watch-': () => ({ checks: 'red', fixedAndPushed: false, detail: 'flaky, no fix path' }),
+  })
+  const b = await run(stuck)
+  assert.ifError(b.error)
+  assert.equal(b.result.ci.attempts, 1, 'no pointless re-watch when nothing changed')
+  assert.equal(b.result.ci.status, 'red')
+  assert.equal(b.result.ci.residualRecorded, true)
+  assert.ok(b.trace.calls.find((c) => c.label === 'ci-residual').prompt.includes('no fix path'))
+  // (c) ciRounds arg is clamped: 99 cannot unbound the loop (same stateless dispatcher)
+  const c = await run(exhausted, { args: { ...ARGS, ciRounds: 99 } })
+  assert.ifError(c.error)
+  assert.equal(c.result.ci.attempts, 10, 'hard ceiling of 10 enforced')
+  // (d) the residual recorder itself dies -> reported as NOT recorded, never claimed durable
+  const recorderDead = makeDispatcher({
+    'ci-watch-': () => ({ checks: 'red', fixedAndPushed: false, detail: 'flaky' }),
+    'ci-residual': () => { throw new Error('recorder died') },
+  })
+  const e = await run(recorderDead)
+  assert.ifError(e.error)
+  assert.equal(e.result.ci.residualRecorded, false, 'a dead recorder is not a recorded residual')
+  assert.ok(e.trace.logs.some((m) => /recorder FAILED/.test(m)))
+  return 'exhausted after 3; unfixable stops at 1; ciRounds clamped at 10; dead recorder reported honestly'
+})
+
+S('S21 proof: missing agent-browser skips cleanly; failing route gets one fix round', async () => {
+  const FAIL_PROOF = { status: 'fail', routes: [{ route: '/users', result: 'fail', detail: '500 on render' }], detail: 'broken' }
+  // (a) no agent-browser -> proof never dispatched, ship still happens and says so
+  const noBrowser = makeDispatcher({}, { recon: { agentBrowserAvailable: false } })
+  const a = await run(noBrowser)
+  assert.ifError(a.error)
+  assert.equal(a.result.proof.status, 'skipped')
+  assert.match(a.result.proof.detail, /agent-browser not installed/)
+  assert.ok(!a.trace.calls.some((c) => c.label === 'proof'))
+  assert.ok(a.trace.logs.some((m) => /Proof skipped: agent-browser/.test(m)))
+  assert.ok(a.trace.calls.find((c) => c.label === 'ship').prompt.includes('skipped (agent-browser not installed)'))
+  // (b) initial proof fails one route -> fix agent + retest, retest result wins
+  const failing = makeDispatcher({
+    'proof-retest': () => ({ status: 'pass', routes: [{ route: '/users', result: 'pass', detail: 'renders after fix' }], detail: 'ok' }),
+    'proof-revalidate': () => ({ testsPass: true, lintPasses: true, detail: 'green after proof fix' }),
+    'proof-fix': () => ({ committed: true, detail: 'fixed and committed' }),
+    proof: () => FAIL_PROOF,
+  })
+  const b = await run(failing)
+  assert.ifError(b.error)
+  const fix = b.trace.calls.find((c) => c.label === 'proof-fix')
+  assert.ok(fix && fix.prompt.includes('/users') && fix.prompt.includes('500 on render'), 'fixer grounded with the failing route')
+  assert.ok(b.trace.calls.some((c) => c.label === 'proof-retest'))
+  assert.equal(b.result.proof.status, 'pass', 'retest verdict replaces the failed one')
+  // the fix commit landed after validation: gate facts must be re-established
+  assert.ok(b.trace.calls.some((c) => c.label === 'proof-revalidate'), 'ship gate re-validated after proof fix')
+  assert.match(b.result.validation.notes, /re-validated after proof fix/)
+  // the successful fix round is compound material; an un-fixed one is not
+  assert.ok(b.trace.calls.find((c) => c.label === 'compound').prompt.includes('browser-proof failures diagnosed and fixed'))
+  // (c) retest STILL failing -> failure becomes a durable PR residual, not compound material
+  const stillFailing = makeDispatcher({
+    'proof-retest': () => ({ status: 'fail', routes: [{ route: '/users', result: 'fail', detail: 'still 500' }], detail: 'broken' }),
+    'proof-revalidate': () => ({ testsPass: true, lintPasses: true, detail: 'green after proof fix' }),
+    'proof-fix': () => ({ committed: true, detail: 'fixed and committed' }),
+    proof: () => FAIL_PROOF,
+  })
+  const c = await run(stillFailing)
+  assert.ifError(c.error)
+  const shipC = c.trace.calls.find((x) => x.label === 'ship')
+  assert.ok(shipC.prompt.includes('browser-proof failure: /users'), 'surviving proof failure lands in PR residuals')
+  assert.ok(!c.trace.calls.find((x) => x.label === 'compound').prompt.includes('diagnosed and fixed'), 'failed fix round is not claimed as solved')
+  // (d) fixer lands NO commit -> no retest of identical code, original failure kept
+  const noCommit = makeDispatcher({
+    'proof-fix': () => ({ committed: false, detail: 'could not reproduce locally' }),
+    proof: () => FAIL_PROOF,
+  })
+  const e = await run(noCommit)
+  assert.ifError(e.error)
+  assert.ok(!e.trace.calls.some((x) => x.label === 'proof-retest'), 'no retest without a fix commit (flaky-pass guard)')
+  assert.ok(!e.trace.calls.some((x) => x.label === 'proof-revalidate'), 'no re-gate without a fix commit')
+  assert.equal(e.result.proof.status, 'fail', 'original honest failure kept')
+  assert.ok(e.trace.logs.some((m) => /landed no commit/.test(m)))
+  return 'skip is honest; fail -> one grounded fix round -> retest; survivors become residuals; commit-less fix rounds change nothing'
+})
+
+S('S22 codex second-model reviewer: findings verified by claude refuter; ran=false logged', async () => {
+  // (a) codex finds a blocking issue -> skeptical-refuter verifies -> fixer dispatched
+  const finds = makeDispatcher({
+    'review-codex': () => ({ ran: true, findings: [{ title: 'unchecked race', file: 'src/u1.js', line: 4, severity: 'blocking', detail: 'd' }], detail: 'found 1' }),
+    'fix-': () => ({ fixed: ['unchecked race'], skipped: [], detail: 'ok' }),
+  })
+  const a = await run(finds)
+  assert.ifError(a.error)
+  assert.equal(a.result.confirmedReviewFindings, 1)
+  const verify = a.trace.calls.find((c) => c.label.startsWith('verify-codex-'))
+  assert.equal(verify.agentType, 'skeptical-refuter', 'codex finding cross-verified by claude')
+  // (b) codex review fails to run -> logged, zero findings, run unaffected
+  const broken = makeDispatcher({ 'review-codex': () => ({ ran: false, findings: [], detail: 'codex binary crashed' }) })
+  const b = await run(broken)
+  assert.ifError(b.error)
+  assert.ok(b.trace.logs.some((m) => /Codex second-model review did not run: codex binary crashed/.test(m)))
+  // (c) codex unavailable -> reviewer roster has no codex entry at all
+  const off = makeDispatcher({}, { recon: { codexAvailable: false } })
+  const c = await run(off)
+  assert.ifError(c.error)
+  assert.ok(!c.trace.calls.some((x) => x.label === 'review-codex'))
+  assert.ok(c.trace.logs.some((m) => /Codex second-model review skipped/.test(m)))
+  return 'cross-model review verified, failure surfaced, absence logged'
+})
+
+S('S23 fixer-skipped finding becomes a residual and lands in the PR body', async () => {
+  const d = makeDispatcher({
+    'review-correctness': () => ({ findings: [{ title: 'off-by-one', file: 'src/u1.js', line: 10, severity: 'blocking', detail: 'd' }] }),
+    'fix-': () => ({ fixed: [], skipped: [{ title: 'off-by-one', reason: 'needs design input' }], detail: '' }),
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  assert.equal(result.residualReviewFindings.length, 1)
+  assert.equal(result.residualReviewFindings[0].reason, 'needs design input')
+  assert.equal(result.residualReviewFindings[0].severity, 'blocking')
+  const shipCall = trace.calls.find((c) => c.label === 'ship')
+  assert.ok(shipCall.prompt.includes('## Residuals') && shipCall.prompt.includes('off-by-one'), 'residual durable in PR body')
+  return 'lfg residual contract: skipped fix -> PR body, never silently dropped'
+})
+
+S('S24 simplify-as-you-go: fires only after a multi-merge wave, never after the final wave', async () => {
+  const d = makeDispatcher({}, { routeExecutor: () => 'claude' })
+  const { trace, error } = await run(d) // waves: [U1,U4] -> [U2] -> [U3]
+  assert.ifError(error)
+  const waves = trace.calls.filter((c) => c.label.startsWith('simplify-wave-')).map((c) => c.label)
+  assert.deepEqual(waves, ['simplify-wave-1'], 'only the 2-task non-final wave triggers it')
+  const call = trace.calls.find((c) => c.label === 'simplify-wave-1')
+  assert.ok(call.prompt.includes('U1, U4') || call.prompt.includes('U4, U1'), 'grounded with the merged task ids')
+  assert.ok(call.prompt.includes('ce-simplify-code'), 'follows the installed skill')
+  return 'mid-run simplify hook gated correctly'
+})
+
+S('S27 cross-reviewer dedup: same file+title from two reviewers is one finding, one fix line', async () => {
+  const finding = { title: 'unchecked race', file: 'src/u1.js', line: 4, severity: 'suggested', detail: 'd' }
+  const d = makeDispatcher({
+    'review-correctness': () => ({ findings: [finding] }),
+    'review-codex': () => ({ ran: true, findings: [{ ...finding, severity: 'blocking' }], detail: 'found 1' }),
+    'fix-': () => ({ fixed: ['unchecked race'], skipped: [], detail: 'ok' }),
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  assert.equal(result.confirmedReviewFindings, 1, 'merged into one finding')
+  const fixes = trace.calls.filter((c) => c.label.startsWith('fix-'))
+  assert.equal(fixes.length, 1)
+  assert.equal((fixes[0].prompt.match(/unchecked race/g) || []).length, 1, 'one line, not two')
+  assert.ok(fixes[0].prompt.includes('blocking'), 'merged finding keeps the higher severity')
+  assert.ok(fixes[0].prompt.includes('correctness+codex') || fixes[0].prompt.includes('codex+correctness'), 'both personas credited')
+  assert.deepEqual(result.residualReviewFindings, [], 'single fixed title accounts for the merged finding exactly once')
+  return 'fingerprint dedup prevents double-count and dropped residuals'
+})
+
+S('S26 tail budget floor: waves finish but Proof/Ship/Compound are skipped with logs', async () => {
+  // Single unit; diffstat lowered so reviewer roster is fixed at 6 (no adversarial).
+  // Call ledger at 10k/call: parse+recon(2) setup(3) split(4) route(5) exec(6) merge(7)
+  // diffstat(8) reviews x6 (14) final-validation(15) = 150k spent entering the tail.
+  // budgetTotal 175k -> remaining 25k <= 30k floor at Proof: tail must skip, not throw.
+  const d = makeDispatcher({ diffstat: () => ({ lines: 10 }) }, { units: { units: [UNITS().units[0]] } })
+  const { result, trace, error } = await run(d, { budgetTotal: 175000 })
+  assert.ifError(error)
+  assert.equal(result.tasks.U1.status, 'merged', 'execution itself completed under budget')
+  assert.equal(result.budgetHalted, false, 'wave-level floor never hit')
+  assert.ok(!trace.calls.some((c) => ['proof', 'ship', 'compound'].includes(c.label) || c.label.startsWith('ci-')), 'tail agents never dispatched')
+  assert.ok(trace.logs.some((m) => /Proof skipped: token budget floor reached/.test(m)))
+  assert.equal(result.ship.pushed, false)
+  assert.match(result.ship.detail, /token budget floor/)
+  assert.match(result.proof.detail, /token budget floor/, 'budget skip recorded on proof, not re-derived at ship')
+  assert.ok(trace.logs.some((m) => /Compound skipped: token budget floor reached/.test(m)))
+  return 'no-silent-caps: every budget-skipped tail phase says so'
+})
+
+S('S25 args opt-outs: ship:false stays local, proof:false and compound:false skip phases', async () => {
+  const d = makeDispatcher({})
+  const { result, trace, error } = await run(d, { args: { ...ARGS, ship: false, proof: false, compound: false } })
+  assert.ifError(error)
+  assert.ok(!trace.calls.some((c) => ['proof', 'ship', 'compound'].includes(c.label) || c.label.startsWith('ci-')))
+  assert.equal(result.ship.pushed, false)
+  assert.match(result.ship.detail, /args\.ship/)
+  assert.equal(result.proof.status, 'skipped')
+  assert.match(result.proof.detail, /args\.proof/)
+  assert.equal(result.compound, null)
+  return 'every tail phase individually opt-out-able'
 })
 
 // ---------- runner ----------

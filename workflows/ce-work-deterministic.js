@@ -1,16 +1,20 @@
 export const meta = {
   name: 'ce-work-deterministic',
-  description: 'Deterministic ce-work: parse a ce-plan doc, split units into context-window-sized tasks, route each task to codex or claude, execute in isolated worktrees, merge in dependency waves, review and validate on an integration branch.',
-  whenToUse: 'Executing a ce-plan plan document end-to-end with mixed codex/claude executors. args: { plan: "<path>", planVersion?: "<hash-or-mtime — pass a NEW value after editing the plan so resume does not replay a stale cached parse>", base?: "<branch>", slug?: "<branch-slug>", codex?: true|false, sandbox?: "yolo"|"full-auto", effortFloor?: "<minimal|low|medium|high|xhigh>", startedAt?: <ms> }',
+  description: 'Deterministic lfg pipeline: parse a ce-plan doc, split units into context-window-sized tasks, route each task to codex or claude, execute TDD in isolated worktrees, merge in dependency waves, simplify + persona/codex review with verified fixes, validate, browser-proof, compound learnings, ship (commit/push/PR), and watch CI with a bounded fix loop.',
+  whenToUse: 'Executing a ce-plan plan document end-to-end with mixed codex/claude executors, through to a PR. Invoking with ship enabled IS the consent to push and open a PR. args: { plan: "<path>", planVersion?: "<hash-or-mtime — pass a NEW value after editing the plan so resume does not replay a stale cached parse>", base?: "<branch>", slug?: "<branch-slug>", codex?: true|false, sandbox?: "yolo"|"full-auto", effortFloor?: "<minimal|low|medium|high|xhigh>", proof?: true|false, ship?: true|false, compound?: true|false, ciRounds?: <max CI fix iterations, default 3>, startedAt?: <ms> }',
   phases: [
     { title: 'Recon', detail: 'Parse plan, probe repo + codex availability' },
     { title: 'Setup', detail: 'Create integration worktree and branch' },
     { title: 'Split', detail: 'Split units into one-context-window tasks' },
     { title: 'Route', detail: 'Analyzer assigns codex or claude per task' },
     { title: 'Execute', detail: 'Run tasks in worktrees, wave by wave' },
-    { title: 'Integrate', detail: 'Merge task branches, test, clean up' },
-    { title: 'Quality', detail: 'Simplify, persona review, verified fixes' },
+    { title: 'Integrate', detail: 'Merge task branches, test, simplify as you go' },
+    { title: 'Quality', detail: 'Simplify, persona + codex review, verified fixes' },
     { title: 'Validate', detail: 'Requirements trace, full suite, lint' },
+    { title: 'Proof', detail: 'Browser-test affected routes, one fix round' },
+    { title: 'Compound', detail: 'Document solved problems from the run' },
+    { title: 'Ship', detail: 'Commit, push, open PR with evidence + residuals' },
+    { title: 'CI', detail: 'Watch checks, bounded autofix loop' },
   ],
 }
 
@@ -24,6 +28,10 @@ const PLAN = args.plan
 const CODEX_ENABLED = args.codex !== false           // invoking with codex enabled is the consent act
 const SANDBOX = args.sandbox === 'full-auto' ? 'full-auto' : 'yolo'
 const CODEX_WAIT_ROUNDS = args.codexWaitRounds || 30 // x ~60s poll blocks ≈ 30 min ceiling per codex task
+const PROOF_ENABLED = args.proof !== false
+const SHIP_ENABLED = args.ship !== false             // invoking with ship enabled is the consent to push + open a PR
+const COMPOUND_ENABLED = args.compound !== false
+const CI_ROUNDS = Math.max(1, Math.min(10, args.ciRounds || 3)) // lfg default 3; hard-clamped 1..10 so a bad arg cannot unbound the loop
 
 // ============================================================
 // Schemas
@@ -74,9 +82,12 @@ const RECON_SCHEMA = {
     effortFloor: { type: 'string', description: 'work_delegate_effort from .compound-engineering/config.local.yaml if set to one of minimal|low|medium|high|xhigh, else ""' },
     insideCodexSandbox: { type: 'boolean' },
     baselineClean: { type: 'boolean' },
+    ceSkillsRoot: { type: 'string', description: 'skills/ dir of the highest installed compound-engineering plugin version, or ""' },
+    agentBrowserAvailable: { type: 'boolean' },
+    ghAvailable: { type: 'boolean' },
     notes: { type: 'array', items: { type: 'string' } },
   },
-  required: ['repoRoot', 'defaultBranch', 'testCommand', 'lintCommand', 'codexAvailable', 'insideCodexSandbox', 'baselineClean', 'conventionsDigest'],
+  required: ['repoRoot', 'defaultBranch', 'testCommand', 'lintCommand', 'codexAvailable', 'insideCodexSandbox', 'baselineClean', 'conventionsDigest', 'ceSkillsRoot', 'agentBrowserAvailable', 'ghAvailable'],
 }
 
 const TASKS_SCHEMA = {
@@ -163,6 +174,68 @@ const VERDICT_SCHEMA = {
   required: ['refuted', 'reason'],
 }
 
+const CODEX_REVIEW_SCHEMA = {
+  type: 'object',
+  properties: {
+    ran: { type: 'boolean', description: 'false when codex could not produce a result — distinct from a clean review' },
+    findings: FINDINGS_SCHEMA.properties.findings,
+    detail: { type: 'string' },
+  },
+  required: ['ran', 'findings', 'detail'],
+}
+
+const FIX_SCHEMA = {
+  type: 'object',
+  properties: {
+    fixed: { type: 'array', items: { type: 'string' }, description: 'titles of findings actually fixed and committed' },
+    skipped: { type: 'array', items: { type: 'object', properties: { title: { type: 'string' }, reason: { type: 'string' } }, required: ['title', 'reason'] } },
+    detail: { type: 'string' },
+  },
+  required: ['fixed', 'skipped', 'detail'],
+}
+
+const PROOF_SCHEMA = {
+  type: 'object',
+  properties: {
+    status: { enum: ['pass', 'fail', 'partial', 'not-applicable', 'tool-missing'] },
+    routes: { type: 'array', items: { type: 'object', properties: { route: { type: 'string' }, result: { enum: ['pass', 'fail', 'skip'] }, detail: { type: 'string' } }, required: ['route', 'result', 'detail'] } },
+    detail: { type: 'string' },
+  },
+  required: ['status', 'routes', 'detail'],
+}
+
+const SHIP_SCHEMA = {
+  type: 'object',
+  properties: {
+    pushed: { type: 'boolean' },
+    prUrl: { type: 'string', description: '"" when no PR exists' },
+    prCreated: { type: 'boolean' },
+    planStatusFlipped: { type: 'boolean' },
+    detail: { type: 'string' },
+  },
+  required: ['pushed', 'prUrl', 'prCreated', 'planStatusFlipped', 'detail'],
+}
+
+const CI_SCHEMA = {
+  type: 'object',
+  properties: {
+    checks: { enum: ['green', 'red', 'no-ci'] },
+    fixedAndPushed: { type: 'boolean', description: 'true when checks were red and a root-cause fix was committed and pushed' },
+    detail: { type: 'string' },
+  },
+  required: ['checks', 'fixedAndPushed', 'detail'],
+}
+
+const COMPOUND_SCHEMA = {
+  type: 'object',
+  properties: {
+    documented: { type: 'boolean' },
+    paths: { type: 'array', items: { type: 'string' } },
+    detail: { type: 'string' },
+  },
+  required: ['documented', 'paths', 'detail'],
+}
+
 const TRIAGE_SCHEMA = {
   type: 'object',
   properties: {
@@ -186,6 +259,13 @@ Then copy env files if present: cp "${repoRoot}"/.env* "${repoRoot}/.worktrees/<
 Run every subsequent command from inside the worktree directory (absolute path).
 Commit your work inside the worktree with a conventional message (no attribution
 footers). Do NOT push. Do NOT touch branches other than your own.`
+
+// Codex CLI protocol fragments shared by the runner (Execute) and the
+// second-model reviewer (Quality) so the two briefs cannot drift.
+const CODEX_OUTPUT_ARGS = `--output-schema "<scratch>/schema.json" -o "<scratch>/result.json" \\
+    - < "<scratch>/prompt.md"`
+const CODEX_POLL_BLOCK = `Poll command (separate foreground Bash calls, literal <scratch> path):
+  for i in $(seq 1 6); do test -s "<scratch>/result.json" && echo DONE && exit 0; sleep 10; done; echo WAITING`
 
 // ============================================================
 // Phase: Recon
@@ -224,7 +304,12 @@ planTitle.`,
 - effortFloor: read .compound-engineering/config.local.yaml at the repo root if it
   exists; if work_delegate_effort is one of minimal|low|medium|high|xhigh report
   it, otherwise report ""
-- insideCodexSandbox: true if $CODEX_SANDBOX or $CODEX_SESSION_ID is set`,
+- insideCodexSandbox: true if $CODEX_SANDBOX or $CODEX_SESSION_ID is set
+- ceSkillsRoot: the skills/ directory of the HIGHEST installed version under
+  ~/.claude/plugins/cache/compound-engineering-plugin/compound-engineering/*/skills
+  (expand ~, report an absolute path; "" if none exists)
+- agentBrowserAvailable: command -v agent-browser succeeds
+- ghAvailable: gh auth status exits 0`,
     { label: 'repo-recon', phase: 'Recon', model: 'sonnet', schema: RECON_SCHEMA },
   ),
 ])
@@ -250,6 +335,24 @@ const effectiveEffort = (picked) => {
 }
 const INTEGRATION_BRANCH = `feat/${SLUG}`
 const INTEGRATION_WT = `${recon.repoRoot}/.worktrees/${SLUG}`
+
+// Installed compound-engineering skills are the authoritative instructions for
+// the tail phases — agents read and follow the SKILL.md at run time rather than
+// this script mirroring its content. Each call site supplies a fallback so the
+// phase still runs when the plugin is not installed.
+const skillGuide = (name, withSkill, fallback) => (recon.ceSkillsRoot
+  ? `Read and follow the ${name} skill at ${recon.ceSkillsRoot}/${name}/SKILL.md${withSkill}`
+  : fallback)
+const SIMPLIFY_GUIDE = skillGuide('ce-simplify-code',
+  ': run its reuse, quality, and efficiency review passes over the diff vs the base and apply the fixes it prescribes.',
+  'Review the full diff vs the base for simplification — duplicated patterns to consolidate, shared helpers to extract, dead code introduced by the changes, needless indirection.')
+const simplifyPrompt = (extraContext, commitMessage) => `
+In the worktree ${INTEGRATION_WT} (branch ${INTEGRATION_BRANCH}, base ${BASE}):
+${SIMPLIFY_GUIDE}${extraContext}
+Behavior preservation is non-negotiable: same outputs, same errors, same side
+effects; do not relax assertions, weaken types, or delete tests. Run
+${recon.testCommand} and commit ("${commitMessage}") only when green.
+If nothing is worth changing, change nothing and say so.`
 
 // ============================================================
 // Phase: Setup — integration worktree; main checkout is never touched again
@@ -404,11 +507,9 @@ Launch command (run from INSIDE the worktree, literal <scratch> path substituted
   cd ${recon.repoRoot}/.worktrees/${t.id} && ${recon.codexPath} exec \\
     ${SANDBOX === 'full-auto' ? '-s workspace-write' : '--dangerously-bypass-approvals-and-sandbox'} \\
     ${effectiveEffort(t.route.effort) !== 'default' ? `-c 'model_reasoning_effort="${effectiveEffort(t.route.effort)}"' \\` : '\\'}
-    --output-schema "<scratch>/schema.json" -o "<scratch>/result.json" \\
-    - < "<scratch>/prompt.md"
+    ${CODEX_OUTPUT_ARGS}
 
-Poll command (separate foreground Bash calls, literal <scratch> path):
-  for i in $(seq 1 6); do test -s "<scratch>/result.json" && echo DONE && exit 0; sleep 10; done; echo WAITING
+${CODEX_POLL_BLOCK}
 
 Cleanup commands (on failure):
   git -C "${recon.repoRoot}" worktree remove --force "${recon.repoRoot}/.worktrees/${t.id}"
@@ -443,11 +544,12 @@ let codexFailStreak = 0
 let codexBroken = false
 let planInvalidation = null   // set when a wave-boundary triage halts the run
 let budgetHalted = false
-const BUDGET_FLOOR = 30000    // stop dispatching waves below this many remaining tokens
+const BUDGET_FLOOR = 30000    // stop dispatching below this many remaining tokens
+const belowBudgetFloor = () => !!budget.total && budget.remaining() <= BUDGET_FLOOR
 
 for (let w = 0; w < waves.length; w++) {
   // Budget stop-loss: end cleanly with a partial result instead of mid-wave throws.
-  if (budget.total && budget.remaining() < BUDGET_FLOOR) {
+  if (belowBudgetFloor()) {
     const unrun = waves.slice(w).flat().filter((t) => !results[t.id])
     for (const t of unrun) results[t.id] = { status: 'skipped', executor: '-', detail: 'token budget exhausted before dispatch' }
     log(`Budget floor reached before wave ${w + 1} — skipping ${unrun.length} remaining task(s)`)
@@ -602,6 +704,20 @@ hands the decision back to the human.`,
       break
     }
   }
+
+  // Simplify as you go (ce-work-beta Phase 2, step 5): after a wave that merged
+  // 2+ tasks, consolidate on the integration branch BEFORE the next wave's
+  // worktrees fork from it. The final wave is covered by the Quality simplify.
+  const mergedThisWave = wave.filter((t) => results[t.id] && results[t.id].status === 'merged')
+  if (w < waves.length - 1 && mergedThisWave.length >= 2) {
+    await agent(
+      simplifyPrompt(`
+This is a mid-implementation pass — ${mergedThisWave.map((t) => t.id).join(', ')} just
+merged and later tasks will build on this tree, so consolidate duplication NOW
+but leave intentional seams alone.`, `refactor: simplify after wave ${w + 1}`),
+      { label: `simplify-wave-${w + 1}`, phase: 'Integrate' },
+    )
+  }
 }
 
 const mergedCount = Object.values(results).filter((r) => r.status === 'merged').length
@@ -619,6 +735,12 @@ if (halted) log(`Skipping Quality and Validate phases (${planInvalidation ? 'pla
 // ============================================================
 let confirmedCount = 0
 let validation = null
+let residuals = []            // confirmed-but-unfixed findings — made durable in the PR body (lfg residual contract)
+let proof = null
+let proofFixSucceeded = false // a proof fix round ran AND the retest cleared every previously failing route
+let ship = { pushed: false, prUrl: '', prCreated: false, planStatusFlipped: false, detail: halted ? 'run halted before quality/validation' : '' }
+let ci = { status: 'skipped', attempts: 0, detail: '', residualRecorded: false }
+let compounded = null
 if (!halted) {
 
 phase('Quality')
@@ -631,12 +753,7 @@ const changedLines = diffStat ? diffStat.lines : 0
 
 if (changedLines >= 30) {
   await agent(
-    `In the worktree ${INTEGRATION_WT} (branch ${INTEGRATION_BRANCH}, base ${BASE}):
-review the full diff vs the base for simplification — duplicated patterns to
-consolidate, shared helpers to extract, dead code introduced by the changes,
-needless indirection. Apply only safe, behavior-preserving simplifications, run
-${recon.testCommand}, and commit ("refactor: simplify after ${SLUG} implementation").
-If nothing is worth changing, change nothing and say so.`,
+    simplifyPrompt('', `refactor: simplify after ${SLUG} implementation`),
     { label: 'simplify', phase: 'Quality' },
   )
 } else {
@@ -644,11 +761,13 @@ If nothing is worth changing, change nothing and say so.`,
 }
 
 // Persona reviewers — reuse compound-engineering reviewer agents via agentType.
-// Always-on trio plus conditional personas based on the plan's risk surfaces.
+// Always-on quartet (mirrors ce-code-review's always-on set minus the PR-only
+// personas) plus conditional personas from the plan's risk surfaces and diff size.
 const personas = [
   { key: 'correctness', type: 'compound-engineering:ce-correctness-reviewer' },
   { key: 'maintainability', type: 'compound-engineering:ce-maintainability-reviewer' },
   { key: 'testing', type: 'compound-engineering:ce-testing-reviewer' },
+  { key: 'standards', type: 'compound-engineering:ce-project-standards-reviewer' },
 ]
 if (planDoc.riskSurfaces.some((s) => ['auth', 'payments', 'crypto', 'public-api'].includes(s))) {
   personas.push({ key: 'security', type: 'compound-engineering:ce-security-reviewer' })
@@ -656,21 +775,62 @@ if (planDoc.riskSurfaces.some((s) => ['auth', 'payments', 'crypto', 'public-api'
 if (planDoc.riskSurfaces.includes('migrations')) {
   personas.push({ key: 'migrations', type: 'compound-engineering:ce-data-migration-reviewer' })
 }
-log(`Review personas: ${personas.map((p) => p.key).join(', ')}`)
+if (planDoc.riskSurfaces.includes('public-api')) {
+  personas.push({ key: 'api-contract', type: 'compound-engineering:ce-api-contract-reviewer' })
+}
+if (changedLines >= 50 || planDoc.riskSurfaces.some((s) => ['auth', 'payments'].includes(s))) {
+  personas.push({ key: 'adversarial', type: 'compound-engineering:ce-adversarial-reviewer' })
+}
 
 const reviewPrompt = (p) => `
 Review the changes on branch ${INTEGRATION_BRANCH} relative to ${BASE}.
 Work inside the worktree at ${INTEGRATION_WT}; diff with: git diff origin/${BASE}...HEAD
 (fall back to ${BASE}). The work implements the plan at ${PLAN}.
+Read the new and changed tests before the implementation — they reveal intended
+coverage and where it falls short.
 Report findings with file, line where possible, severity (blocking | suggested | nit),
 and enough detail that a fixer who has not seen your reasoning can act.`
 
-// pipeline: each persona's findings go to verification as soon as that persona
-// finishes — no cross-persona barrier needed.
+// Reviewer roster = persona reviewers + (when codex is usable) the Codex CLI as
+// a second-model reviewer: a different model family catches what same-family
+// review rationalizes away, and its findings face the same Claude refuter.
+const reviewers = personas.map((p) => ({
+  key: p.key,
+  spawn: () => agent(reviewPrompt(p), { label: `review-${p.key}`, phase: 'Quality', agentType: p.type, schema: FINDINGS_SCHEMA }),
+}))
+if (codexUsable && !codexBroken) {
+  reviewers.push({
+    key: 'codex',
+    spawn: () => agent(
+      `Run the Codex CLI as a read-only second-model reviewer.
+Codex binary: ${recon.codexPath}
+Worktree: ${INTEGRATION_WT}   Branch: ${INTEGRATION_BRANCH}   Base: ${BASE} (diff origin/${BASE}...HEAD, fall back to ${BASE})
+The work implements the plan at ${PLAN}.
+Scratch template for mktemp: -t ce-review-${SLUG}-XXXXXX
+Wait-round cap: 10
+
+Launch command (run from INSIDE the worktree, literal <scratch> path substituted):
+  cd ${INTEGRATION_WT} && ${recon.codexPath} exec -s read-only \\
+    ${CODEX_OUTPUT_ARGS}
+
+${CODEX_POLL_BLOCK}`,
+      { label: 'review-codex', phase: 'Quality', agentType: 'codex-reviewer', model: 'sonnet', schema: CODEX_REVIEW_SCHEMA }, // protocol operator is mechanical; codex does the reviewing
+    ).then((r) => {
+      if (r && !r.ran) log(`Codex second-model review did not run: ${r.detail}`)
+      return r && r.ran ? { findings: r.findings } : null
+    }),
+  })
+} else {
+  log(`Codex second-model review skipped (${codexBroken ? 'circuit breaker tripped' : 'codex unavailable'})`)
+}
+log(`Reviewers: ${reviewers.map((r) => r.key).join(', ')}`)
+
+// pipeline: each reviewer's findings go to verification as soon as that
+// reviewer finishes — no cross-reviewer barrier needed.
 const reviewed = await pipeline(
-  personas,
-  (p) => agent(reviewPrompt(p), { label: `review-${p.key}`, phase: 'Quality', agentType: p.type, schema: FINDINGS_SCHEMA }),
-  (rev, p) => {
+  reviewers,
+  (rv) => rv.spawn(),
+  (rev, rv) => {
     if (!rev || !rev.findings.length) return []
     const actionable = rev.findings.filter((f) => f.severity !== 'nit')
     return parallel(actionable.map((f) => () =>
@@ -679,14 +839,24 @@ const reviewed = await pipeline(
 ${f.detail}
 
 Where to look: the worktree at ${INTEGRATION_WT} (branch ${INTEGRATION_BRANCH}, base ${BASE}).`,
-        { label: `verify-${p.key}-${f.file.split('/').pop()}`, phase: 'Quality', model: 'sonnet', agentType: 'skeptical-refuter', schema: VERDICT_SCHEMA },
-      ).then((v) => (v && !v.refuted ? { ...f, persona: p.key } : null)),
+        { label: `verify-${rv.key}-${f.file.split('/').pop()}`, phase: 'Quality', model: 'sonnet', agentType: 'skeptical-refuter', schema: VERDICT_SCHEMA },
+      ).then((v) => (v && !v.refuted ? { ...f, persona: rv.key } : null)),
     )).then((vs) => vs.filter(Boolean))
   },
 )
-const confirmed = reviewed.filter(Boolean).flat()
+// Cross-reviewer dedup (mirrors ce-code-review's fingerprint): the same
+// file+title from two reviewers is ONE issue — merge it, keep the higher
+// severity, credit both personas — so fixer accounting cannot double-count.
+const byFingerprint = new Map()
+for (const f of reviewed.filter(Boolean).flat()) {
+  const key = `${f.file}::${f.title}`
+  const prev = byFingerprint.get(key)
+  if (!prev) byFingerprint.set(key, f)
+  else byFingerprint.set(key, { ...prev, severity: prev.severity === 'blocking' || f.severity === 'blocking' ? 'blocking' : prev.severity, persona: `${prev.persona}+${f.persona}` })
+}
+const confirmed = [...byFingerprint.values()]
 confirmedCount = confirmed.length
-log(`${confirmed.length} confirmed finding(s) after adversarial verification`)
+log(`${confirmed.length} confirmed finding(s) after adversarial verification and dedup`)
 
 if (confirmed.length) {
   // Batch by file, but apply SEQUENTIALLY: all fixers share the one integration
@@ -694,16 +864,28 @@ if (confirmed.length) {
   const byFile = {}
   for (const f of confirmed) (byFile[f.file] = byFile[f.file] || []).push(f)
   for (const [file, fs] of Object.entries(byFile)) {
-    await agent(
+    const fx = await agent(
       `In the worktree ${INTEGRATION_WT} (branch ${INTEGRATION_BRANCH}): fix these
 confirmed review findings in ${file}. Make the smallest correct fix for each, run
 ${recon.testCommand}, stage ONLY the files you changed, and commit
 ("fix: address review findings in ${file}").
 If a finding turns out to be wrong once you read the code, skip it and say why.
+Report every finding as either fixed (by title) or skipped (title + reason).
 ${fs.map((f) => `- (${f.severity}, ${f.persona}) ${f.title}: ${f.detail}`).join('\n')}`,
-      { label: `fix-${file.split('/').pop()}`, phase: 'Quality' },
+      { label: `fix-${file.split('/').pop()}`, phase: 'Quality', schema: FIX_SCHEMA },
     )
+    // Anything not verifiably fixed becomes a residual — durable in the PR body.
+    if (!fx) residuals.push(...fs.map((f) => ({ title: f.title, file: f.file, severity: f.severity, reason: 'fixer agent failed' })))
+    else {
+      residuals.push(...fx.skipped.map((s) => {
+        const orig = fs.find((f) => f.title === s.title)
+        return { title: s.title, file, severity: orig ? orig.severity : 'suggested', reason: s.reason }
+      }))
+      const unaccounted = fs.filter((f) => !fx.fixed.includes(f.title) && !fx.skipped.some((s) => s.title === f.title))
+      residuals.push(...unaccounted.map((f) => ({ title: f.title, file, severity: f.severity, reason: 'fixer did not account for this finding' })))
+    }
   }
+  if (residuals.length) log(`${residuals.length} review residual(s) will be recorded in the PR body`)
 }
 
 // ============================================================
@@ -720,6 +902,13 @@ validation = await agent(
 ${planDoc.requirements.map((r) => `   - ${r.id}: ${r.text}`).join('\n')}
 4. Per-unit verification — judge each criterion against the current code:
 ${planDoc.units.map((u) => `   - ${u.uid}: ${u.verification}`).join('\n')}
+5. Deferred-question check — for each question the plan deferred to
+   implementation, judge from the diff and commit messages whether it was
+   actually resolved, with one line of evidence:
+${(planDoc.deferredQuestions || []).map((q) => `   - ${q}`).join('\n') || '   (none deferred)'}
+6. Post-deploy checks — from what the diff touches, list the 2-5 concrete
+   things to monitor or manually validate after this deploys (metrics, logs,
+   user flows). These go into the PR body verbatim.
 Do not fix anything; report honestly.`,
   {
     label: 'final-validation',
@@ -731,17 +920,251 @@ Do not fix anything; report honestly.`,
         lintPasses: { type: 'boolean' },
         requirements: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, verdict: { enum: ['satisfied', 'partial', 'unmet'] }, evidence: { type: 'string' } }, required: ['id', 'verdict', 'evidence'] } },
         units: { type: 'array', items: { type: 'object', properties: { uid: { type: 'string' }, verdict: { enum: ['verified', 'partial', 'unmet'] }, evidence: { type: 'string' } }, required: ['uid', 'verdict', 'evidence'] } },
+        deferredQuestions: { type: 'array', items: { type: 'object', properties: { question: { type: 'string' }, resolved: { type: 'boolean' }, evidence: { type: 'string' } }, required: ['question', 'resolved', 'evidence'] } },
+        postDeployChecks: { type: 'array', items: { type: 'string' } },
         notes: { type: 'string' },
       },
-      required: ['testsPass', 'lintPasses', 'requirements', 'units', 'notes'],
+      required: ['testsPass', 'lintPasses', 'requirements', 'units', 'deferredQuestions', 'postDeployChecks', 'notes'],
     },
   },
 )
 
+// ============================================================
+// Tail phases — the rest of the lfg pipeline (browser proof, compound, ship,
+// CI watch), still inside the !halted block: a halted run skips them all.
+// Autopilot contract: never prompt; anything unresolved becomes a durable
+// residual in the PR body.
+// ============================================================
+const tailBudget = (phaseName) => {
+  if (!belowBudgetFloor()) return true
+  log(`${phaseName} skipped: token budget floor reached`)
+  return false
+}
+
+// ---- Phase: Proof (lfg step 6) — browser-test the merged work, ONE fix round.
+// Gated on green validation: browser-proofing a branch the ship gate already
+// rejects burns dev-server + browser wall-clock for a report nobody ships. ----
+if (!PROOF_ENABLED) {
+  proof = { status: 'skipped', routes: [], detail: 'disabled by args.proof=false' }
+} else if (!validation || !validation.testsPass || !validation.lintPasses) {
+  proof = { status: 'skipped', routes: [], detail: 'validation gate red — fix the branch before browser-proofing it' }
+  log(`Proof skipped: ${proof.detail}`)
+} else if (!recon.agentBrowserAvailable) {
+  proof = { status: 'skipped', routes: [], detail: 'agent-browser not installed' }
+  log('Proof skipped: agent-browser CLI not installed')
+} else if (!tailBudget('Proof')) {
+  proof = { status: 'skipped', routes: [], detail: 'token budget floor reached' }
+} else {
+  phase('Proof')
+  const proofPrompt = (focus) => `
+Browser-proof the merged work in the worktree ${INTEGRATION_WT} (branch ${INTEGRATION_BRANCH}, base ${BASE}).
+${skillGuide('ce-test-browser', ' in mode:pipeline — it covers port detection, auto-starting the dev server, mapping changed files to routes, and per-route checks with the agent-browser CLI.', 'Use the agent-browser CLI headlessly (open / snapshot -i / click / screenshot): detect the dev port (AGENTS.md, CLAUDE.md, package.json, .env*; default 3000; scan upward for a free one), start the dev server in the background, map the changed files to affected routes, and verify each route renders without errors and its primary interactions work.')}
+Changed files: git diff --name-only origin/${BASE}...HEAD (fall back to ${BASE}).
+Start the dev server from INSIDE the worktree so you test the merged code, and
+kill any server you started when done.${focus}
+If no changed file maps to a web route or page, return status "not-applicable" —
+do not invent routes. If agent-browser turns out to be unusable, return
+"tool-missing". Screenshot every failure.`
+  proof = await agent(proofPrompt(''), { label: 'proof', phase: 'Proof', schema: PROOF_SCHEMA })
+  if (!proof) log('Proof agent failed — browser testing recorded as not run')
+  const failedRoutes = proof ? proof.routes.filter((r) => r.result === 'fail') : []
+  if (failedRoutes.length) {
+    log(`Proof: ${failedRoutes.length} route(s) failed — one fix round, then retest`)
+    const fixRes = await agent(
+      `In the worktree ${INTEGRATION_WT} (branch ${INTEGRATION_BRANCH}): browser testing
+found these failing routes. Diagnose from the code (diff vs origin/${BASE}...HEAD,
+fall back to ${BASE}) and fix the ROOT CAUSE — do not paper over rendering errors.
+Run ${recon.testCommand}, stage only the files you changed, and commit
+("fix: repair browser-test failures"). Report committed=true ONLY if a fix
+commit now exists on the branch.
+${failedRoutes.map((r) => `- ${r.route}: ${r.detail}`).join('\n')}`,
+      { label: 'proof-fix', phase: 'Proof', schema: { type: 'object', properties: { committed: { type: 'boolean' }, detail: { type: 'string' } }, required: ['committed', 'detail'] } },
+    )
+    if (fixRes && fixRes.committed) {
+      const retest = await agent(
+        proofPrompt(`\nRetest after a fix: previously failing routes were ${failedRoutes.map((r) => r.route).join(', ')} — check them all again.`),
+        { label: 'proof-retest', phase: 'Proof', schema: PROOF_SCHEMA },
+      )
+      if (retest) proof = retest
+      proofFixSucceeded = !!retest && retest.routes.every((r) => r.result !== 'fail')
+      log(`Proof after fix round: ${proof ? proof.status : 'unknown'} — one round only; remaining failures become PR residuals`)
+      // The fix round committed code AFTER final validation — re-establish the
+      // ship gate's facts instead of shipping on stale evidence. A single
+      // agent's in-prompt test run is not ground truth; fail closed if unsure.
+      const regate = await agent(
+        `In the worktree ${INTEGRATION_WT} (branch ${INTEGRATION_BRANCH}): a fix commit landed
+after final validation. Re-run the gate checks FRESH and report honestly:
+1. Full test suite: ${recon.testCommand}
+2. Lint: ${recon.lintCommand}
+Do not fix anything.`,
+        { label: 'proof-revalidate', phase: 'Proof', model: 'sonnet', schema: { type: 'object', properties: { testsPass: { type: 'boolean' }, lintPasses: { type: 'boolean' }, detail: { type: 'string' } }, required: ['testsPass', 'lintPasses', 'detail'] } },
+      )
+      if (validation) {
+        validation = regate
+          ? { ...validation, testsPass: regate.testsPass, lintPasses: regate.lintPasses, notes: `${validation.notes} [re-validated after proof fix: ${regate.detail}]` }
+          : { ...validation, testsPass: false, notes: `${validation.notes} [proof-fix re-validation agent failed — failing closed]` }
+      }
+    } else {
+      // No fix landed: retesting identical code invites a flaky pass that
+      // would masquerade as "diagnosed and fixed". Keep the honest failure.
+      log(`Proof fix round landed no commit (${fixRes ? fixRes.detail : 'fixer agent failed'}) — keeping the failed proof; failures become PR residuals`)
+    }
+  }
+}
+
+// ---- Phase: Compound — document solved problems BEFORE Ship so the docs
+// commit rides the one push (a post-ship push would restart CI from zero) ----
+if (COMPOUND_ENABLED) {
+  if (!validation || !validation.testsPass) {
+    log('Compound skipped: no verified work to learn from')
+  } else if (tailBudget('Compound')) {
+    phase('Compound')
+    const fixedFindingCount = confirmedCount - residuals.length
+    const solvedProblems = [
+      ...Object.entries(results)
+        .filter(([, r]) => r.status === 'merged' && r.executor && r.executor !== 'claude' && r.executor !== 'codex')
+        .map(([id, r]) => `- task ${id} recovered via "${r.executor}": ${r.detail}`),
+      ...(fixedFindingCount > 0 ? [`- ${fixedFindingCount} review finding(s) survived adversarial verification and were fixed on the branch (see "fix: address review findings" commits)`] : []),
+      ...(proofFixSucceeded ? ['- browser-proof failures diagnosed and fixed (see "fix: repair browser-test failures" commit)'] : []),
+    ]
+    compounded = await agent(
+      `Compound the learnings from a finished implementation run.
+${skillGuide('ce-compound', ' in mode:headless.', 'Write solved-problem docs under docs/solutions/<category>/<slug>.md with frontmatter (module, date, problem_type, component, severity) and sections Problem / Symptoms / What Didn\'t Work / Solution / Why This Works / Prevention.')}
+Work from INSIDE the worktree ${INTEGRATION_WT} (branch ${INTEGRATION_BRANCH}); read the
+branch's commits and the diff vs origin/${BASE}...HEAD (fall back to ${BASE}) for the
+full story. Candidate material — problems actually solved AND verified this run:
+${solvedProblems.join('\n') || '- none flagged by the orchestrator; check commit history for non-obvious fixes'}
+Document ONLY non-trivial solved problems a future implementer would otherwise
+re-discover the hard way; a routine implementation with no surprises produces
+nothing. If nothing qualifies, write nothing and return documented=false.
+If you write docs: validate their frontmatter as the skill requires and commit
+("docs(solutions): compound learnings from ${SLUG}"). Do NOT push — the Ship
+phase owns pushing.`,
+      { label: 'compound', phase: 'Compound', schema: COMPOUND_SCHEMA },
+    )
+    if (compounded) log(compounded.documented ? `Compounded: ${compounded.paths.join(', ')}` : `Compound: nothing qualifying (${compounded.detail})`)
+  }
+}
+
+// ---- Phase: Ship (lfg steps 4/5/7) — hard gate: tests + lint green, or no push ----
+if (!SHIP_ENABLED) {
+  ship.detail = 'disabled by args.ship=false'
+  log('Ship disabled by args.ship=false — branch stays local')
+} else if (!validation) {
+  ship.detail = 'no validation result — not shipping'
+  log(`Ship skipped: ${ship.detail}`)
+} else if (!validation.testsPass || !validation.lintPasses) {
+  ship.detail = `gate failed: ${[!validation.testsPass ? 'tests failing' : '', !validation.lintPasses ? 'lint failing' : ''].filter(Boolean).join(', ')} — branch left unpushed for human review`
+  log(`Ship skipped: ${ship.detail}`)
+} else if (!tailBudget('Ship')) {
+  ship.detail = 'token budget floor reached'
+} else {
+    phase('Ship')
+    const reqLines = (validation.requirements || []).map((r) => `- ${r.id}: ${r.verdict} — ${r.evidence}`)
+    const residualLines = [
+      ...residuals.map((f) => `- (${f.severity}) ${f.file} — ${f.title}: ${f.reason}`),
+      ...Object.entries(results).filter(([, r]) => r.status !== 'merged').map(([id, r]) => `- task ${id}: ${r.status} — ${r.detail}`),
+      ...droppedUnits.map((u) => `- unit ${u.uid} (${u.name}): splitter failed — never executed`),
+      ...preSkipped.map((t) => `- task ${t.id}: skipped — ${t.skipReason}`),
+      ...(validation.requirements || []).filter((r) => r.verdict !== 'satisfied').map((r) => `- requirement ${r.id} ${r.verdict}: ${r.evidence}`),
+      ...(validation.deferredQuestions || []).filter((q) => !q.resolved).map((q) => `- unresolved deferred question: ${q.question} (${q.evidence})`),
+      ...(proof ? proof.routes.filter((r) => r.result === 'fail').map((r) => `- browser-proof failure: ${r.route} — ${r.detail}`) : []),
+    ]
+    const proofSummary = !proof ? 'not run (proof agent failed)'
+      : proof.status === 'skipped' ? `skipped (${proof.detail})`
+      : `${proof.status}${proof.routes.length ? ` (${proof.routes.filter((r) => r.result === 'pass').length}/${proof.routes.length} routes passing)` : ''}`
+    const shipRes = await agent(
+      `Ship the integration branch from the worktree ${INTEGRATION_WT} (branch ${INTEGRATION_BRANCH}, base ${BASE}).
+${skillGuide('ce-commit-push-pr', ' for commit conventions, push mechanics, and PR creation (write the PR body to a temp file and pass it via --body-file; never stdin).', 'Conventions: conventional commits; stage files by name (never git add -A or .); push with git push -u origin HEAD; create the PR with gh pr create --title "<title>" --body-file <tempfile>.')}
+Steps:
+1. Plan status flip — locate the plan document INSIDE the worktree: the caller
+   referenced it as "${PLAN}"; if that is not already a path under
+   ${INTEGRATION_WT}, strip any checkout-root prefix and look for the same
+   repo-relative path under the worktree. If no such file exists inside the
+   worktree, SKIP this step and report planStatusFlipped=false — NEVER edit any
+   file outside ${INTEGRATION_WT}. If found and its YAML frontmatter says
+   "status: active", flip it to "status: completed" and stage it.
+2. Commit any uncommitted changes (stage by name; nothing uncommitted is also fine).
+3. Push the branch: prefer origin; with no upstream, git push --set-upstream <remote> HEAD
+   using the first configured remote.
+4. gh availability: ${recon.ghAvailable}. Check for an existing open PR
+   (gh pr view --json url,state): update its body if one exists, otherwise create
+   the PR with base ${BASE}. If gh is unavailable or PR creation fails, still
+   push and report prCreated=false with the reason in detail.
+PR title: conventional, derived from the plan title "${planDoc.planTitle}".
+The PR body must include these sections verbatim (plus whatever the skill prescribes):
+
+## Requirements
+${reqLines.join('\n') || '- none traced'}
+
+## Evidence
+- Tests: ${validation.testsPass ? 'passing' : 'FAILING'} (${recon.testCommand})
+- Lint: ${validation.lintPasses ? 'passing' : 'FAILING'} (${recon.lintCommand})
+- Browser proof: ${proofSummary}
+
+${residualLines.length ? `## Residuals
+${residualLines.join('\n')}
+
+` : ''}## Post-Deploy Monitoring & Validation
+${(validation.postDeployChecks || []).map((c) => `- ${c}`).join('\n') || '- nothing specific noted'}
+
+Report honestly: pushed=true only if the push succeeded; prUrl "" when no PR exists.`,
+      { label: 'ship', phase: 'Ship', schema: SHIP_SCHEMA },
+    )
+    if (shipRes) ship = shipRes
+    else { ship.detail = 'ship agent failed — check the worktree state by hand'; log(`Ship: ${ship.detail}`) }
+}
+
+// ---- Phase: CI (lfg step 8) — watch checks, bounded autofix, durable residuals ----
+if (ship.pushed && ship.prUrl) {
+  phase('CI')
+  let ciStop = ''            // why the loop ended while still red: budget | no-fix-path | rounds
+  let ciLastFixPushed = false // a fix landed after the last watch and was never re-watched
+  for (let attempt = 1; attempt <= CI_ROUNDS; attempt++) {
+    if (!tailBudget(`CI attempt ${attempt}`)) { ciStop = 'budget'; break }
+    const r = await agent(
+      `CI watch iteration ${attempt}/${CI_ROUNDS}.
+PR: ${ship.prUrl}
+Worktree: ${INTEGRATION_WT}   Branch: ${INTEGRATION_BRANCH}
+Test command: ${recon.testCommand}`,
+      { label: `ci-watch-${attempt}`, phase: 'CI', agentType: 'ci-watcher', schema: CI_SCHEMA },
+    )
+    ci.attempts = attempt
+    if (!r) { ci.status = 'unknown'; ci.detail = 'ci watch agent failed'; log('CI watch agent failed — PR checks state unknown'); break }
+    ci.status = r.checks
+    ci.detail = r.detail
+    ciLastFixPushed = r.checks === 'red' && r.fixedAndPushed
+    if (r.checks !== 'red') break
+    if (!r.fixedAndPushed) { ciStop = 'no-fix-path'; break } // nothing was pushed — re-watching would loop on the same failure
+    if (attempt === CI_ROUNDS) ciStop = 'rounds'
+  }
+  if (ci.status === 'red') {
+    const stopReason = ciStop === 'budget' ? 'the token budget floor was reached'
+      : ciStop === 'no-fix-path' ? 'the failure has no fix path (e.g. flaky or external)'
+      : `the iteration cap (${CI_ROUNDS}) was reached`
+    const recorded = await agent(
+      `A CI autofix loop stopped because ${stopReason}; checks were RED on the last
+watch of PR ${ship.prUrl}: ${ci.detail}
+${ciLastFixPushed ? 'NOTE: a fix WAS pushed after that last watch and never re-watched — state in the section that checks may yet turn green.' : ''}
+Make this durable per the autopilot contract: from ${INTEGRATION_WT}, fetch the
+current PR body (gh pr view --json body), append or replace a
+"## CI Failures Unresolved" section listing each failing check with its link and
+failure summary, write the new body to a temp file, and apply it with
+gh pr edit --body-file. Do NOT change code.`,
+      { label: 'ci-residual', phase: 'CI', model: 'sonnet' },
+    )
+    ci.residualRecorded = !!recorded
+    log(recorded
+      ? `CI still red (${stopReason}) — recorded in the PR body, not looping further`
+      : 'CI residual recorder FAILED — the PR body does NOT carry the unresolved failures')
+  }
+} else if (ship.pushed) {
+  ci.detail = 'branch pushed but no PR — nothing to watch'
+  log('CI watch skipped: no PR exists')
+}
+
 } // end if (!halted)
 
-// Deliberately NO push / PR creation: the branch is ready for the main session
-// (and the user) to review and ship via ce-commit-push-pr.
 return {
   plan: PLAN,
   planVersion: args.planVersion || 'unversioned',
@@ -757,5 +1180,10 @@ return {
   effortFloor: EFFORT_FLOOR || 'none',
   codexCircuitBreakerTripped: codexBroken,
   confirmedReviewFindings: confirmedCount,
+  residualReviewFindings: residuals,
   validation,
+  proof,
+  ship,
+  ci,
+  compound: compounded,
 }

@@ -25,6 +25,13 @@ The vocabulary this repo uses when talking about dynamic workflows. Definitions 
 The repo's own workflow ([`workflows/ce-work-deterministic.js`](workflows/ce-work-deterministic.js)) and its persona agents ([`agents/`](agents/)) add:
 
 - **Dossier** — a fully self-contained task brief produced by the `task-splitter` agent: everything a `unit-executor` needs to implement one task in a single context window.
-- **Unit executor** — the agent that implements one dossier inside an isolated git worktree, with test discipline and honest status reporting.
+- **Unit executor** — the agent that implements one dossier inside an isolated git worktree, TDD by default (red-green-refactor, watch the test fail first), with honest status reporting.
 - **Executor routing** — the `executor-router` agent's judgment call: send a task to the Codex CLI (via `codex-runner`) or to a Claude executor, and pick the Codex reasoning-effort level.
 - **Skeptical refuter** — the verifier persona: tries to refute a single finding against the actual code, defaulting to refuted when uncertain.
+- **Second-model review** — the `codex-reviewer` agent running the Codex CLI read-only over the integration diff; its findings face the same skeptical refuter as the Claude personas (cross-model both ways).
+- **Simplify-as-you-go** — the mid-run simplification hook: after a wave that merged 2+ tasks, consolidate the integration branch (via the installed `ce-simplify-code` skill) before the next wave forks from it.
+- **Ship gate** — the hard condition for the Ship phase: validation tests AND lint green, or the branch stays local. Invoking the workflow with ship enabled is the consent to push and open a PR.
+- **Residual** — a confirmed-but-unfixed finding, failed task, unmet requirement, or unresolved CI failure; made durable in the PR body (the lfg autopilot contract: never silently dropped, never prompts).
+- **Proof** — the browser-testing phase: an agent follows the installed `ce-test-browser` skill in pipeline mode against the merged worktree, with exactly one fix-and-retest round.
+- **CI watcher** — the `ci-watcher` persona: one watch-fix-push iteration per dispatch of the bounded (default 3) CI autofix loop; never weakens or deletes tests to get green.
+- **Compound step** — the pre-ship agent following the installed `ce-compound` skill headlessly: documents non-trivial solved-and-verified problems from the run under `docs/solutions/`. Runs before Ship so its docs commit rides the one push (a post-ship push would restart CI).
