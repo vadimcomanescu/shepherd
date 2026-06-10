@@ -476,6 +476,7 @@ S('S20 CI exhaustion and CI fix-impossible both end with durable PR residuals', 
   assert.equal(a.result.ci.attempts, 3, 'capped at CI_ROUNDS')
   const residualCall = a.trace.calls.find((c) => c.label === 'ci-residual')
   assert.ok(residualCall && residualCall.prompt.includes('a fix WAS pushed after that last watch'), 'unwatched final push stated honestly')
+  assert.ok(residualCall.prompt.includes('Round history') && residualCall.prompt.includes('- round 1:') && residualCall.prompt.includes('- round 3:'), 'durable note carries the full round history')
   // (b) red with nothing pushed (e.g. flaky, no fix path) -> stop after 1, residual recorded
   const stuck = makeDispatcher({
     'ci-watch-': () => ({ checks: 'red', fixedAndPushed: false, detail: 'flaky, no fix path' }),

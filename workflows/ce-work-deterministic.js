@@ -221,7 +221,7 @@ const CI_SCHEMA = {
   properties: {
     checks: { enum: ['green', 'red', 'no-ci'] },
     fixedAndPushed: { type: 'boolean', description: 'true when checks were red and a root-cause fix was committed and pushed' },
-    detail: { type: 'string' },
+    detail: { type: 'string', description: 'one line: what failed, the diagnosis, and what the pushed fix changed (files + approach) — later rounds read this to avoid repeating a failed approach' },
   },
   required: ['checks', 'fixedAndPushed', 'detail'],
 }
@@ -1124,10 +1124,10 @@ if (ship.pushed && ship.prUrl) {
 PR: ${ship.prUrl}
 Worktree: ${INTEGRATION_WT}   Branch: ${INTEGRATION_BRANCH}
 Test command: ${recon.testCommand}${ciHistory.length ? `
-Previous rounds — a check that fails again after one of these pushed fixes
-means that round's diagnosis was wrong or partial: diagnose afresh (including
-reverting the prior fix if it proves to be a symptom patch), and do not repeat
-an approach listed here:
+Previous rounds — if the same underlying failure recurs after one of these
+pushed fixes, that round's diagnosis was likely wrong or partial: diagnose
+afresh from the code (including reverting the prior fix if it proves to be a
+symptom patch), and do not repeat an approach listed here:
 ${ciHistory.join('\n')}` : ''}`,
       { label: `ci-watch-${attempt}`, phase: 'CI', agentType: 'ci-watcher', schema: CI_SCHEMA },
     )
@@ -1135,7 +1135,7 @@ ${ciHistory.join('\n')}` : ''}`,
     if (!r) { ci.status = 'unknown'; ci.detail = 'ci watch agent failed'; log('CI watch agent failed — PR checks state unknown'); break }
     ci.status = r.checks
     ci.detail = r.detail
-    ciHistory.push(`- round ${attempt}: checks=${r.checks}, fixedAndPushed=${r.fixedAndPushed} — ${r.detail}`)
+    ciHistory.push(`- round ${attempt}: checks=${r.checks}, fixedAndPushed=${r.fixedAndPushed} — ${String(r.detail).replace(/\s*\n\s*/g, ' ')}`)
     ciLastFixPushed = r.checks === 'red' && r.fixedAndPushed
     if (r.checks !== 'red') break
     if (!r.fixedAndPushed) { ciStop = 'no-fix-path'; break } // nothing was pushed — re-watching would loop on the same failure
@@ -1158,7 +1158,10 @@ ${ciHistory.join('\n')}` : ''}`,
   if (ciSituation) {
     const recorded = await agent(
       `PR ${ship.prUrl} needs a durable note: ${ciSituation}
-Last detail: ${ci.detail || 'none'}
+Last detail: ${ci.detail || 'none'}${ciHistory.length ? `
+Round history (include it in the note — it tells the next human or agent what
+was already tried):
+${ciHistory.join('\n')}` : ''}
 Make this durable per the autopilot contract: from ${INTEGRATION_WT}, fetch the
 current PR body (gh pr view --json body), append or replace a
 "## CI Status Unresolved" section stating the situation above and listing any
