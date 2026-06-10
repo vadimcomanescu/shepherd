@@ -30,7 +30,7 @@ Nothing instrumented yet; measured manually from run reports and git history.
 
 ### Execution harness
 
-ce-work-deterministic: plan splitting into dossiers, executor routing (Codex vs Claude), isolated worktree execution.
+nadia-deliver: plan splitting into dossiers, executor routing (Codex vs Claude), isolated worktree execution.
 
 _Why it serves the approach:_ this is the plan-in-code harness itself.
 

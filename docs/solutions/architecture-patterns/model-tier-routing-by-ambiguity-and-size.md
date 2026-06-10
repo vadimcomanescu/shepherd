@@ -2,7 +2,7 @@
 title: Route model tiers by ambiguity x size; escalate verification (not just model) on risk
 date: 2026-06-10
 category: architecture-patterns
-module: ce-work-deterministic
+module: nadia-deliver
 problem_type: architecture_pattern
 component: development_workflow
 applies_when:

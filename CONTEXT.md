@@ -20,9 +20,9 @@ The vocabulary this repo uses when talking about dynamic workflows. Definitions 
 - **Resume** — replaying a workflow run (`scriptPath` + `resumeFromRunId`); unchanged `agent()` calls return cached results, edited or new calls run live.
 - **Grunt work** — search, fetch, extraction, mechanical authoring, routine verification. Runs on `model: "sonnet"`; the session model is the default; `opus` is reserved for genuine top-tier reasoning.
 
-## ce-work-deterministic terms
+## nadia-deliver terms
 
-The repo's own workflow ([`workflows/ce-work-deterministic.js`](workflows/ce-work-deterministic.js)) and its persona agents ([`agents/`](agents/)) add:
+The repo's own workflow ([`workflows/nadia-deliver.js`](workflows/nadia-deliver.js)) and its persona agents ([`agents/`](agents/)) add:
 
 - **Dossier** — a fully self-contained task brief produced by the `task-splitter` agent: everything a `unit-executor` needs to implement one task in a single context window.
 - **Unit executor** — the agent that implements one dossier inside an isolated git worktree, TDD by default (red-green-refactor, watch the test fail first), with honest status reporting.

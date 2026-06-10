@@ -6,7 +6,7 @@ import assert from 'node:assert'
 // Build the coordinator from the actual workflow script: same injection contract
 // as the dynamic-workflow runtime (body runs in an async function scope).
 const dir = dirname(fileURLToPath(import.meta.url))
-const scriptSrc = readFileSync(join(dir, 'ce-work-deterministic.js'), 'utf8').replace(/^export const meta = /, 'const meta = ')
+const scriptSrc = readFileSync(join(dir, 'nadia-deliver.js'), 'utf8').replace(/^export const meta = /, 'const meta = ')
 const codexReviewerSrc = readFileSync(join(dir, '..', 'agents', 'codex-reviewer.md'), 'utf8')
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
 const body = new AsyncFunction('args', 'agent', 'parallel', 'pipeline', 'phase', 'log', 'budget', 'workflow', scriptSrc)

@@ -1,7 +1,7 @@
 export const meta = {
   name: 'nadia-plan',
-  description: 'Plan-production pipeline: lock a request or brainstorm into Confirmed Intent, research the repo, challenge the framing, author a ce-plan-format plan document, then run a bounded editor loop (persona doc-review, skeptical refutation, verified fix application, read-only spikes for design unknowns) and final gates (ce-work parse conformance, releasability checklist, origin coverage, cross-plan overlap), hygiene-check the workspace, optionally commit, and return a machine-readable run summary consumable by ce-work-deterministic.',
-  whenToUse: 'Producing a plan document for ce-work-deterministic from a request or an origin brainstorm/requirements doc, autonomously (no interactive questions; blocking unknowns become a structured halt). Passing commit: true IS the consent to commit the plan file. args: { request?: "<what to plan>", origin?: "<path to brainstorm/requirements doc>", originVersion?: "<hash-or-mtime — pass a NEW value after editing the origin doc so resume does not replay stale cached research>", depth?: "lightweight"|"standard"|"deep", date?: "YYYY-MM-DD", commit?: true|false, editorRounds?: <1..5, default 3>, reviewRounds?: <1..3, default 2>, spikes?: true|false, externalResearch?: true|false }',
+  description: 'Plan-production pipeline: lock a request or brainstorm into Confirmed Intent, research the repo, challenge the framing, author a ce-plan-format plan document, then run a bounded editor loop (persona doc-review, skeptical refutation, verified fix application, read-only spikes for design unknowns) and final gates (ce-work parse conformance, releasability checklist, origin coverage, cross-plan overlap), hygiene-check the workspace, optionally commit, and return a machine-readable run summary consumable by nadia-deliver.',
+  whenToUse: 'Producing a plan document for nadia-deliver from a request or an origin brainstorm/requirements doc, autonomously (no interactive questions; blocking unknowns become a structured halt). Passing commit: true IS the consent to commit the plan file. args: { request?: "<what to plan>", origin?: "<path to brainstorm/requirements doc>", originVersion?: "<hash-or-mtime — pass a NEW value after editing the origin doc so resume does not replay stale cached research>", depth?: "lightweight"|"standard"|"deep", date?: "YYYY-MM-DD", commit?: true|false, editorRounds?: <1..5, default 3>, reviewRounds?: <1..3, default 2>, spikes?: true|false, externalResearch?: true|false }',
   phases: [
     { title: 'Intake', detail: 'Lock Confirmed Intent, classify unknowns, set depth tier' },
     { title: 'Research', detail: 'Repo + learnings + conditional external research, cross-plan scan' },
@@ -40,6 +40,9 @@ const EDITOR_ROUNDS = Math.max(1, Math.min(5, args.editorRounds || 3))   // the 
 const PERSONA_ROUNDS = Math.max(1, Math.min(3, args.reviewRounds || 2))  // persona stage active rounds 1..PERSONA_ROUNDS; NOT a second counter
 const SPIKES_ENABLED = args.spikes !== false
 const EXTERNAL_RESEARCH = args.externalResearch !== false
+// Args echo — a launch whose args never arrived (observed live: a scriptPath
+// launch delivered no tool-level args) must die loudly AND legibly, never silently.
+log(`nadia-plan args resolved: request=${REQUEST ? `"${REQUEST.slice(0, 80)}${REQUEST.length > 80 ? '…' : ''}"` : '(none)'}, origin=${ORIGIN || '(none)'}, depth=${PINNED_DEPTH || '(auto)'}, date=${PLAN_DATE || '(derived)'}, commit=${COMMIT}, editorRounds=${EDITOR_ROUNDS}, reviewRounds=${PERSONA_ROUNDS}, spikes=${SPIKES_ENABLED}, externalResearch=${EXTERNAL_RESEARCH}`)
 const BUDGET_FLOOR = 30000                            // sibling line-548 constant, unchanged
 const belowBudgetFloor = () => !!budget.total && budget.remaining() <= BUDGET_FLOOR
 
@@ -170,7 +173,7 @@ const PERSONA_FINDINGS_SCHEMA = {
   required: ['findings'],
 }
 
-// Copied verbatim from ce-work-deterministic.js — the refuter verdict contract.
+// Copied verbatim from nadia-deliver.js — the refuter verdict contract.
 const VERDICT_SCHEMA = {
   type: 'object',
   properties: { refuted: { type: 'boolean' }, reason: { type: 'string' } },
@@ -233,7 +236,7 @@ const SPIKE_SCHEMA = {
   required: ['unknown', 'resolution', 'evidence', 'recommendation'],
 }
 
-// Copied VERBATIM from ce-work-deterministic.js (lines 39-70) — this byte-copy
+// Copied VERBATIM from nadia-deliver.js (lines 39-70) — this byte-copy
 // IS the compatibility guarantee: ce-work's own parser is the release test.
 const UNITS_SCHEMA = {
   type: 'object',
@@ -383,7 +386,7 @@ if (!intake) {
 if (intake.nonCodeDeliverable === true) {
   return summary('halted', {
     haltStage: 'S0-intake',
-    haltReason: 'request is a non-code deliverable — nadia-plan only produces implementation plans for ce-work-deterministic',
+    haltReason: 'request is a non-code deliverable — nadia-plan only produces implementation plans for nadia-deliver',
     nextStep: 'Restate the request as a code change (or handle the knowledge work directly), then re-invoke nadia-plan',
   })
 }
@@ -931,16 +934,20 @@ refutation-survived authority. Report applied/documented/unapplied and
 sectionsTouched.`
 
 // ---- shared pure-JS checks (M9/M13/M-X1) ----
+// Identity is about WHICH unit a uid names, not how the name is typeset: fixers
+// legitimately add backticks or rewrap whitespace while editing surrounding text,
+// and that must not read as a rename (observed live: playground run 2026-06-10).
+const canonUnitName = (s) => String(s).replace(/`/g, '').replace(/\s+/g, ' ').trim()
 const uidStabilityViolations = (baseline, current, rIdEditAuthorized) => {
   const v = []
   const baseByUid = new Map(baseline.pairs.map((p) => [p.uid, p.name]))
   const curByUid = new Map(current.uidNamePairs.map((p) => [p.uid, p.name]))
   for (const [uid, name] of baseByUid) {
-    if (curByUid.has(uid) && curByUid.get(uid) !== name) v.push(`uid ${uid} renamed: "${name}" is now "${curByUid.get(uid)}" (identity swap)`)
+    if (curByUid.has(uid) && canonUnitName(curByUid.get(uid)) !== canonUnitName(name)) v.push(`uid ${uid} renamed: "${name}" is now "${curByUid.get(uid)}" (identity swap)`)
   }
   for (const [uid, name] of baseByUid) {
     if (!curByUid.has(uid)) {
-      const moved = current.uidNamePairs.find((p) => p.name === name && p.uid !== uid)
+      const moved = current.uidNamePairs.find((p) => canonUnitName(p.name) === canonUnitName(name) && p.uid !== uid)
       if (moved) v.push(`unit "${name}" moved from ${uid} to ${moved.uid} (renumber signature)`)
     }
   }
@@ -1015,7 +1022,7 @@ const postMutationChecks = async (checkerIn, ctx) => {
   let violations = uidStabilityViolations(uidBaseline, current, ctx.rIdEditAuthorized)
   if (violations.length) {
     log(`uid/R-ID stability violation after ${ctx.tag}: ${violations.join('; ')}`)
-    await agent(refixUidPrompt(violations), { label: `refix-uid-${ctx.tag}`, phase: ctx.phase })
+    await agent(refixUidPrompt(violations), { label: `refix-uid-${ctx.tag}`, phase: ctx.phase, schema: FIX_SCHEMA })
     const recheck = await agent(checkerPrompt([], []), { label: `check-refix-${ctx.tag}`, phase: ctx.phase, model: 'sonnet', schema: CHECKER_SCHEMA })
     if (!recheck) {
       return { haltStage: 'S4-uid-stability', haltReason: `uid stability re-check failed after violation: ${violations.join('; ')}`, nextStep: `Restore the original U-ID/R-ID identities in ${planPath} by hand (draft preserved at ${planPath}), then re-invoke nadia-plan` }
@@ -1788,7 +1795,7 @@ sectionsTouched.`
       }
     }
     // The document mutated after the parse — the consumer's parser must bless
-    // the FINAL bytes (total parse dispatches <= 3 per run, bounded).
+    // the FINAL bytes (total parse dispatches <= 4 per run worst case, bounded).
     parsed = await agent(parsePlanPrompt(), { label: 'parse-plan-final', phase: 'Gates', model: 'sonnet', schema: UNITS_SCHEMA })
     if (parsed) parsed = filterRiskSurfaces(parsed)
     const finalViolations = parsed ? parseViolations(parsed) : ['final parse returned null after the gate-fix round']
@@ -1814,7 +1821,7 @@ if (belowBudgetFloor()) {
   log('Hygiene gate skipped: token budget floor reached')
   log('Commit skipped: token budget floor reached')
   return summary('ready', {
-    nextStep: `Token budget exhausted before finalize — the workspace is UNVERIFIED: run git status by hand, commit the plan (git add ${planPath} && git commit -m "docs(plans): add ${slug} plan"), re-derive planVersion with git hash-object ${planPath}, then run ce-work-deterministic with { plan: '${planPath}' }`,
+    nextStep: `Token budget exhausted before finalize — the workspace is UNVERIFIED: run git status by hand, commit the plan (git add ${planPath} && git commit -m "docs(plans): add ${slug} plan"), re-derive planVersion with git hash-object ${planPath}, then run nadia-deliver with { plan: '${planPath}', planVersion: '<that hash>' }`,
   })
 }
 
@@ -1864,10 +1871,10 @@ if (commitDirty) hygieneClean = false
 
 const nextStep = committed
   ? (planVersion
-    ? `Run ce-work-deterministic with { plan: '${planPath}', planVersion: '${planVersion}' }`
-    : `Run ce-work-deterministic with { plan: '${planPath}' } — re-derive planVersion with git hash-object ${planPath} first (hygiene gate failed)`)
+    ? `Run nadia-deliver with { plan: '${planPath}', planVersion: '${planVersion}' }`
+    : `Run nadia-deliver with { plan: '${planPath}' } — re-derive planVersion with git hash-object ${planPath} first (hygiene gate failed)`)
   : planVersion
-    ? `Commit the plan file (git add ${planPath} && git commit -m "docs(plans): add ${slug} plan"), then run ce-work-deterministic with { plan: '${planPath}', planVersion: '${planVersion}' } — ce-work requires the plan committed`
-    : `Commit the plan file (git add ${planPath} && git commit -m "docs(plans): add ${slug} plan"), then run ce-work-deterministic with { plan: '${planPath}' } — re-derive planVersion with git hash-object after committing; ce-work requires the plan committed`
+    ? `Commit the plan file (git add ${planPath} && git commit -m "docs(plans): add ${slug} plan"), then run nadia-deliver with { plan: '${planPath}', planVersion: '${planVersion}' } — ce-work requires the plan committed`
+    : `Commit the plan file (git add ${planPath} && git commit -m "docs(plans): add ${slug} plan"), then run nadia-deliver with { plan: '${planPath}' } — re-derive planVersion with git hash-object after committing; ce-work requires the plan committed`
 
 return summary('ready', { nextStep })

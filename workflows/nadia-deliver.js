@@ -1,5 +1,5 @@
 export const meta = {
-  name: 'ce-work-deterministic',
+  name: 'nadia-deliver',
   description: 'Deterministic lfg pipeline: parse a ce-plan doc, split units into context-window-sized tasks, route each task to codex or claude, execute TDD in isolated worktrees, merge in dependency waves, simplify + persona/codex review with verified fixes, validate, browser-proof, compound learnings, ship (commit/push/PR), and watch CI with a bounded fix loop.',
   whenToUse: 'Executing a ce-plan plan document end-to-end with mixed codex/claude executors, through to a PR. Invoking with ship enabled IS the consent to push and open a PR. args: { plan: "<path>", planVersion?: "<hash-or-mtime — pass a NEW value after editing the plan so resume does not replay a stale cached parse>", base?: "<branch>", slug?: "<branch-slug>", codex?: true|false, sandbox?: "yolo"|"full-auto", effortFloor?: "<minimal|low|medium|high|xhigh>", proof?: true|false, ship?: true|false, compound?: true|false, ciRounds?: <max CI fix iterations, default 3>, startedAt?: <ms> }',
   phases: [
@@ -22,7 +22,7 @@ export const meta = {
 // args contract (all coordinator inputs come from args — no I/O here)
 // ============================================================
 if (!args || !args.plan) {
-  throw new Error('ce-work-deterministic requires args.plan = path to a ce-plan document')
+  throw new Error('nadia-deliver requires args.plan = path to a ce-plan document')
 }
 const PLAN = args.plan
 const CODEX_ENABLED = args.codex !== false           // invoking with codex enabled is the consent act
@@ -32,6 +32,9 @@ const PROOF_ENABLED = args.proof !== false
 const SHIP_ENABLED = args.ship !== false             // invoking with ship enabled is the consent to push + open a PR
 const COMPOUND_ENABLED = args.compound !== false
 const CI_ROUNDS = Math.max(1, Math.min(10, args.ciRounds || 3)) // lfg default 3; hard-clamped 1..10 so a bad arg cannot unbound the loop
+// Args echo — a launch whose args never arrived (observed live: a scriptPath
+// launch delivered no tool-level args) must die loudly AND legibly, never silently.
+log(`nadia-deliver args resolved: plan=${PLAN}, base=${args.base || '(default)'}, slug=${args.slug || '(derived)'}, codex=${CODEX_ENABLED}, sandbox=${SANDBOX}, proof=${PROOF_ENABLED}, ship=${SHIP_ENABLED}, compound=${COMPOUND_ENABLED}, ciRounds=${CI_ROUNDS}`)
 
 // ============================================================
 // Schemas
