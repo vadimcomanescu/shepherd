@@ -446,6 +446,24 @@ S('S19 CI loop: red+fixed, red+fixed, green on third watch', async () => {
   return 'bounded loop converges on green at attempt 3'
 })
 
+S('S30 CI rounds are grounded with prior-round history; round 1 is not', async () => {
+  let watch = 0
+  const d = makeDispatcher({
+    'ci-watch-': () => {
+      watch++
+      return watch < 3 ? { checks: 'red', fixedAndPushed: true, detail: `failure ${watch} repaired` } : { checks: 'green', fixedAndPushed: false, detail: 'all green' }
+    },
+  })
+  const { trace, error } = await run(d)
+  assert.ifError(error)
+  const w = (n) => trace.calls.find((c) => c.label === `ci-watch-${n}`)
+  assert.ok(!w(1).prompt.includes('Previous rounds'), 'round 1 has no history block')
+  assert.ok(w(2).prompt.includes('Previous rounds') && w(2).prompt.includes('failure 1 repaired'), 'round 2 grounded with round 1 outcome')
+  assert.ok(w(3).prompt.includes('failure 1 repaired') && w(3).prompt.includes('failure 2 repaired'), 'round 3 carries the full history')
+  assert.ok(w(3).prompt.includes('do not repeat'), 'history block carries the no-repeat instruction')
+  return 'contextless CI watchers are grounded with prior rounds'
+})
+
 S('S20 CI exhaustion and CI fix-impossible both end with durable PR residuals', async () => {
   // (a) 3 attempts, all red but each pushed a fix -> exhausted -> residual recorded
   const exhausted = makeDispatcher({
@@ -458,6 +476,7 @@ S('S20 CI exhaustion and CI fix-impossible both end with durable PR residuals', 
   assert.equal(a.result.ci.attempts, 3, 'capped at CI_ROUNDS')
   const residualCall = a.trace.calls.find((c) => c.label === 'ci-residual')
   assert.ok(residualCall && residualCall.prompt.includes('a fix WAS pushed after that last watch'), 'unwatched final push stated honestly')
+  assert.ok(residualCall.prompt.includes('Round history') && residualCall.prompt.includes('- round 1:') && residualCall.prompt.includes('- round 3:'), 'durable note carries the full round history')
   // (b) red with nothing pushed (e.g. flaky, no fix path) -> stop after 1, residual recorded
   const stuck = makeDispatcher({
     'ci-watch-': () => ({ checks: 'red', fixedAndPushed: false, detail: 'flaky, no fix path' }),
