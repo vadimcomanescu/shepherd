@@ -789,6 +789,42 @@ S('S33 a dead reviewer is a loud coverage gap, never a clean review', async () =
   return 'a lost reviewer perspective is logged, returned, and durable in the PR body'
 })
 
+S('S34 sequential fixers are grounded with prior batch outcomes; the first is not', async () => {
+  const findings = () => ({ findings: [
+    { title: 'bug one', file: 'src/u1.js', line: 4, severity: 'blocking', detail: 'd' },
+    { title: 'bug two', file: 'src/u2.js', line: 8, severity: 'suggested', detail: 'd' },
+  ] })
+  const d = makeDispatcher({
+    'review-correctness': findings,
+    'fix-u1.js': () => ({ fixed: ['bug one'], skipped: [], detail: 'ok' }),
+    'fix-u2.js': () => ({ fixed: ['bug two'], skipped: [], detail: 'ok' }),
+  })
+  const { trace, error } = await run(d)
+  assert.ifError(error)
+  const fix1 = trace.calls.find((c) => c.label === 'fix-u1.js')
+  const fix2 = trace.calls.find((c) => c.label === 'fix-u2.js')
+  assert.ok(!fix1.prompt.includes('Outcomes of earlier fix batches'), 'first batch has no history block')
+  assert.ok(fix1.prompt.includes('The findings to fix now:'), 'findings list is headed in both branches')
+  assert.ok(fix2.prompt.includes('Outcomes of earlier fix batches') && fix2.prompt.includes('src/u1.js: fixed [bug one]'),
+    'second batch grounded with the first batch outcome')
+  assert.ok(fix2.prompt.includes('verify\nagainst git log') && fix2.prompt.includes('Do not undo or\nrework'),
+    'history is framed as fixer self-report to verify, with the no-undo instruction')
+  assert.ok(fix2.prompt.indexOf('The findings to fix now:') > fix2.prompt.indexOf('src/u1.js: fixed'),
+    'history list and findings list are separated by the header')
+  // A dead fixer is named honestly in the next batch's brief, not papered over.
+  const d2 = makeDispatcher({
+    'review-correctness': findings,
+    'fix-u1.js': () => { throw new Error('fixer died') },
+    'fix-u2.js': () => ({ fixed: ['bug two'], skipped: [], detail: 'ok' }),
+  })
+  const r2 = await run(d2)
+  assert.ifError(r2.error)
+  const fix2b = r2.trace.calls.find((c) => c.label === 'fix-u2.js')
+  assert.ok(fix2b.prompt.includes('src/u1.js: fixer agent died — findings became residuals; whether it committed is unverified, check git log'),
+    'a dead prior batch is reported as dead with honest commit-state uncertainty')
+  return 'contextless sequential fixers are grounded with prior batch outcomes'
+})
+
 S('S26 tail budget floor: waves finish but Proof/Ship/Compound are skipped with logs', async () => {
   // Single unit; diffstat lowered so reviewer roster is fixed at 6 (no adversarial).
   // Call ledger at 10k/call: parse+recon(2) setup(3) split(4) route(5) exec(6) merge(7)

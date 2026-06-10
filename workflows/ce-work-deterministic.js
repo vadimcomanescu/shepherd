@@ -921,6 +921,7 @@ if (confirmed.length) {
   // worktree, so parallel edits/commits/test runs would race on the same tree.
   const byFile = {}
   for (const f of confirmed) (byFile[f.file] = byFile[f.file] || []).push(f)
+  const fixLog = []   // one line per completed batch — each fixer is contextless, so prior batches' commits must ride the brief
   for (const [file, fs] of Object.entries(byFile)) {
     const fx = await agent(
       `In the worktree ${INTEGRATION_WT} (branch ${INTEGRATION_BRANCH}): fix these
@@ -928,10 +929,20 @@ confirmed review findings in ${file}. Make the smallest correct fix for each, ru
 ${recon.testCommand}, stage ONLY the files you changed, and commit
 ("fix: address review findings in ${file}").
 If a finding turns out to be wrong once you read the code, skip it and say why.
-Report every finding as either fixed (by title) or skipped (title + reason).
+Report every finding as either fixed (by title) or skipped (title + reason).${fixLog.length ? `
+Outcomes of earlier fix batches this round, as REPORTED by each fixer — verify
+against git log before treating a claimed fix as settled. Do not undo or
+rework their commits; if your fix genuinely conflicts with one, skip the
+finding and say so instead:
+${fixLog.join('\n')}` : ''}
+The findings to fix now:
 ${fs.map((f) => `- (${f.severity}, ${f.persona}) ${f.title}: ${f.detail}`).join('\n')}`,
       { label: `fix-${file.split('/').pop()}`, phase: 'Quality', schema: FIX_SCHEMA },
     )
+    const oneLine = (s) => String(s).replace(/\s*\n\s*/g, ' ')
+    fixLog.push(fx
+      ? `- ${file}: fixed [${fx.fixed.map(oneLine).join('; ') || 'none'}], skipped [${fx.skipped.map((s) => oneLine(s.title)).join('; ') || 'none'}]`
+      : `- ${file}: fixer agent died — findings became residuals; whether it committed is unverified, check git log`)
     // Anything not verifiably fixed becomes a residual — durable in the PR body.
     if (!fx) residuals.push(...fs.map((f) => ({ title: f.title, file: f.file, severity: f.severity, reason: 'fixer agent failed' })))
     else {
