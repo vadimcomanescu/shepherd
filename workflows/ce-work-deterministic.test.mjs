@@ -669,6 +669,30 @@ S('S27 cross-reviewer dedup: same file+title from two reviewers is one finding, 
   return 'fingerprint dedup merges true dups, keeps distinct same-title findings'
 })
 
+S('S31 nit cap is loud: deferred nits are logged, listed in the result, and never verified', async () => {
+  const d = makeDispatcher({
+    'review-correctness': () => ({ findings: [
+      { title: 'real bug', file: 'src/u1.js', line: 4, severity: 'blocking', detail: 'd' },
+      { title: 'rename for clarity', file: 'src/u1.js', line: 9, severity: 'nit', detail: 'd' },
+      { title: 'comment typo', file: 'src/u2.js', line: 2, severity: 'nit', detail: 'd' },
+    ] }),
+    'fix-': () => ({ fixed: ['real bug'], skipped: [], detail: 'ok' }),
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  assert.ok(trace.logs.some((l) => l.includes('2 nit finding(s) not sent to verification')), 'cap is logged with the dropped count')
+  assert.deepEqual(result.nitsDeferred, [
+    '(correctness) src/u1.js:9 — rename for clarity',
+    '(correctness) src/u2.js:2 — comment typo',
+  ])
+  const verifies = trace.calls.filter((c) => c.label.startsWith('verify-correctness'))
+  assert.equal(verifies.length, 1, 'only the non-nit finding is verified')
+  assert.ok(!verifies[0].prompt.includes('rename for clarity'), 'a nit never reaches a refuter')
+  assert.equal(result.confirmedReviewFindings, 1, 'nits never enter confirmed accounting')
+  assert.deepEqual(result.residualReviewFindings, [], 'nits never become residuals')
+  return 'nit cost cap is explicit: logged + result, zero refuter spawns for nits'
+})
+
 S('S26 tail budget floor: waves finish but Proof/Ship/Compound are skipped with logs', async () => {
   // Single unit; diffstat lowered so reviewer roster is fixed at 6 (no adversarial).
   // Call ledger at 10k/call: parse+recon(2) setup(3) split(4) route(5) exec(6) merge(7)

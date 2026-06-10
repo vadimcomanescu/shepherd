@@ -741,6 +741,7 @@ let proofFixSucceeded = false // a proof fix round ran AND the retest cleared ev
 let ship = { pushed: false, prUrl: '', prCreated: false, planStatusFlipped: false, detail: halted ? 'run halted before quality/validation' : '' }
 let ci = { status: 'skipped', attempts: 0, detail: '', residualRecorded: false }
 let compounded = null
+const nitsDeferred = []       // nit findings excluded from verification (deliberate cost cap) — logged and returned, never silently dropped
 if (!halted) {
 
 phase('Quality')
@@ -833,6 +834,13 @@ const reviewed = await pipeline(
   (rev, rv) => {
     if (!rev || !rev.findings.length) return []
     const actionable = rev.findings.filter((f) => f.severity !== 'nit')
+    if (actionable.length < rev.findings.length) {
+      // The reviewPrompt solicits nit severity, so reviewers WILL produce nits;
+      // verifying/fixing them is a deliberate cost cap — but the cap must be loud.
+      nitsDeferred.push(...rev.findings.filter((f) => f.severity === 'nit')
+        .map((f) => `(${rv.key}) ${f.file}${f.line ? ':' + f.line : ''} — ${f.title}`))
+      log(`review-${rv.key}: ${rev.findings.length - actionable.length} nit finding(s) not sent to verification (cost cap) — listed in the workflow result`)
+    }
     return parallel(actionable.map((f) => () =>
       agent(
         `Finding (${f.severity}) ${f.file}${f.line ? ':' + f.line : ''} — ${f.title}
@@ -1183,6 +1191,7 @@ return {
     ...preSkipped.map((t) => [t.id, { title: t.title, routedTo: t.route.executor, status: 'skipped', detail: t.skipReason }]),
   ]),
   droppedUnits: droppedUnits.map((u) => u.uid),
+  nitsDeferred,
   effortFloor: EFFORT_FLOOR || 'none',
   codexCircuitBreakerTripped: codexBroken,
   confirmedReviewFindings: confirmedCount,
