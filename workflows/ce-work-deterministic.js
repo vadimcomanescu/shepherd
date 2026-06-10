@@ -352,6 +352,12 @@ ${SIMPLIFY_GUIDE}${extraContext}
 Behavior preservation is non-negotiable: same outputs, same errors, same side
 effects; do not relax assertions, weaken types, or delete tests. Run
 ${recon.testCommand} and commit ("${commitMessage}") only when green.
+Dead code: before deleting any symbol or file as dead, grep the full worktree
+for remaining references (imports, re-exports, string/dynamic lookups, scripts,
+bins). Delete only candidates with no remaining references; if a reference
+remains or you are uncertain, keep it and list it in your report instead —
+green tests alone cannot clear a deletion, because consumers outside the diff
+may be untested.
 If nothing is worth changing, change nothing and say so.`
 
 // ============================================================
