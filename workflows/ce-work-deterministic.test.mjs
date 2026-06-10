@@ -101,8 +101,8 @@ function makeDispatcher(overrides = {}, opts = {}) {
     if (label.startsWith('merge-')) return { status: 'merged', detail: 'ok' }
     if (label.startsWith('triage-')) return { verdict: 'continue', reason: 'local', evidence: [] }
     if (label === 'diffstat') return { lines: 120 }
-    if (label === 'simplify') return 'nothing to simplify'
-    if (label.startsWith('simplify-wave-')) return 'nothing to simplify'
+    if (label === 'simplify') return { changed: false, detail: 'nothing to simplify', kept: [] }
+    if (label.startsWith('simplify-wave-')) return { changed: false, detail: 'nothing to simplify', kept: [] }
     if (label === 'review-codex') return { ran: true, findings: [], detail: 'clean' }
     if (label.startsWith('review-')) return { findings: [] }
     if (label.startsWith('verify-')) return { refuted: false, reason: 'confirmed' }
@@ -652,7 +652,24 @@ S('S24 simplify-as-you-go: fires only after a multi-merge wave, never after the 
   const call = trace.calls.find((c) => c.label === 'simplify-wave-1')
   assert.ok(call.prompt.includes('U1, U4') || call.prompt.includes('U4, U1'), 'grounded with the merged task ids')
   assert.ok(call.prompt.includes('ce-simplify-code'), 'follows the installed skill')
+  assert.ok(call.prompt.includes('Dead code'), 'dead-code grep gate present in the prompt')
+  const quality = trace.calls.find((c) => c.label === 'simplify')
+  assert.ok(quality.prompt.includes('Dead code'), 'dead-code grep gate present in the quality pass too')
   return 'mid-run simplify hook gated correctly'
+})
+
+S('S29 simplify kept-dead-code candidates are durable: logged, in the ship PR body, and in the result', async () => {
+  const d = makeDispatcher({
+    'simplify-wave-': () => ({ changed: false, detail: 'nothing to simplify', kept: [] }),
+    'simplify': () => ({ changed: true, detail: 'removed one helper', kept: ['lib/format.js:formatCents — still imported by bin/report.js'] }),
+  }, { routeExecutor: () => 'claude' })
+  const { trace, result, error } = await run(d)
+  assert.ifError(error)
+  assert.ok(trace.logs.some((l) => l.includes('dead-code candidate')), 'kept candidates are logged, never silent')
+  const shipCall = trace.calls.find((c) => c.label === 'ship')
+  assert.ok(shipCall.prompt.includes('formatCents'), 'kept candidate durable in the PR body residuals')
+  assert.deepEqual(result.simplifyKept, ['quality: lib/format.js:formatCents — still imported by bin/report.js'])
+  return 'kept dead-code candidates flow to logs, PR body, and result'
 })
 
 S('S27 cross-reviewer dedup: same file+title from two reviewers is one finding, one fix line', async () => {

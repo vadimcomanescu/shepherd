@@ -147,6 +147,16 @@ const MERGE_SCHEMA = {
   required: ['status', 'detail'],
 }
 
+const SIMPLIFY_SCHEMA = {
+  type: 'object',
+  properties: {
+    changed: { type: 'boolean', description: 'true only when a simplification commit landed' },
+    detail: { type: 'string' },
+    kept: { type: 'array', items: { type: 'string' }, description: 'dead-code candidates kept because a reference remains or certainty was lacking' },
+  },
+  required: ['changed', 'detail', 'kept'],
+}
+
 const FINDINGS_SCHEMA = {
   type: 'object',
   properties: {
@@ -352,7 +362,18 @@ ${SIMPLIFY_GUIDE}${extraContext}
 Behavior preservation is non-negotiable: same outputs, same errors, same side
 effects; do not relax assertions, weaken types, or delete tests. Run
 ${recon.testCommand} and commit ("${commitMessage}") only when green.
-If nothing is worth changing, change nothing and say so.`
+Dead code (overrides any skill guidance on deletions): before deleting any
+symbol or file as dead, grep this worktree for remaining references — imports,
+re-exports, string/dynamic lookups, scripts, bins — ignoring only code removed
+in this same pass, and re-grep after each deletion. Delete only candidates
+with no remaining references; exported symbols of a published package count
+as referenced. If a reference remains or you are uncertain, keep it and
+record it in kept — green tests alone cannot clear a deletion, because
+consumers outside the diff may be untested.
+If nothing is worth changing, change nothing and say so in detail.
+Return: changed (true only if you committed), detail (what you did or why
+nothing), kept (each kept dead-code candidate as "file:symbol — evidence";
+[] when none).`
 
 // ============================================================
 // Phase: Setup — integration worktree; main checkout is never touched again
@@ -550,6 +571,7 @@ let budgetHalted = false
 const BUDGET_FLOOR = 30000    // stop dispatching below this many remaining tokens
 const belowBudgetFloor = () => !!budget.total && budget.remaining() <= BUDGET_FLOOR
 
+const simplifyKept = []  // dead-code candidates the simplify passes kept — surfaced in logs, the result, and (when shipping) PR residuals
 for (let w = 0; w < waves.length; w++) {
   // Budget stop-loss: end cleanly with a partial result instead of mid-wave throws.
   if (belowBudgetFloor()) {
@@ -713,13 +735,17 @@ hands the decision back to the human.`,
   // worktrees fork from it. The final wave is covered by the Quality simplify.
   const mergedThisWave = wave.filter((t) => results[t.id] && results[t.id].status === 'merged')
   if (w < waves.length - 1 && mergedThisWave.length >= 2) {
-    await agent(
+    const sw = await agent(
       simplifyPrompt(`
 This is a mid-implementation pass — ${mergedThisWave.map((t) => t.id).join(', ')} just
 merged and later tasks will build on this tree, so consolidate duplication NOW
 but leave intentional seams alone.`, `refactor: simplify after wave ${w + 1}`),
-      { label: `simplify-wave-${w + 1}`, phase: 'Integrate' },
+      { label: `simplify-wave-${w + 1}`, phase: 'Integrate', schema: SIMPLIFY_SCHEMA },
     )
+    if (sw && sw.kept.length) {
+      simplifyKept.push(...sw.kept.map((k) => `wave ${w + 1}: ${k}`))
+      log(`Simplify wave ${w + 1}: ${sw.kept.length} dead-code candidate(s) kept, not deleted — ${sw.kept.join('; ')}`)
+    }
   }
 }
 
@@ -755,10 +781,14 @@ Return ONLY the total changed-line count as a number.`,
 const changedLines = diffStat ? diffStat.lines : 0
 
 if (changedLines >= 30) {
-  await agent(
+  const sq = await agent(
     simplifyPrompt('', `refactor: simplify after ${SLUG} implementation`),
-    { label: 'simplify', phase: 'Quality' },
+    { label: 'simplify', phase: 'Quality', schema: SIMPLIFY_SCHEMA },
   )
+  if (sq && sq.kept.length) {
+    simplifyKept.push(...sq.kept.map((k) => `quality: ${k}`))
+    log(`Simplify: ${sq.kept.length} dead-code candidate(s) kept, not deleted — ${sq.kept.join('; ')}`)
+  }
 } else {
   log(`Simplify skipped: diff is ${changedLines} lines (<30)`)
 }
@@ -1062,6 +1092,7 @@ if (!SHIP_ENABLED) {
     const reqLines = (validation.requirements || []).map((r) => `- ${r.id}: ${r.verdict} — ${r.evidence}`)
     const residualLines = [
       ...residuals.map((f) => `- (${f.severity}) ${f.file} — ${f.title}: ${f.reason}`),
+      ...simplifyKept.map((k) => `- (info) simplify kept a dead-code candidate, not deleted — ${k}`),
       ...Object.entries(results).filter(([, r]) => r.status !== 'merged').map(([id, r]) => `- task ${id}: ${r.status} — ${r.detail}`),
       ...droppedUnits.map((u) => `- unit ${u.uid} (${u.name}): splitter failed — never executed`),
       ...preSkipped.map((t) => `- task ${t.id}: skipped — ${t.skipReason}`),
@@ -1200,6 +1231,7 @@ return {
   codexCircuitBreakerTripped: codexBroken,
   confirmedReviewFindings: confirmedCount,
   residualReviewFindings: residuals,
+  simplifyKept,
   validation,
   proof,
   ship,
