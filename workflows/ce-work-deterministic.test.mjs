@@ -614,17 +614,23 @@ S('S22 codex second-model reviewer: findings verified by claude refuter; ran=fal
   assert.equal(a.result.confirmedReviewFindings, 1)
   const verify = a.trace.calls.find((c) => c.label.startsWith('verify-codex-'))
   assert.equal(verify.agentType, 'skeptical-refuter', 'codex finding cross-verified by claude')
-  // (b) codex review fails to run -> logged, zero findings, run unaffected
+  // (b) codex review fails to run -> logged with detail AND recorded as a
+  // missing perspective: zero findings, surviving reviewers unaffected, but
+  // the run is no longer pretending the codex perspective was covered
   const broken = makeDispatcher({ 'review-codex': () => ({ ran: false, findings: [], detail: 'codex binary crashed' }) })
   const b = await run(broken)
   assert.ifError(b.error)
   assert.ok(b.trace.logs.some((m) => /Codex second-model review did not run: codex binary crashed/.test(m)))
-  // (c) codex unavailable -> reviewer roster has no codex entry at all
+  assert.deepEqual(b.result.reviewDrops.reviewerDied, ['codex'], 'ran=false is a recorded coverage gap')
+  assert.ok(b.trace.calls.find((c) => c.label === 'ship').prompt.includes('(COVERAGE GAP) reviewer codex'), 'and durable in the PR body')
+  // (c) codex unavailable -> reviewer roster has no codex entry at all; an
+  // excluded reviewer is NOT a dead one
   const off = makeDispatcher({}, { recon: { codexAvailable: false } })
   const c = await run(off)
   assert.ifError(c.error)
   assert.ok(!c.trace.calls.some((x) => x.label === 'review-codex'))
   assert.ok(c.trace.logs.some((m) => /Codex second-model review skipped/.test(m)))
+  assert.deepEqual(c.result.reviewDrops.reviewerDied, [], 'roster exclusion never reports MISSING')
   return 'cross-model review verified, failure surfaced, absence logged'
 })
 
@@ -760,6 +766,27 @@ S('S32 verification drops are loud and distinguishable: refuted-with-evidence vs
   assert.ok(!shipCall.prompt.includes('phantom bug'),
     'refuted-with-evidence drops stay out of the PR body — they were judged not real')
   return 'verification stage cannot drop a finding silently in either direction'
+})
+
+S('S33 a dead reviewer is a loud coverage gap, never a clean review', async () => {
+  const d = makeDispatcher({
+    'review-standards': () => { throw new Error('reviewer died') },
+    'review-correctness': () => ({ findings: [
+      { title: 'real bug', file: 'src/u1.js', line: 4, severity: 'blocking', detail: 'd' },
+    ] }),
+    'fix-': () => ({ fixed: ['real bug'], skipped: [], detail: 'ok' }),
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  assert.deepEqual(result.reviewDrops.reviewerDied, ['standards'], 'the dead reviewer is named in the result')
+  assert.ok(trace.logs.some((l) => l.includes('Reviewer standards produced no result')), 'death is logged when it happens')
+  assert.ok(trace.logs.some((l) => l.includes("1 reviewer perspective(s) MISSING (standards)")), 'and counted in the summary log')
+  assert.equal(result.confirmedReviewFindings, 1, 'surviving reviewers still flow through verification to fixing')
+  assert.deepEqual(result.residualReviewFindings, [], 'a dead reviewer never leaks into finding-style residuals')
+  const shipCall = trace.calls.find((c) => c.label === 'ship')
+  assert.ok(shipCall.prompt.includes('(COVERAGE GAP) reviewer standards produced no result'),
+    'the missing perspective is durable in the PR-body residuals')
+  return 'a lost reviewer perspective is logged, returned, and durable in the PR body'
 })
 
 S('S26 tail budget floor: waves finish but Proof/Ship/Compound are skipped with logs', async () => {

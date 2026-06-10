@@ -764,7 +764,7 @@ if (halted) log(`Skipping Quality and Validate phases (${planInvalidation ? 'pla
 // ============================================================
 let confirmedCount = 0
 let validation = null
-const reviewDrops = { refuted: [], verifierDied: [] } // per-verdict records of finding instances NOT confirmed at verification: refuted-with-evidence vs no verdict (refuter died or was skipped). A duplicate of a refuted instance may still be confirmed via another reviewer. Fail-closed by design, but loud, never silent.
+const reviewDrops = { refuted: [], verifierDied: [], reviewerDied: [] } // coverage lost in the Quality gate, loud, never silent: refuted-with-evidence and no-verdict (refuter died/skipped) are per-verdict instance records (a duplicate of a refuted instance may still be confirmed via another reviewer; fail-closed by design); reviewerDied lists reviewer perspectives that produced NO result at all — their entire viewpoint is missing from the review.
 let residuals = []            // confirmed-but-unfixed findings — made durable in the PR body (lfg residual contract)
 let proof = null
 let proofFixSucceeded = false // a proof fix round ran AND the retest cleared every previously failing route
@@ -866,7 +866,13 @@ const reviewed = await pipeline(
   reviewers,
   (rv) => rv.spawn(),
   (rev, rv) => {
-    if (!rev || !rev.findings.length) return []
+    if (!rev) {
+      // A dead reviewer is NOT a clean reviewer: its whole perspective is gone.
+      reviewDrops.reviewerDied.push(rv.key)
+      log(`Reviewer ${rv.key} produced no result (died, skipped, or reported it could not run) — its perspective is MISSING from this review`)
+      return []
+    }
+    if (!rev.findings.length) return []
     const actionable = rev.findings.filter((f) => f.severity !== 'nit')
     if (actionable.length < rev.findings.length) {
       // The reviewPrompt solicits nit severity, so reviewers WILL produce nits;
@@ -907,7 +913,8 @@ const confirmed = [...byFingerprint.values()]
 confirmedCount = confirmed.length
 log(`${confirmed.length} confirmed finding(s) after adversarial verification and dedup${
   reviewDrops.refuted.length ? `; ${reviewDrops.refuted.length} refuted with evidence` : ''}${
-  reviewDrops.verifierDied.length ? `; ${reviewDrops.verifierDied.length} dropped UNVERIFIED — refuter produced no verdict (died or skipped)` : ''}`)
+  reviewDrops.verifierDied.length ? `; ${reviewDrops.verifierDied.length} dropped UNVERIFIED — refuter produced no verdict (died or skipped)` : ''}${
+  reviewDrops.reviewerDied.length ? `; ${reviewDrops.reviewerDied.length} reviewer perspective(s) MISSING (${reviewDrops.reviewerDied.join(', ')})` : ''}`)
 
 if (confirmed.length) {
   // Batch by file, but apply SEQUENTIALLY: all fixers share the one integration
@@ -1109,6 +1116,7 @@ if (!SHIP_ENABLED) {
     const residualLines = [
       ...residuals.map((f) => `- (${f.severity}) ${f.file} — ${f.title}: ${f.reason}`),
       ...reviewDrops.verifierDied.map((k) => `- (UNVERIFIED) ${k} — refuter produced no verdict; dropped fail-closed without verification`),
+      ...reviewDrops.reviewerDied.map((k) => `- (COVERAGE GAP) reviewer ${k} produced no result — its entire review perspective is missing from this PR's quality gate`),
       ...simplifyKept.map((k) => `- (info) simplify kept a dead-code candidate, not deleted — ${k}`),
       ...Object.entries(results).filter(([, r]) => r.status !== 'merged').map(([id, r]) => `- task ${id}: ${r.status} — ${r.detail}`),
       ...droppedUnits.map((u) => `- unit ${u.uid} (${u.name}): splitter failed — never executed`),
