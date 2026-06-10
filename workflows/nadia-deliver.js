@@ -21,6 +21,10 @@ export const meta = {
 // ============================================================
 // args contract (all coordinator inputs come from args — no I/O here)
 // ============================================================
+// The Workflow runtime delivers tool-level args to scriptPath launches as a
+// JSON-encoded STRING (observed live, twice — instant preflight death as
+// args.plan read undefined). Accept both forms at the boundary.
+if (typeof args === 'string') { try { args = JSON.parse(args) } catch { /* fall through — the contract check below dies legibly */ } }
 if (!args || !args.plan) {
   throw new Error('nadia-deliver requires args.plan = path to a ce-plan document')
 }

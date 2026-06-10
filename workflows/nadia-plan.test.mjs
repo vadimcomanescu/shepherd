@@ -970,6 +970,10 @@ S('S26 first-class repo arg: every dispatch is grounded with the target reposito
   const plain = await run(makeDispatcher())
   assert.ifError(plain.error)
   assert.ok(!plain.trace.calls.some((c) => c.prompt.includes('TARGET REPOSITORY:')), 'no grounding prefix when args.repo is unset')
+  // Runtime quirk: scriptPath launches deliver args as a JSON-encoded string.
+  const stringly = await run(makeDispatcher(), { args: JSON.stringify({ ...ARGS, repo: '/sibling/target-repo/' }) })
+  assert.ifError(stringly.error)
+  assert.ok(stringly.trace.calls.every((c) => c.prompt.startsWith('TARGET REPOSITORY: /sibling/target-repo\n')), 'JSON-string args are parsed at the boundary and behave identically')
   return 'one chokepoint grounds every contextless agent with the target repo'
 })
 

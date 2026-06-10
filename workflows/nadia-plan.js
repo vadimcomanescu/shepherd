@@ -20,6 +20,10 @@ export const meta = {
 // budget.total is set, the RUNTIME throws from a bare-awaited agent()
 // dispatched after the ceiling is reached — sibling-identical behavior.)
 // ============================================================
+// The Workflow runtime delivers tool-level args to scriptPath launches as a
+// JSON-encoded STRING (observed live, twice — instant preflight death as
+// args.request read undefined). Accept both forms at the boundary.
+if (typeof args === 'string') { try { args = JSON.parse(args) } catch { /* fall through — the contract check below dies legibly */ } }
 if (!args || ((!args.request || !String(args.request).trim()) && !args.origin)) {
   throw new Error('nadia-plan requires args.request (text) or args.origin (path to a brainstorm/requirements doc)')
 }
