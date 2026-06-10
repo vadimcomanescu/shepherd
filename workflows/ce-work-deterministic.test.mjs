@@ -7,6 +7,7 @@ import assert from 'node:assert'
 // as the dynamic-workflow runtime (body runs in an async function scope).
 const dir = dirname(fileURLToPath(import.meta.url))
 const scriptSrc = readFileSync(join(dir, 'ce-work-deterministic.js'), 'utf8').replace(/^export const meta = /, 'const meta = ')
+const codexReviewerSrc = readFileSync(join(dir, '..', 'agents', 'codex-reviewer.md'), 'utf8')
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
 const body = new AsyncFunction('args', 'agent', 'parallel', 'pipeline', 'phase', 'log', 'budget', 'workflow', scriptSrc)
 const coordinator = ({ args, agent, parallel, pipeline, phase, log, budget, workflow }) => body(args, agent, parallel, pipeline, phase, log, budget, workflow)
@@ -17,7 +18,7 @@ function makeRuntime(dispatcher, { budgetTotal = null, costPerCall = 10000 } = {
   const trace = { calls: [], logs: [], phases: [] }
   let spent = 0
   const agent = async (prompt, opts = {}) => {
-    trace.calls.push({ label: opts.label || '(none)', prompt, agentType: opts.agentType })
+    trace.calls.push({ label: opts.label || '(none)', prompt, agentType: opts.agentType, schema: opts.schema })
     spent += costPerCall
     try {
       return await dispatcher(prompt, opts, trace.calls.length)
@@ -105,7 +106,8 @@ function makeDispatcher(overrides = {}, opts = {}) {
     if (label.startsWith('simplify-wave-')) return { changed: false, detail: 'nothing to simplify', kept: [] }
     if (label === 'review-codex') return { ran: true, findings: [], detail: 'clean' }
     if (label.startsWith('review-')) return { findings: [] }
-    if (label.startsWith('verify-')) return { refuted: false, reason: 'confirmed' }
+    if (label === 'sweep') return { findings: [] }
+    if (label.startsWith('verify-')) return { verdict: 'CONFIRMED', evidence: 'e' }
     if (label.startsWith('fix-')) return { fixed: [], skipped: [], detail: 'fixed' }
     if (label === 'final-validation') return VALIDATION
     if (label === 'proof' || label === 'proof-retest') return { status: 'pass', routes: [{ route: '/', result: 'pass', detail: 'renders' }], detail: 'ok' }
@@ -150,6 +152,8 @@ S('S1 happy path: 4 units, mixed routing, all merged + validated', async () => {
   assert.ok(mergeU1 < execU2, 'U1 merged before U2 executes')
   // migrations persona selected
   assert.ok(trace.calls.some((c) => c.label === 'review-migrations'), 'migrations reviewer ran')
+  assert.ok(trace.calls.some((c) => c.label === 'review-removed-behavior'), 'removed-behavior inline reviewer ran')
+  assert.ok(trace.calls.some((c) => c.label === 'review-cross-file'), 'cross-file inline reviewer ran')
   // extracted agent personas dispatched via agentType
   const types = Object.fromEntries(trace.calls.map((c) => [c.label, c.agentType]))
   assert.equal(types['split-U1'], 'task-splitter')
@@ -160,6 +164,18 @@ S('S1 happy path: 4 units, mixed routing, all merged + validated', async () => {
   assert.equal(types['review-standards'], 'compound-engineering:ce-project-standards-reviewer')
   assert.equal(types['review-adversarial'], 'compound-engineering:ce-adversarial-reviewer', 'adversarial persona on (120 lines >= 50)')
   assert.equal(types['review-codex'], 'codex-reviewer', 'codex second-model reviewer dispatched')
+  assert.equal(types['review-removed-behavior'], undefined, 'removed-behavior reviewer is inline, no agentType')
+  assert.equal(types['review-cross-file'], undefined, 'cross-file reviewer is inline, no agentType')
+  // inline angle reviewers: base review prompt + grounding + angle text + FINDINGS_SCHEMA
+  const removedBehavior = trace.calls.find((c) => c.label === 'review-removed-behavior')
+  assert.ok(removedBehavior.prompt.includes('invariant or behavior it enforced'), 'removed-behavior angle text appended')
+  assert.ok(removedBehavior.prompt.includes('/repo/.worktrees/test-plan') && removedBehavior.prompt.includes('docs/plans/test.md'), 'removed-behavior prompt carries worktree + plan grounding')
+  assert.ok(removedBehavior.prompt.includes('failure_scenario'), 'removed-behavior carries the base review prompt')
+  assert.ok(removedBehavior.schema && removedBehavior.schema.properties.findings, 'removed-behavior uses FINDINGS_SCHEMA')
+  const crossFile = trace.calls.find((c) => c.label === 'review-cross-file')
+  assert.ok(crossFile.prompt.includes('find its callers'), 'cross-file angle text appended')
+  assert.ok(crossFile.prompt.includes('/repo/.worktrees/test-plan') && crossFile.prompt.includes('docs/plans/test.md'), 'cross-file prompt carries worktree + plan grounding')
+  assert.ok(crossFile.schema && crossFile.schema.properties.findings, 'cross-file uses FINDINGS_SCHEMA')
   assert.equal(types['ci-watch-1'], 'ci-watcher')
   // full lfg tail ran
   assert.equal(result.proof.status, 'pass')
@@ -168,6 +184,7 @@ S('S1 happy path: 4 units, mixed routing, all merged + validated', async () => {
   assert.equal(result.ci.status, 'green')
   assert.equal(result.compound.documented, false)
   assert.deepEqual(result.residualReviewFindings, [])
+  assert.deepEqual(result.reviewStats, { candidates: 0, verified: 0, refuted: 0, dupes: 0, budgetDropped: 0, verifierFailed: 0 }, 'reviewStats present with clean-review zeros')
   const shipCall = trace.calls.find((c) => c.label === 'ship')
   assert.ok(shipCall.prompt.includes('Post-Deploy Monitoring & Validation') && shipCall.prompt.includes('watch error rates'), 'PR body carries post-deploy plan')
   assert.ok(shipCall.prompt.includes('status: completed'), 'ship flips plan status')
@@ -204,6 +221,8 @@ S('S3 codex circuit breaker: 3+ failures in one wave trip it; fallbacks still me
   assert.ok(!trace.calls.some((c) => c.label.startsWith('simplify-wave-')), 'no mid-run simplify after the final wave')
   // tripped breaker also removes the codex second-model reviewer
   assert.ok(!trace.calls.some((c) => c.label === 'review-codex'), 'codex reviewer dropped when breaker tripped')
+  assert.ok(trace.calls.some((c) => c.label === 'review-removed-behavior'), 'removed-behavior reviewer still runs when codex is unavailable')
+  assert.ok(trace.calls.some((c) => c.label === 'review-cross-file'), 'cross-file reviewer still runs when codex is unavailable')
   return 'breaker tripped, all 4 recovered via claude fallback with cleanup preamble'
 })
 
@@ -267,6 +286,7 @@ S('S7 plan-invalidating discovery halts after wave 1; quality/validate skipped',
   assert.equal(result.planInvalidation.afterWave, 1)
   assert.equal(result.validation, null)
   assert.equal(result.confirmedReviewFindings, 0)
+  assert.equal(result.reviewStats, null, 'halted run never reviews — stats stay null')
   assert.ok(!trace.calls.some((c) => c.label === 'diffstat'), 'quality phase skipped')
   assert.ok(!trace.calls.some((c) => ['proof', 'ship', 'compound'].includes(c.label) || c.label.startsWith('ci-')), 'tail phases skipped on halt')
   assert.equal(result.ship.pushed, false)
@@ -303,10 +323,10 @@ S('S9 intra-unit dependency cycle throws a named error', async () => {
 S('S10 review findings: nit dropped, blocking verified -> sequential fix, no residual', async () => {
   const d = makeDispatcher({
     'review-correctness': () => ({ findings: [
-      { title: 'off-by-one', file: 'src/u1.js', line: 10, severity: 'blocking', detail: 'd' },
-      { title: 'naming', file: 'src/u1.js', line: 12, severity: 'nit', detail: 'd' },
+      { title: 'off-by-one', file: 'src/u1.js', line: 10, severity: 'blocking', detail: 'd', failure_scenario: 'index exceeds array length when input is empty' },
+      { title: 'naming', file: 'src/u1.js', line: 12, severity: 'nit', detail: 'd', failure_scenario: 'cleanup cost: inconsistent naming hides duplicate helper intent' },
     ] }),
-    'verify-correctness': () => ({ refuted: false, reason: 'real' }),
+    'verify-correctness': () => ({ verdict: 'CONFIRMED', evidence: 'real' }),
     'fix-': () => ({ fixed: ['off-by-one'], skipped: [], detail: 'ok' }),
   })
   const { result, trace, error } = await run(d)
@@ -315,6 +335,14 @@ S('S10 review findings: nit dropped, blocking verified -> sequential fix, no res
   const fixes = trace.calls.filter((c) => c.label.startsWith('fix-'))
   assert.equal(fixes.length, 1)
   assert.ok(fixes[0].prompt.includes('off-by-one') && !fixes[0].prompt.includes('naming'))
+  const reviewCall = trace.calls.find((c) => c.label === 'review-correctness')
+  assert.ok(reviewCall.prompt.includes('failure_scenario'), 'review prompt defines failure_scenario field')
+  assert.ok(reviewCall.prompt.includes('independent verifier judges them next'), 'review prompt has pass-through instruction')
+  const reviewFindingSchema = reviewCall.schema.properties.findings.items
+  assert.ok(reviewFindingSchema.properties.failure_scenario, 'FINDINGS_SCHEMA includes failure_scenario property')
+  assert.ok(reviewFindingSchema.required.includes('failure_scenario'), 'FINDINGS_SCHEMA requires failure_scenario')
+  const verifyCall = trace.calls.find((c) => c.label.startsWith('verify-correctness'))
+  assert.ok(verifyCall.prompt.includes('Failure scenario: index exceeds array length when input is empty'), 'verifier prompt includes finding failure_scenario')
   assert.deepEqual(result.residualReviewFindings, [], 'fixed finding leaves no residual')
   return '1 confirmed finding fixed; nit never verified; no residuals'
 })
@@ -603,17 +631,21 @@ S('S21 proof: missing agent-browser skips cleanly; failing route gets one fix ro
   return 'skip is honest; full trace re-grounded after fix; dead re-validation fails closed on both gates'
 })
 
-S('S22 codex second-model reviewer: findings verified by claude refuter; ran=false logged', async () => {
-  // (a) codex finds a blocking issue -> skeptical-refuter verifies -> fixer dispatched
+S('S22 codex second-model reviewer: findings verified by claude verifier; ran=false logged', async () => {
+  // (a) codex finds a blocking issue -> finding-verifier verifies -> fixer dispatched
   const finds = makeDispatcher({
-    'review-codex': () => ({ ran: true, findings: [{ title: 'unchecked race', file: 'src/u1.js', line: 4, severity: 'blocking', detail: 'd' }], detail: 'found 1' }),
+    'review-codex': () => ({ ran: true, findings: [{ title: 'unchecked race', file: 'src/u1.js', line: 4, severity: 'blocking', detail: 'd', failure_scenario: 'concurrent writes without lock -> data corruption' }], detail: 'found 1' }),
     'fix-': () => ({ fixed: ['unchecked race'], skipped: [], detail: 'ok' }),
   })
   const a = await run(finds)
   assert.ifError(a.error)
   assert.equal(a.result.confirmedReviewFindings, 1)
   const verify = a.trace.calls.find((c) => c.label.startsWith('verify-codex-'))
-  assert.equal(verify.agentType, 'skeptical-refuter', 'codex finding cross-verified by claude')
+  assert.equal(verify.agentType, 'finding-verifier', 'codex finding cross-verified by claude')
+  assert.ok(verify.prompt.includes('concurrent writes without lock -> data corruption'), 'codex finding failure_scenario reaches verification')
+  const codexSchema = a.trace.calls.find((c) => c.label === 'review-codex').schema
+  assert.ok(codexSchema.properties.findings.items.properties.failure_scenario, 'CODEX_REVIEW_SCHEMA findings include failure_scenario through FINDINGS_SCHEMA')
+  assert.ok(codexSchema.properties.findings.items.required.includes('failure_scenario'), 'CODEX_REVIEW_SCHEMA findings require failure_scenario through FINDINGS_SCHEMA')
   // (b) codex review fails to run -> logged with detail AND recorded as a
   // missing perspective: zero findings, surviving reviewers unaffected, but
   // the run is no longer pretending the codex perspective was covered
@@ -636,7 +668,7 @@ S('S22 codex second-model reviewer: findings verified by claude refuter; ran=fal
 
 S('S23 fixer-skipped finding becomes a residual and lands in the PR body', async () => {
   const d = makeDispatcher({
-    'review-correctness': () => ({ findings: [{ title: 'off-by-one', file: 'src/u1.js', line: 10, severity: 'blocking', detail: 'd' }] }),
+    'review-correctness': () => ({ findings: [{ title: 'off-by-one', file: 'src/u1.js', line: 10, severity: 'blocking', detail: 'd', failure_scenario: 'index exceeds array length when input is empty' }] }),
     'fix-': () => ({ fixed: [], skipped: [{ title: 'off-by-one', reason: 'needs design input' }], detail: '' }),
   })
   const { result, trace, error } = await run(d)
@@ -679,27 +711,35 @@ S('S29 simplify kept-dead-code candidates are durable: logged, in the ship PR bo
 })
 
 S('S27 cross-reviewer dedup: same file+title from two reviewers is one finding, one fix line', async () => {
-  const finding = { title: 'unchecked race', file: 'src/u1.js', line: 4, severity: 'suggested', detail: 'd' }
+  const finding = { title: 'unchecked race', file: 'src/u1.js', line: 4, severity: 'suggested', detail: 'd', failure_scenario: 'concurrent writes without lock -> data corruption' }
   const d = makeDispatcher({
     'review-correctness': () => ({ findings: [finding] }),
     'review-codex': () => ({ ran: true, findings: [{ ...finding, severity: 'blocking' }], detail: 'found 1' }),
+    'verify-correctness': () => ({ verdict: 'PLAUSIBLE', evidence: 'consistent but unproven' }),
+    'verify-codex': () => ({ verdict: 'CONFIRMED', evidence: 'quoted the offending line' }),
     'fix-': () => ({ fixed: ['unchecked race'], skipped: [], detail: 'ok' }),
   })
   const { result, trace, error } = await run(d)
   assert.ifError(error)
   assert.equal(result.confirmedReviewFindings, 1, 'merged into one finding')
+  const verifies = trace.calls.filter((c) => c.label.startsWith('verify-'))
+  assert.equal(verifies.length, 1, 'dedup precedes verification — one verifier for the merged pair')
   const fixes = trace.calls.filter((c) => c.label.startsWith('fix-'))
   assert.equal(fixes.length, 1)
   assert.equal((fixes[0].prompt.match(/unchecked race/g) || []).length, 1, 'one line, not two')
   assert.ok(fixes[0].prompt.includes('blocking'), 'merged finding keeps the higher severity')
+  assert.ok(fixes[0].prompt.includes('(blocking, PLAUSIBLE,'), 'verdict comes from the single verifier of the first-kept entry')
+  assert.ok(fixes[0].prompt.includes('Verifier evidence: consistent but unproven'), 'verifier evidence reaches the fixer')
+  assert.ok(fixes[0].prompt.includes('Failure scenario: concurrent writes without lock -> data corruption'), 'failure_scenario reaches the fixer')
   assert.ok(fixes[0].prompt.includes('correctness+codex') || fixes[0].prompt.includes('codex+correctness'), 'both personas credited')
   assert.deepEqual(result.residualReviewFindings, [], 'single fixed title accounts for the merged finding exactly once')
+  assert.deepEqual(result.reviewStats, { candidates: 2, verified: 1, refuted: 0, dupes: 1, budgetDropped: 0, verifierFailed: 0 })
   // Two DISTINCT problems sharing a title at different lines must NOT collapse —
   // the second would otherwise be silently dropped before any fixer saw it.
   const d2 = makeDispatcher({
     'review-correctness': () => ({ findings: [
-      { title: 'unchecked race', file: 'src/u1.js', line: 4, severity: 'blocking', detail: 'race at line 4' },
-      { title: 'unchecked race', file: 'src/u1.js', line: 99, severity: 'blocking', detail: 'different race at line 99' },
+      { title: 'unchecked race', file: 'src/u1.js', line: 4, severity: 'blocking', detail: 'race at line 4', failure_scenario: 'request A and B both increment counter from the same stale value' },
+      { title: 'unchecked race', file: 'src/u1.js', line: 99, severity: 'blocking', detail: 'different race at line 99', failure_scenario: 'parallel cleanup runs both delete the same pending job' },
     ] }),
     'fix-': () => ({ fixed: ['unchecked race'], skipped: [], detail: 'ok' }),
   })
@@ -708,7 +748,378 @@ S('S27 cross-reviewer dedup: same file+title from two reviewers is one finding, 
   assert.equal(r2.result.confirmedReviewFindings, 2, 'distinct lines stay two findings')
   const fix2 = r2.trace.calls.find((c) => c.label.startsWith('fix-'))
   assert.ok(fix2.prompt.includes('race at line 4') && fix2.prompt.includes('different race at line 99'), 'both distinct details reach the fixer')
-  return 'fingerprint dedup merges true dups, keeps distinct same-title findings'
+  return 'proximity dedup merges true dups, keeps distinct same-title findings'
+})
+
+S('S34 proximity dedup: same file lines 101/103 with different titles merge before verification', async () => {
+  const d = makeDispatcher({
+    'review-correctness': () => ({ findings: [{ title: 'stale cache read', file: 'src/u1.js', line: 101, severity: 'blocking', detail: 'reads stale entry', failure_scenario: 'read after invalidation window returns stale row' }] }),
+    'review-testing': () => ({ findings: [{ title: 'cache invalidation missing', file: 'src/u1.js', line: 103, severity: 'suggested', detail: 'no invalidation on update', failure_scenario: 'update skips invalidation so the next read is stale' }] }),
+    'fix-': () => ({ fixed: ['stale cache read'], skipped: [], detail: 'ok' }),
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  const verifies = trace.calls.filter((c) => c.label.startsWith('verify-'))
+  assert.equal(verifies.length, 1, 'one verifier for the proximity-merged pair')
+  assert.equal(result.confirmedReviewFindings, 1, 'lines 101/103 in the same file are one defect')
+  const fixes = trace.calls.filter((c) => c.label.startsWith('fix-'))
+  assert.equal(fixes.length, 1)
+  assert.ok(fixes[0].prompt.includes('(blocking,'), 'merged finding keeps the blocking severity')
+  assert.ok(fixes[0].prompt.includes('correctness+testing'), 'both personas credited')
+  assert.deepEqual(result.residualReviewFindings, [])
+  assert.deepEqual(result.reviewStats, { candidates: 2, verified: 1, refuted: 0, dupes: 1, budgetDropped: 0, verifierFailed: 0 })
+  return 'different titles 2 lines apart merged; one verify; blocking kept'
+})
+
+S('S35 no over-merge: same title at lines 10 and 400 stays two findings', async () => {
+  const d = makeDispatcher({
+    'review-correctness': () => ({ findings: [{ title: 'unchecked error', file: 'src/u1.js', line: 10, severity: 'suggested', detail: 'first site swallows the error', failure_scenario: 'io error swallowed at read' }] }),
+    'review-testing': () => ({ findings: [{ title: 'unchecked error', file: 'src/u1.js', line: 400, severity: 'suggested', detail: 'second site swallows the error', failure_scenario: 'io error swallowed at write' }] }),
+    'fix-': () => ({ fixed: ['unchecked error'], skipped: [], detail: 'ok' }),
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  const verifies = trace.calls.filter((c) => c.label.startsWith('verify-'))
+  assert.equal(verifies.length, 2, 'distinct defects each get a verifier')
+  assert.equal(result.confirmedReviewFindings, 2, '|10-400| > 5 keeps them distinct despite the shared title')
+  const fix = trace.calls.find((c) => c.label.startsWith('fix-'))
+  assert.ok(fix.prompt.includes('first site swallows the error') && fix.prompt.includes('second site swallows the error'), 'both details reach the fixer')
+  assert.deepEqual(result.reviewStats, { candidates: 2, verified: 2, refuted: 0, dupes: 0, budgetDropped: 0, verifierFailed: 0 })
+  return 'titles are irrelevant when both lines are positive and far apart'
+})
+
+S('S36 line-less dedup: 30-char normalized-title prefix merges; different title stays distinct', async () => {
+  const d = makeDispatcher({
+    'review-correctness': () => ({ findings: [{ title: 'Missing input validation on user payload!!', file: 'src/u1.js', line: 0, severity: 'suggested', detail: 'no validation', failure_scenario: 'malformed payload reaches the handler' }] }),
+    'review-testing': () => ({ findings: [
+      { title: 'missing   input validation on user payload causes crash', file: 'src/u1.js', line: 12, severity: 'suggested', detail: 'same defect, located', failure_scenario: 'malformed payload crashes the handler' },
+      { title: 'unrelated schema drift', file: 'src/u1.js', line: 0, severity: 'suggested', detail: 'different defect', failure_scenario: 'old column still referenced' },
+    ] }),
+    'fix-': () => ({ fixed: ['Missing input validation on user payload!!', 'unrelated schema drift'], skipped: [], detail: 'ok' }),
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  const verifies = trace.calls.filter((c) => c.label.startsWith('verify-'))
+  assert.equal(verifies.length, 2, 'merged pair verified once; distinct title verified separately')
+  assert.equal(result.confirmedReviewFindings, 2)
+  assert.deepEqual(result.reviewStats, { candidates: 3, verified: 2, refuted: 0, dupes: 1, budgetDropped: 0, verifierFailed: 0 })
+  return 'line-0 finding merges on normalized title prefix, not with a different-title one'
+})
+
+S('S37 verify budget: 30 suggested findings -> 25 verified, 5 dropped with logged identities', async () => {
+  const findings = Array.from({ length: 30 }, (_, i) => ({ title: `finding-${i + 1}`, file: `src/f${i + 1}.js`, line: 10, severity: 'suggested', detail: `detail ${i + 1}`, failure_scenario: `bad input ${i + 1} produces wrong output` }))
+  const d = makeDispatcher({
+    'review-correctness': () => ({ findings }),
+    'fix-': () => ({ fixed: findings.map((f) => f.title), skipped: [], detail: 'ok' }),
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  const verifies = trace.calls.filter((c) => c.label.startsWith('verify-'))
+  assert.equal(verifies.length, 25, 'verifier spawns capped at MAX_VERIFY')
+  assert.equal(result.confirmedReviewFindings, 25, 'budget-dropped findings are not confirmed')
+  assert.equal(result.reviewStats.budgetDropped, 5)
+  assert.deepEqual(result.reviewStats, { candidates: 30, verified: 25, refuted: 0, dupes: 0, budgetDropped: 5, verifierFailed: 0 })
+  for (let i = 26; i <= 30; i++) {
+    assert.ok(trace.logs.some((m) => m.includes(`src/f${i}.js:10 — finding-${i}`)), `dropped finding-${i} identity logged`)
+  }
+  // Scoped to the findings-to-fix section: the fix-batch grounding history may
+  // legitimately echo prior batches' self-reported titles above it.
+  assert.ok(!trace.calls.some((c) => c.label.startsWith('fix-') && c.prompt.split('The findings to fix now:').pop().includes('finding-26')), 'dropped finding never reaches a fixer')
+  assert.deepEqual(result.residualReviewFindings, [], 'dropped findings are not residuals — logs and stats only')
+  return 'cap enforced with per-drop identity logs; no silent truncation'
+})
+
+S('S38 blocking exemption: slots exhausted, later blocking finding still gets a verifier', async () => {
+  const suggested = Array.from({ length: 25 }, (_, i) => ({ title: `finding-${i + 1}`, file: `src/f${i + 1}.js`, line: 10, severity: 'suggested', detail: `detail ${i + 1}`, failure_scenario: `bad input ${i + 1} produces wrong output` }))
+  const d = makeDispatcher({
+    'review-correctness': () => ({ findings: suggested }),
+    'review-testing': () => ({ findings: [{ title: 'corrupted write path', file: 'src/blocker.js', line: 5, severity: 'blocking', detail: 'writes garbage', failure_scenario: 'concurrent flush corrupts the row' }] }),
+    'fix-': () => ({ fixed: [...suggested.map((f) => f.title), 'corrupted write path'], skipped: [], detail: 'ok' }),
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  const verifies = trace.calls.filter((c) => c.label.startsWith('verify-'))
+  assert.equal(verifies.length, 26, 'blocking finding bypasses the exhausted suggested-severity budget')
+  assert.equal(result.confirmedReviewFindings, 26)
+  assert.deepEqual(result.reviewStats, { candidates: 26, verified: 26, refuted: 0, dupes: 0, budgetDropped: 0, verifierFailed: 0 })
+  return '25 suggested fill the slots; the blocking finding still verifies (26 spawns)'
+})
+
+S('S39 budget-dropped finding escalated to blocking by a later duplicate gets verified late', async () => {
+  const suggested = Array.from({ length: 26 }, (_, i) => ({ title: `finding-${i + 1}`, file: `src/f${i + 1}.js`, line: 10, severity: 'suggested', detail: `detail ${i + 1}`, failure_scenario: `bad input ${i + 1} produces wrong output` }))
+  const d = makeDispatcher({
+    'review-correctness': () => ({ findings: suggested }),
+    'review-testing': () => ({ findings: [{ title: 'same defect, different words', file: 'src/f26.js', line: 12, severity: 'blocking', detail: 'escalates the dropped one', failure_scenario: 'bad input 26 corrupts state' }] }),
+    'fix-': () => ({ fixed: suggested.map((f) => f.title), skipped: [], detail: 'ok' }),
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  const verifies = trace.calls.filter((c) => c.label.startsWith('verify-'))
+  assert.equal(verifies.length, 26, '25 budget spawns + 1 late spawn for the escalated entry')
+  assert.equal(result.confirmedReviewFindings, 26, 'escalated entry rejoins the confirmed set')
+  assert.deepEqual(result.reviewStats, { candidates: 27, verified: 26, refuted: 0, dupes: 1, budgetDropped: 0, verifierFailed: 0 }, 'late-verified entry leaves the budgetDropped bucket')
+  // Scoped to the findings-to-fix section — the batch grounding history echoes
+  // prior batches' self-reported titles, so the whole prompt is ambiguous.
+  const fix26 = trace.calls.find((c) => c.label.startsWith('fix-') && c.prompt.split('The findings to fix now:').pop().includes('finding-26'))
+  assert.ok(fix26 && fix26.prompt.includes('(blocking,') && fix26.prompt.includes('correctness+testing'), 'escalated entry reaches the fixer as blocking with both personas')
+  return 'blocking duplicate revives a budget-dropped entry: verifier spawned, stats rebalanced'
+})
+
+S('S40 sweep gate: diff under 50 lines skips the sweep with a log', async () => {
+  const d = makeDispatcher({ diffstat: () => ({ lines: 40 }) })
+  const { trace, error } = await run(d)
+  assert.ifError(error)
+  assert.ok(!trace.calls.some((c) => c.label === 'sweep'), 'no sweep call under the 50-line gate')
+  assert.ok(trace.logs.some((m) => /Sweep skipped: diff is 40 lines \(<50\)/.test(m)), 'gate skip logged — no silent cap')
+  return '40-line diff: simplify still runs, sweep skipped with a log'
+})
+
+S('S41 sweep candidate at a new location is verified and joins the fix set, after reviewer verification and before fixes', async () => {
+  const d = makeDispatcher({
+    'review-correctness': () => ({ findings: [{ title: 'reviewer-found', file: 'src/u1.js', line: 10, severity: 'blocking', detail: 'd', failure_scenario: 'empty input indexes past the array end' }] }),
+    sweep: () => ({ findings: [{ title: 'dropped guard in extracted helper', file: 'src/u2.js', line: 30, severity: 'blocking', detail: 'extracted helper lost the null check', failure_scenario: 'null payload reaches the helper and crashes the handler' }] }),
+    'fix-': () => ({ fixed: ['reviewer-found', 'dropped guard in extracted helper'], skipped: [], detail: 'ok' }),
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  const sweepIdx = trace.calls.findIndex((c) => c.label === 'sweep')
+  assert.ok(sweepIdx >= 0, 'sweep dispatched (120-line diff opens the gate)')
+  const reviewerVerifyIdxs = trace.calls.map((c, i) => (c.label.startsWith('verify-') && !c.label.startsWith('verify-sweep') ? i : -1)).filter((i) => i >= 0)
+  assert.ok(reviewerVerifyIdxs.length >= 1 && reviewerVerifyIdxs.every((i) => i < sweepIdx), 'sweep runs after reviewer verification settles')
+  const firstFixIdx = trace.calls.findIndex((c) => c.label.startsWith('fix-'))
+  assert.ok(firstFixIdx > sweepIdx, 'sweep runs before fix batching')
+  const verifySweep = trace.calls.find((c) => c.label.startsWith('verify-sweep-'))
+  assert.ok(verifySweep, 'sweep survivor verified')
+  assert.equal(verifySweep.agentType, 'finding-verifier', 'sweep candidates face the same verifier')
+  assert.ok(verifySweep.prompt.includes('null payload reaches the helper'), 'sweep failure_scenario reaches verification')
+  const fixU2 = trace.calls.find((c) => c.label === 'fix-u2.js')
+  assert.ok(fixU2 && fixU2.prompt.includes('dropped guard in extracted helper'), 'confirmed sweep candidate joins the fix set')
+  assert.ok(fixU2.prompt.includes('CONFIRMED'), 'sweep survivor carries its verdict into the fix prompt')
+  assert.equal(result.confirmedReviewFindings, 2, 'reviewer finding + sweep survivor both confirmed')
+  assert.ok(trace.logs.some((m) => /Sweep: 1 new candidate\(s\), 1 survived verification/.test(m)), 'sweep outcome logged')
+  return 'sweep ordered after verification, before fixes; survivor fixed in the same pass'
+})
+
+S('S42 sweep candidate in the same proximity bucket as a verified finding merges, no verifier spawned', async () => {
+  const d = makeDispatcher({
+    'review-correctness': () => ({ findings: [{ title: 'reviewer-found', file: 'src/u1.js', line: 10, severity: 'blocking', detail: 'd', failure_scenario: 'empty input indexes past the array end' }] }),
+    sweep: () => ({ findings: [{ title: 'same defect re-spotted', file: 'src/u1.js', line: 12, severity: 'suggested', detail: 'd', failure_scenario: 'empty input still indexes past the end' }] }),
+    'fix-': () => ({ fixed: ['reviewer-found'], skipped: [], detail: 'ok' }),
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  assert.ok(!trace.calls.some((c) => c.label.startsWith('verify-sweep-')), 'duplicate sweep candidate spawns NO verifier')
+  assert.deepEqual(result.reviewStats, { candidates: 2, verified: 1, refuted: 0, dupes: 1, budgetDropped: 0, verifierFailed: 0 }, 'sweep duplicate counted in dupes')
+  const fix = trace.calls.find((c) => c.label.startsWith('fix-'))
+  assert.ok(fix.prompt.includes('correctness+sweep'), 'sweep credited on the merged finding')
+  assert.ok(trace.logs.some((m) => /Sweep: 0 new candidate\(s\), 0 survived verification/.test(m)), 'dupe-only sweep yields zero new candidates')
+  return 'proximity dedup absorbs the sweep duplicate; one finding, one verifier total'
+})
+
+S('S43 sweep prompt grounding: verified-findings list, gap-focus text, cap, no agentType', async () => {
+  const d = makeDispatcher({
+    'review-correctness': () => ({ findings: [{ title: 'reviewer-found', file: 'src/u1.js', line: 10, severity: 'blocking', detail: 'd', failure_scenario: 'empty input indexes past the array end' }] }),
+    'fix-': () => ({ fixed: ['reviewer-found'], skipped: [], detail: 'ok' }),
+  })
+  const { trace, error } = await run(d)
+  assert.ifError(error)
+  const sweepCall = trace.calls.find((c) => c.label === 'sweep')
+  assert.ok(sweepCall, 'sweep dispatched')
+  assert.equal(sweepCall.agentType, undefined, 'sweep is an inline-prompt agent, no agentType')
+  assert.ok(sweepCall.prompt.includes('src/u1.js:10 — reviewer-found'), 'verified findings rendered as file:line — title')
+  assert.ok(sweepCall.prompt.includes('do NOT re-derive or re-confirm these'), 'verified list carries the exclusion instruction')
+  assert.ok(sweepCall.prompt.includes('setup/teardown asymmetry'), 'gap-focus list present')
+  assert.ok(sweepCall.prompt.includes('config defaults flipped'), 'gap-focus list complete')
+  assert.ok(sweepCall.prompt.includes('at most 8'), 'candidate cap stated')
+  assert.ok(sweepCall.prompt.includes('return an empty list — do not pad'), 'no-padding instruction present')
+  assert.ok(sweepCall.prompt.includes('failure_scenario'), 'failure_scenario requirement stated')
+  assert.ok(sweepCall.prompt.includes('/repo/.worktrees/test-plan') && sweepCall.prompt.includes('docs/plans/test.md'), 'worktree and plan paths grounded')
+  assert.ok(sweepCall.schema && sweepCall.schema.properties.findings, 'sweep uses FINDINGS_SCHEMA')
+  return 'sweep prompt fully grounded; inline persona'
+})
+
+S('S44 exhausted verify budget: suggested sweep candidate lands in budgetDropped, no verifier', async () => {
+  const findings = Array.from({ length: 25 }, (_, i) => ({ title: `finding-${i + 1}`, file: `src/f${i + 1}.js`, line: 10, severity: 'suggested', detail: `detail ${i + 1}`, failure_scenario: `bad input ${i + 1} produces wrong output` }))
+  const d = makeDispatcher({
+    'review-correctness': () => ({ findings }),
+    sweep: () => ({ findings: [{ title: 'late sweep find', file: 'src/sweep.js', line: 7, severity: 'suggested', detail: 'd', failure_scenario: 'stale config default flips behavior on restart' }] }),
+    'fix-': () => ({ fixed: findings.map((f) => f.title), skipped: [], detail: 'ok' }),
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  assert.ok(!trace.calls.some((c) => c.label.startsWith('verify-sweep-')), 'budget-dropped sweep candidate spawns no verifier')
+  assert.deepEqual(result.reviewStats, { candidates: 26, verified: 25, refuted: 0, dupes: 0, budgetDropped: 1, verifierFailed: 0 }, 'sweep drop visible in reviewStats')
+  assert.ok(trace.logs.some((m) => m.includes('src/sweep.js:7 — late sweep find')), 'dropped sweep candidate identity logged')
+  assert.ok(!trace.calls.some((c) => c.label.startsWith('fix-') && c.prompt.includes('late sweep find')), 'dropped candidate never reaches a fixer')
+  return 'sweep respects the shared verify budget; drop is logged, never silent'
+})
+
+S('S45 sweep over-cap: 10 candidates -> first 8 processed, the 2 dropped logged with identities', async () => {
+  const sweepFindings = Array.from({ length: 10 }, (_, i) => ({ title: `gap-${i + 1}`, file: `src/g${i + 1}.js`, line: 5, severity: 'suggested', detail: `d${i + 1}`, failure_scenario: `gap ${i + 1} trigger` }))
+  const d = makeDispatcher({
+    sweep: () => ({ findings: sweepFindings }),
+    'fix-': (p, o, label) => ({ fixed: sweepFindings.map((f) => f.title).filter((t) => p.includes(t)), skipped: [], detail: 'ok' }),
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  const sweepVerifies = trace.calls.filter((c) => c.label.startsWith('verify-sweep-'))
+  assert.equal(sweepVerifies.length, 8, 'only the first 8 sweep candidates reach verification')
+  assert.equal(result.reviewStats.candidates, 8, 'over-cap candidates never enter processFindings')
+  assert.ok(trace.logs.some((m) => m.includes('src/g9.js:5 — gap-9') && m.includes('src/g10.js:5 — gap-10')), 'dropped candidates logged with file:line — title identities')
+  assert.ok(!trace.calls.some((c) => c.label.startsWith('fix-') && c.prompt.includes('gap-9')), 'dropped candidate never reaches a fixer')
+  return '10 sweep candidates -> 8 kept, 2 dropped with logged identities'
+})
+
+S('S46 sweep agent dies: failure logged, confirmed findings and stats unaffected', async () => {
+  const d = makeDispatcher({
+    'review-correctness': () => ({ findings: [{ title: 'reviewer-found', file: 'src/u1.js', line: 10, severity: 'blocking', detail: 'd', failure_scenario: 'empty input indexes past the array end' }] }),
+    sweep: () => { throw new Error('sweep died') },
+    'fix-': () => ({ fixed: ['reviewer-found'], skipped: [], detail: 'ok' }),
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  assert.ok(trace.logs.some((m) => /Sweep agent failed — no gap candidates collected/.test(m)), 'dead sweep logged')
+  assert.equal(result.confirmedReviewFindings, 1, 'reviewer finding unaffected by the dead sweep')
+  assert.deepEqual(result.reviewStats, { candidates: 1, verified: 1, refuted: 0, dupes: 0, budgetDropped: 0, verifierFailed: 0 })
+  assert.ok(result.validation.testsPass, 'run continues to validation')
+  return 'dead sweep does not crash Quality; fixes and validation proceed'
+})
+
+S('S47 fixer-skipped title matching no finding -> residual with sentinel verdict UNKNOWN', async () => {
+  const d = makeDispatcher({
+    'review-correctness': () => ({ findings: [{ title: 'real-finding', file: 'src/u1.js', line: 10, severity: 'blocking', detail: 'd', failure_scenario: 'null input crashes the handler' }] }),
+    'fix-': () => ({ fixed: ['real-finding'], skipped: [{ title: 'never-reported', reason: 'phantom skip' }], detail: 'ok' }),
+  })
+  const { result, error } = await run(d)
+  assert.ifError(error)
+  assert.equal(result.residualReviewFindings.length, 1)
+  const r = result.residualReviewFindings[0]
+  assert.equal(r.title, 'never-reported')
+  assert.equal(r.verdict, 'UNKNOWN', 'no verifier graded this title — sentinel, not a fabricated PLAUSIBLE')
+  assert.equal(r.file, 'src/u1.js')
+  assert.equal(r.reason, 'phantom skip')
+  return 'unmatched skip title -> UNKNOWN-verdict residual; no invented verifier grade'
+})
+
+S('S48 blocking sweep duplicate of a REFUTED finding revives it: re-verified with the merged write-up', async () => {
+  const d = makeDispatcher({
+    'review-correctness': () => ({ findings: [{ title: 'weak write-up of the defect', file: 'src/u1.js', line: 10, severity: 'suggested', detail: 'vague claim', failure_scenario: 'vague trigger' }] }),
+    'verify-correctness': () => ({ verdict: 'REFUTED', evidence: 'could not reproduce from the weak wording' }),
+    sweep: () => ({ findings: [{ title: 'same defect, sharper', file: 'src/u1.js', line: 12, severity: 'blocking', detail: 'sharp claim', failure_scenario: 'concrete trigger: empty queue double-pop' }] }),
+    'verify-sweep': () => ({ verdict: 'CONFIRMED', evidence: 'quoted the offending line' }),
+    'fix-': () => ({ fixed: ['weak write-up of the defect'], skipped: [], detail: 'ok' }),
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  // the refuted first-pass finding appears labeled in the sweep exclusion list
+  const sweepCall = trace.calls.find((c) => c.label === 'sweep')
+  assert.ok(sweepCall.prompt.includes('src/u1.js:10 — weak write-up of the defect') && sweepCall.prompt.includes('refuted'), 'refuted finding excluded-with-label in the sweep prompt')
+  // absorption is logged, and the blocking duplicate revives the refuted entry
+  assert.ok(trace.logs.some((m) => m.includes('Duplicate finding absorbed') && m.includes('same defect, sharper')), 'absorbed duplicate identity logged')
+  const reverify = trace.calls.find((c) => c.label.startsWith('verify-sweep-'))
+  assert.ok(reverify, 'refuted entry re-verified on blocking escalation')
+  assert.ok(reverify.prompt.includes('concrete trigger: empty queue double-pop'), 'duplicate failure_scenario reaches the re-verifier')
+  assert.equal(result.confirmedReviewFindings, 1, 'revived entry rejoins the confirmed set')
+  assert.deepEqual(result.reviewStats, { candidates: 2, verified: 1, refuted: 0, dupes: 1, budgetDropped: 0, verifierFailed: 0 }, 'revived entry leaves the refuted bucket')
+  const fix = trace.calls.find((c) => c.label.startsWith('fix-'))
+  assert.ok(fix.prompt.includes('sharp claim'), 'absorbed detail reaches the fixer')
+  assert.deepEqual(result.residualReviewFindings, [])
+  return 'REFUTED + blocking duplicate -> logged, re-verified with merged evidence, fixed'
+})
+
+S('S29 verdict ladder: REFUTED filtered out, PLAUSIBLE reaches fixer with verdict-conditional policy', async () => {
+  const d = makeDispatcher({
+    'review-correctness': () => ({ findings: [
+      { title: 'plausible-leak', file: 'src/u1.js', line: 10, severity: 'blocking', detail: 'connection may leak', failure_scenario: 'connection opened before validation remains open after validation fails' },
+      { title: 'refuted-race', file: 'src/u1.js', line: 20, severity: 'blocking', detail: 'race on init', failure_scenario: 'two initializers run concurrently and both mutate global state' },
+    ] }),
+    'verify-correctness': (prompt) => (prompt.includes('plausible-leak')
+      ? { verdict: 'PLAUSIBLE', evidence: 'consistent with the code, trigger not constructed' }
+      : { verdict: 'REFUTED', evidence: 'guard on line 18 prevents it' }),
+    'fix-': () => ({ fixed: ['plausible-leak'], skipped: [], detail: 'ok' }),
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  assert.equal(result.confirmedReviewFindings, 1, 'only the non-REFUTED finding survives')
+  const fixes = trace.calls.filter((c) => c.label.startsWith('fix-'))
+  assert.equal(fixes.length, 1)
+  assert.ok(fixes[0].prompt.includes('plausible-leak'), 'PLAUSIBLE finding reaches the fixer')
+  assert.ok(fixes[0].prompt.includes('(blocking, PLAUSIBLE,'), 'fix prompt carries the finding verdict')
+  assert.ok(fixes[0].prompt.includes('local and behavior-preserving'), 'verdict-conditional fix policy present')
+  assert.ok(!fixes[0].prompt.includes('refuted-race'), 'REFUTED finding never reaches a fixer')
+  assert.deepEqual(result.residualReviewFindings, [], 'REFUTED finding leaves no residual either')
+  assert.deepEqual(result.reviewStats, { candidates: 2, verified: 1, refuted: 1, dupes: 0, budgetDropped: 0, verifierFailed: 0 }, 'refuted finding counted in stats')
+  // a dead verifier still drops the finding (fail if uncertain) but is counted
+  // as an infra failure, never as a code-based refutation
+  const dead = makeDispatcher({
+    'review-correctness': () => ({ findings: [{ title: 'unverifiable', file: 'src/u1.js', line: 10, severity: 'suggested', detail: 'd', failure_scenario: 'claimed leak on early return' }] }),
+    'verify-correctness': () => { throw new Error('verifier died') },
+  })
+  const b = await run(dead)
+  assert.ifError(b.error)
+  assert.equal(b.result.confirmedReviewFindings, 0, 'dead verifier confirms nothing')
+  assert.equal(b.result.reviewStats.refuted, 0, 'a crashed verifier is NOT a refutation')
+  assert.equal(b.result.reviewStats.verifierFailed, 1, 'crash counted in its own bucket')
+  assert.ok(b.trace.logs.some((m) => m.includes('Verifier agent died for src/u1.js:10 — unverifiable')), 'dead verifier logged with the finding identity')
+  return 'three-state ladder filters REFUTED only; fixer sees verdicts and the conditional policy'
+})
+
+S('S30 REFUTED finding never becomes a residual, even when the fixer dies', async () => {
+  const d = makeDispatcher({
+    'review-correctness': () => ({ findings: [
+      { title: 'real-issue', file: 'src/u1.js', line: 10, severity: 'blocking', detail: 'd', failure_scenario: 'null user input reaches required field access' },
+      { title: 'phantom-issue', file: 'src/u1.js', line: 20, severity: 'blocking', detail: 'd', failure_scenario: 'claimed invariant violation when cached config is missing' },
+    ] }),
+    'verify-correctness': (prompt) => (prompt.includes('phantom-issue')
+      ? { verdict: 'REFUTED', evidence: 'invariant prevents it' }
+      : { verdict: 'CONFIRMED', evidence: 'quoted the offending line' }),
+    'fix-': () => { throw new Error('fixer died') },
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  assert.equal(result.residualReviewFindings.length, 1, 'only the confirmed finding becomes a residual')
+  assert.equal(result.residualReviewFindings[0].title, 'real-issue')
+  assert.equal(result.residualReviewFindings[0].verdict, 'CONFIRMED', 'residual carries the verdict')
+  assert.ok(!trace.calls.some((c) => c.label.startsWith('fix-') && c.prompt.includes('phantom-issue')), 'REFUTED finding in no fix prompt')
+  const shipCall = trace.calls.find((c) => c.label === 'ship')
+  assert.ok(shipCall.prompt.includes('(blocking, CONFIRMED) src/u1.js'), 'PR-body residual line carries the verdict')
+  assert.ok(!shipCall.prompt.includes('phantom-issue'), 'REFUTED finding never reaches the PR body')
+  return 'REFUTED findings are dropped before fixers and residuals; residual lines carry verdicts'
+})
+
+S('S31 skipped PLAUSIBLE finding produces a residual carrying verdict PLAUSIBLE', async () => {
+  const d = makeDispatcher({
+    'review-correctness': () => ({ findings: [{ title: 'maybe-leak', file: 'src/u1.js', line: 10, severity: 'suggested', detail: 'd', failure_scenario: 'connection opened before early return is never closed' }] }),
+    'verify-correctness': () => ({ verdict: 'PLAUSIBLE', evidence: 'could not construct the trigger' }),
+    'fix-': () => ({ fixed: [], skipped: [{ title: 'maybe-leak', reason: 'fix is not local' }], detail: '' }),
+  })
+  const { result, error } = await run(d)
+  assert.ifError(error)
+  assert.equal(result.residualReviewFindings.length, 1)
+  assert.equal(result.residualReviewFindings[0].verdict, 'PLAUSIBLE', 'skipped residual keeps its verdict')
+  assert.equal(result.residualReviewFindings[0].reason, 'fix is not local')
+  return 'skipped PLAUSIBLE finding -> residual with verdict PLAUSIBLE'
+})
+
+S('S32 verify- calls dispatch the finding-verifier persona', async () => {
+  const d = makeDispatcher({
+    'review-correctness': () => ({ findings: [{ title: 't1', file: 'src/u1.js', line: 1, severity: 'blocking', detail: 'd', failure_scenario: 'missing required input produces undefined output' }] }),
+    'fix-': () => ({ fixed: ['t1'], skipped: [], detail: 'ok' }),
+  })
+  const { trace, error } = await run(d)
+  assert.ifError(error)
+  const verifies = trace.calls.filter((c) => c.label.startsWith('verify-'))
+  assert.ok(verifies.length >= 1, 'at least one verification dispatched')
+  for (const v of verifies) assert.equal(v.agentType, 'finding-verifier', `${v.label} uses finding-verifier`)
+  return `${verifies.length} verify call(s), all finding-verifier`
+})
+
+S('S33 codex-reviewer doc requires and prompts for failure_scenario', async () => {
+  assert.ok(codexReviewerSrc.includes('"failure_scenario":{"type":"string"}'), 'codex reviewer schema defines failure_scenario')
+  assert.ok(codexReviewerSrc.includes('"required":["title","file","line","severity","detail","failure_scenario"]'), 'codex reviewer schema requires failure_scenario')
+  assert.ok(codexReviewerSrc.includes('failure_scenario (the concrete inputs/state that produce the wrong outcome'), 'codex reviewer prompt defines failure_scenario')
+  assert.ok(codexReviewerSrc.includes('independent verifier judges them next'), 'codex reviewer prompt has pass-through instruction')
+  return 'codex-reviewer schema and prompt mention failure_scenario'
 })
 
 S('S31 nit cap is loud: deferred nits are logged, listed in the result, and never verified', async () => {
@@ -738,13 +1149,14 @@ S('S31 nit cap is loud: deferred nits are logged, listed in the result, and neve
 S('S32 verification drops are loud and distinguishable: refuted-with-evidence vs refuter death', async () => {
   const d = makeDispatcher({
     'review-correctness': () => ({ findings: [
-      { title: 'real bug', file: 'src/u1.js', line: 4, severity: 'blocking', detail: 'd' },
-      { title: 'phantom bug', file: 'src/u1.js', line: 9, severity: 'suggested', detail: 'd' },
-      { title: 'unverifiable bug', file: 'src/u2.js', line: 2, severity: 'blocking', detail: 'd' },
+      { title: 'real bug', file: 'src/u1.js', line: 4, severity: 'blocking', detail: 'd', failure_scenario: 'empty input crashes the handler' },
+      // line 30: outside the ±5 proximity-dedup window of line 4, so it stays a distinct finding
+      { title: 'phantom bug', file: 'src/u1.js', line: 30, severity: 'suggested', detail: 'd', failure_scenario: 'claimed overflow on large input' },
+      { title: 'unverifiable bug', file: 'src/u2.js', line: 2, severity: 'blocking', detail: 'd', failure_scenario: 'stale cache read on cold start' },
     ] }),
     'verify-correctness-u1.js': (p) => p.includes('phantom bug')
-      ? { refuted: true, reason: 'cannot occur: the guard on line 8\nprevents it' }
-      : { refuted: false, reason: 'confirmed' },
+      ? { verdict: 'REFUTED', evidence: 'cannot occur: the guard on line 8\nprevents it' }
+      : { verdict: 'CONFIRMED', evidence: 'confirmed' },
     'verify-correctness-u2.js': () => { throw new Error('refuter died') },
     'fix-': () => ({ fixed: ['real bug'], skipped: [], detail: 'ok' }),
   })
@@ -752,7 +1164,7 @@ S('S32 verification drops are loud and distinguishable: refuted-with-evidence vs
   assert.ifError(error)
   assert.equal(result.confirmedReviewFindings, 1, 'only the confirmed finding survives')
   assert.deepEqual(result.reviewDrops.refuted,
-    ['(correctness) src/u1.js:9 — phantom bug: cannot occur: the guard on line 8 prevents it'],
+    ['(correctness) src/u1.js:30 — phantom bug: cannot occur: the guard on line 8 prevents it'],
     'refuted drop carries the refuter evidence, newline-flattened')
   assert.deepEqual(result.reviewDrops.verifierDied,
     ['(correctness, blocking) src/u2.js:2 — unverifiable bug'],
@@ -826,12 +1238,12 @@ S('S34 sequential fixers are grounded with prior batch outcomes; the first is no
 })
 
 S('S26 tail budget floor: waves finish but Proof/Ship/Compound are skipped with logs', async () => {
-  // Single unit; diffstat lowered so reviewer roster is fixed at 6 (no adversarial).
+  // Single unit; diffstat lowered so reviewer roster is fixed at 8 (no adversarial).
   // Call ledger at 10k/call: parse+recon(2) setup(3) split(4) route(5) exec(6) merge(7)
-  // diffstat(8) reviews x6 (14) final-validation(15) = 150k spent entering the tail.
-  // budgetTotal 175k -> remaining 25k <= 30k floor at Proof: tail must skip, not throw.
+  // diffstat(8) reviews x8 (16) final-validation(17) = 170k spent entering the tail.
+  // budgetTotal 195k -> remaining 25k <= 30k floor at Proof: tail must skip, not throw.
   const d = makeDispatcher({ diffstat: () => ({ lines: 10 }) }, { units: { units: [UNITS().units[0]] } })
-  const { result, trace, error } = await run(d, { budgetTotal: 175000 })
+  const { result, trace, error } = await run(d, { budgetTotal: 195000 })
   assert.ifError(error)
   assert.equal(result.tasks.U1.status, 'merged', 'execution itself completed under budget')
   assert.equal(result.budgetHalted, false, 'wave-level floor never hit')

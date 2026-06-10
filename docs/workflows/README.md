@@ -106,7 +106,7 @@ const result = await agent(
 ```
 
 **5. Verify adversarially.**
-For findings that must be trusted, spawn independent verifier agents prompted to REFUTE the finding. Require a majority. Default to "fail if uncertain."
+For findings that must be trusted, spawn independent verifier agents prompted to REFUTE the finding. Require a majority. Default to "fail if uncertain." (Code-review findings are the carved-out exception: the recall-biased finding-verifier grades them — uncertain lands on PLAUSIBLE, never REFUTED — and PLAUSIBLE findings may only receive local, behavior-preserving fixes.)
 
 ```js
 const verifications = await parallel(

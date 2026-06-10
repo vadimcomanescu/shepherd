@@ -127,6 +127,8 @@ const report = await agent(
 
 Independent verifier agents scrutinize each finding against a rubric and are explicitly prompted to **refute** it. A finding survives only if fewer than a majority of verifiers refute it. When uncertain, verifiers must default to refute.
 
+Exception — code-review findings: the finding-verifier persona is deliberately recall-biased (uncertain lands on PLAUSIBLE, never REFUTED) because dropping a real defect costs more than keeping an uncertain one. The mitigation is verdict-conditional downstream handling: PLAUSIBLE findings may only receive local, behavior-preserving fixes.
+
 **Refute-by-majority shape:** spawn N independent verifiers per finding, count refutations, and drop the finding if refutations >= ceil(N / 2).
 
 ```js
@@ -493,7 +495,7 @@ await agent(`Summarize these results:\n${JSON.stringify(previousResults)}`);
 
 ### Verify adversarially
 
-For findings that must be trusted, spawn independent verifier agents prompted to **refute**, require a majority to confirm, and default to "fail if uncertain." Do not let a single agent's confidence stand as ground truth.
+For findings that must be trusted, spawn independent verifier agents prompted to **refute**, require a majority to confirm, and default to "fail if uncertain." Do not let a single agent's confidence stand as ground truth. (Code-review findings are the carved-out exception — see the adversarial-verification pattern above.)
 
 ### Scale to the ask
 

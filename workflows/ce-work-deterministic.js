@@ -170,8 +170,9 @@ const FINDINGS_SCHEMA = {
           line: { type: 'number' },
           severity: { enum: ['blocking', 'suggested', 'nit'] },
           detail: { type: 'string' },
+          failure_scenario: { type: 'string', description: 'concrete inputs/state -> wrong outcome; for cleanup-style findings, the concrete cost' },
         },
-        required: ['title', 'file', 'severity', 'detail'],
+        required: ['title', 'file', 'severity', 'detail', 'failure_scenario'],
       },
     },
   },
@@ -180,8 +181,8 @@ const FINDINGS_SCHEMA = {
 
 const VERDICT_SCHEMA = {
   type: 'object',
-  properties: { refuted: { type: 'boolean' }, reason: { type: 'string' } },
-  required: ['refuted', 'reason'],
+  properties: { verdict: { enum: ['CONFIRMED', 'PLAUSIBLE', 'REFUTED'] }, evidence: { type: 'string' } },
+  required: ['verdict', 'evidence'],
 }
 
 const CODEX_REVIEW_SCHEMA = {
@@ -258,7 +259,7 @@ const TRIAGE_SCHEMA = {
 
 // ============================================================
 // Shared prompt blocks. Personas live in agents/*.md (task-splitter,
-// executor-router, unit-executor, codex-runner, skeptical-refuter), resolved
+// executor-router, unit-executor, codex-runner, finding-verifier), resolved
 // via agentType. Prompts below carry only per-run grounding.
 // ============================================================
 const WORKTREE_HOWTO = (repoRoot, integrationBranch) => `
@@ -763,6 +764,7 @@ if (halted) log(`Skipping Quality and Validate phases (${planInvalidation ? 'pla
 // adversarial verification, batched fixes. All on the integration worktree.
 // ============================================================
 let confirmedCount = 0
+let reviewStats = null        // { candidates, verified, refuted, dupes, budgetDropped, verifierFailed } — null when the run halts before Quality
 let validation = null
 const reviewDrops = { refuted: [], verifierDied: [], reviewerDied: [] } // coverage lost in the Quality gate, loud, never silent: refuted-with-evidence and no-verdict (refuter died/skipped) are per-verdict instance records (a duplicate of a refuted instance may still be confirmed via another reviewer; fail-closed by design); reviewerDied lists reviewer perspectives that produced NO result at all — their entire viewpoint is missing from the review.
 let residuals = []            // confirmed-but-unfixed findings — made durable in the PR body (lfg residual contract)
@@ -817,21 +819,23 @@ if (changedLines >= 50 || planDoc.riskSurfaces.some((s) => ['auth', 'payments'].
   personas.push({ key: 'adversarial', type: 'compound-engineering:ce-adversarial-reviewer' })
 }
 
-const reviewPrompt = (p) => `
+const reviewPrompt = () => `
 Review the changes on branch ${INTEGRATION_BRANCH} relative to ${BASE}.
 Work inside the worktree at ${INTEGRATION_WT}; diff with: git diff origin/${BASE}...HEAD
 (fall back to ${BASE}). The work implements the plan at ${PLAN}.
 Read the new and changed tests before the implementation — they reveal intended
 coverage and where it falls short.
 Report findings with file, line where possible, severity (blocking | suggested | nit),
-and enough detail that a fixer who has not seen your reasoning can act.`
+and enough detail that a fixer who has not seen your reasoning can act.
+Each finding must include a \`failure_scenario\`: the concrete inputs or state that produce the wrong outcome; for cleanup-style findings, state the concrete cost instead of a crash.
+Pass every candidate with a nameable failure scenario through — do not silently drop half-believed candidates; an independent verifier judges them next.`
 
 // Reviewer roster = persona reviewers + (when codex is usable) the Codex CLI as
 // a second-model reviewer: a different model family catches what same-family
-// review rationalizes away, and its findings face the same Claude refuter.
+// review rationalizes away, and its findings face the same Claude verifier.
 const reviewers = personas.map((p) => ({
   key: p.key,
-  spawn: () => agent(reviewPrompt(p), { label: `review-${p.key}`, phase: 'Quality', agentType: p.type, schema: FINDINGS_SCHEMA }),
+  spawn: () => agent(reviewPrompt(), { label: `review-${p.key}`, phase: 'Quality', agentType: p.type, schema: FINDINGS_SCHEMA }),
 }))
 if (codexUsable && !codexBroken) {
   reviewers.push({
@@ -858,11 +862,155 @@ ${CODEX_POLL_BLOCK}`,
 } else {
   log(`Codex second-model review skipped (${codexBroken ? 'circuit breaker tripped' : 'codex unavailable'})`)
 }
+// Inline angle reviewers — single-angle prompts with no persona file.
+const inlineAngles = [
+  ['removed-behavior', `Angle — removed behavior: For every line the diff DELETES or replaces, name the invariant or behavior it enforced, then search the new code for where that invariant is re-established. If you can't find it, that's a candidate: a removed guard, a dropped error path, a narrowed validation, a deleted test that was covering a real case.`],
+  ['cross-file', `Angle — cross-file: For each function the diff changes, find its callers (Grep for the symbol) and check whether the change breaks any call site: a new precondition, a changed return shape, a new exception, a timing/ordering dependency. Also check callees: does a parallel change in the same PR make a call unsafe?`],
+]
+for (const [key, angle] of inlineAngles) {
+  reviewers.push({
+    key,
+    spawn: () => agent(`${reviewPrompt()}\n\n${angle}`, { label: `review-${key}`, phase: 'Quality', schema: FINDINGS_SCHEMA }),
+  })
+}
 log(`Reviewers: ${reviewers.map((r) => r.key).join(', ')}`)
 
-// pipeline: each reviewer's findings go to verification as soon as that
-// reviewer finishes — no cross-reviewer barrier needed.
-const reviewed = await pipeline(
+// Pre-verification dedup + capped verifier budget. Dedup runs streaming, as
+// each reviewer completes (pipeline stage 2, no cross-reviewer barrier), so a
+// duplicate never consumes a verifier spawn. Same-defect rule: same file AND
+// either both lines positive within 5 of each other (titles irrelevant), or at
+// least one line-less and the normalized titles share a real 30-char prefix
+// (both titles >=30 chars), falling back to exact normalized-title equality
+// when either is shorter — a degraded prefix would let a short title like
+// "cache poisoning bypass" absorb distinct defects across the file.
+// JS is single-threaded, so mutating these shared accumulators inside
+// concurrently-progressing stage closures is safe; bucket-winner and drop
+// selection follow reviewer completion order — accepted because every drop and
+// every duplicate absorption is logged with its identity.
+const MAX_VERIFY = 25         // suggested-severity verifier cap
+const MAX_BLOCKING_VERIFY = 50 // generous blocking ceiling so an inflated roster cannot spawn unbounded verifiers toward the agent cap
+let verifySlots = MAX_VERIFY
+let blockingSlots = MAX_BLOCKING_VERIFY
+const kept = []               // every non-duplicate entry, INCLUDING budget-dropped ones, so later duplicates of a dropped finding still register as dupes
+let candidates = 0, dupes = 0, budgetDropped = 0, refutedCount = 0, verifierFailed = 0
+const findingRef = (f) => `${f.file}:${f.line || 0} — ${f.title}`
+const normTitle = (t) => String(t || '').toLowerCase().replace(/[^a-z0-9\s]+/g, '').replace(/\s+/g, ' ').trim()
+const sameDefect = (a, b) => {
+  if (a.file !== b.file) return false
+  if (a.line > 0 && b.line > 0) return Math.abs(a.line - b.line) <= 5
+  const ta = normTitle(a.title), tb = normTitle(b.title)
+  if (ta.length >= 30 && tb.length >= 30) return ta.slice(0, 30) === tb.slice(0, 30)
+  return ta.length > 0 && ta === tb // a degraded (shorter) prefix would merge any title that prefixes a longer one; short titles must match exactly
+}
+// Resolves to the SAME kept-entry object (never a fresh spread) so severity and
+// persona merges from later-completing reviewers stay visible to the fixer batch.
+const spawnVerifier = (entry, rvKey) => agent(
+  `Finding (${entry.severity}) ${entry.file}${entry.line ? ':' + entry.line : ''} — ${entry.title}
+${entry.detail}
+Failure scenario: ${entry.failure_scenario}
+
+Where to look: the worktree at ${INTEGRATION_WT} (branch ${INTEGRATION_BRANCH}, base ${BASE}).
+Read the actual code there; never take the finding's word for anything.
+Verdict ladder — CONFIRMED only when you can name the concrete triggering
+inputs/state AND quote the offending line; REFUTED only when the refutation is
+constructible from the code (quote the disproving line, invariant, or guard);
+otherwise PLAUSIBLE, the default for realistic-but-unproven findings.`,
+  { label: `verify-${rvKey}-${entry.file.split('/').pop()}`, phase: 'Quality', model: 'sonnet', agentType: 'finding-verifier', schema: VERDICT_SCHEMA },
+).then((v) => {
+  if (v && v.verdict !== 'REFUTED') { entry.verdict = v.verdict; entry.evidence = v.evidence || ''; return entry }
+  if (v) {
+    // genuine code-based refutation — marked so later duplicates of this entry
+    // can revive it, and recorded with the verifier's evidence (never silent)
+    entry.refuted = true
+    refutedCount++
+    entry.refutedRecord = `(${rvKey}) ${entry.file}${entry.line ? ':' + entry.line : ''} — ${entry.title}: ${String(v.evidence || '').replace(/\s*\n\s*/g, ' ')}`
+    reviewDrops.refuted.push(entry.refutedRecord)
+  } else {
+    verifierFailed++          // verifier crashed: still drop the finding (fail if uncertain), but never report infra failure as a refutation
+    reviewDrops.verifierDied.push(`(${rvKey}, ${entry.severity}) ${entry.file}${entry.line ? ':' + entry.line : ''} — ${entry.title}`)
+    log(`Verifier agent died for ${findingRef(entry)} — finding dropped unverified (fail if uncertain)`)
+  }
+  return null
+})
+// Shared by the reviewer pipeline and the post-verification sweep so both
+// finding sources face the exact same dedup, budget, and verification path.
+const processFindings = (findings, key) => {
+  const toVerify = []
+  const nits = findings.filter((f) => f.severity === 'nit')
+  if (nits.length) {
+    // The reviewPrompt solicits nit severity, so reviewers WILL produce nits;
+    // verifying/fixing them is a deliberate cost cap — but the cap must be loud.
+    nitsDeferred.push(...nits.map((f) => `(${key}) ${f.file}${f.line ? ':' + f.line : ''} — ${f.title}`))
+    log(`review-${key}: ${nits.length} nit finding(s) not sent to verification (cost cap) — listed in the workflow result`)
+  }
+  for (const f of findings.filter((x) => x.severity !== 'nit')) {
+    candidates++
+    const match = kept.find((k) => sameDefect(k, f))
+    if (match) {
+      dupes++
+      log(`Duplicate finding absorbed into ${findingRef(match)}: ${findingRef(f)} (${key})`)
+      const escalates = f.severity === 'blocking' && match.severity !== 'blocking'
+      if (escalates) {
+        match.severity = 'blocking'
+        // Refund the suggested-only budget slot: the entry is now blocking and
+        // exempt from MAX_VERIFY, so its slot must not starve a later suggested finding.
+        if (match.suggestedSlot) { match.suggestedSlot = false; verifySlots++ }
+      }
+      match.persona = `${match.persona}+${key}`
+      // Keep the absorbed finding's distinct wording — a false merge of two
+      // nearby defects must still surface both write-ups to the verifier
+      // (revival paths below) and the fixer, not just the first reviewer's.
+      if (f.detail !== match.detail) match.detail = `${match.detail} [dup ${key}: ${f.detail}]`
+      if (f.failure_scenario !== match.failure_scenario) match.failure_scenario = `${match.failure_scenario} [dup ${key}: ${f.failure_scenario}]`
+      // Anchor a line-less entry at the duplicate's location so it stops
+      // absorbing every later same-file finding via the title branch.
+      if (!(match.line > 0) && f.line > 0) match.line = f.line
+      // A budget-dropped (never verified) entry escalated to blocking gets its
+      // verifier NOW — blocking findings always get one — and leaves the
+      // budgetDropped bucket so candidates === verified + refuted + verifierFailed + dupes + budgetDropped holds.
+      if (match.dropped && escalates) {
+        match.dropped = false
+        budgetDropped--
+        toVerify.push(() => spawnVerifier(match, key))
+      }
+      // A REFUTED entry hit by a blocking duplicate gets re-verified with the
+      // merged write-up (which now carries the duplicate's failure_scenario):
+      // the refutation judged the original wording, not the new evidence.
+      if (match.refuted && escalates) {
+        match.refuted = false
+        refutedCount--
+        // Withdraw the refutation record pending re-verification — it judged
+        // the original wording, which no longer stands alone.
+        const ri = reviewDrops.refuted.indexOf(match.refutedRecord)
+        if (ri >= 0) reviewDrops.refuted.splice(ri, 1)
+        toVerify.push(() => spawnVerifier(match, key))
+      }
+      continue
+    }
+    const entry = { ...f, persona: key }
+    kept.push(entry)
+    if (f.severity === 'blocking') {
+      if (blockingSlots <= 0) {
+        entry.dropped = true
+        budgetDropped++
+        log(`Blocking-verifier ceiling (${MAX_BLOCKING_VERIFY}) reached — dropping unverified blocking finding ${findingRef(f)}`)
+      } else {
+        blockingSlots--
+        toVerify.push(() => spawnVerifier(entry, key)) // blocking bypasses the suggested-severity cap, under its own generous ceiling
+      }
+    } else if (verifySlots <= 0) {
+      entry.dropped = true
+      budgetDropped++
+      log(`Verify cap (${MAX_VERIFY}) reached — dropping unverified suggested finding ${findingRef(f)}`)
+    } else {
+      verifySlots--
+      entry.suggestedSlot = true // consumed a MAX_VERIFY slot; refunded if a later duplicate escalates this entry to blocking
+      toVerify.push(() => spawnVerifier(entry, key))
+    }
+  }
+  return toVerify
+}
+await pipeline(
   reviewers,
   (rv) => rv.spawn(),
   (rev, rv) => {
@@ -873,48 +1021,68 @@ const reviewed = await pipeline(
       return []
     }
     if (!rev.findings.length) return []
-    const actionable = rev.findings.filter((f) => f.severity !== 'nit')
-    if (actionable.length < rev.findings.length) {
-      // The reviewPrompt solicits nit severity, so reviewers WILL produce nits;
-      // verifying/fixing them is a deliberate cost cap — but the cap must be loud.
-      nitsDeferred.push(...rev.findings.filter((f) => f.severity === 'nit')
-        .map((f) => `(${rv.key}) ${f.file}${f.line ? ':' + f.line : ''} — ${f.title}`))
-      log(`review-${rv.key}: ${rev.findings.length - actionable.length} nit finding(s) not sent to verification (cost cap) — listed in the workflow result`)
-    }
-    return parallel(actionable.map((f) => () =>
-      agent(
-        `Finding (${f.severity}) ${f.file}${f.line ? ':' + f.line : ''} — ${f.title}
-${f.detail}
-
-Where to look: the worktree at ${INTEGRATION_WT} (branch ${INTEGRATION_BRANCH}, base ${BASE}).`,
-        { label: `verify-${rv.key}-${f.file.split('/').pop()}`, phase: 'Quality', model: 'sonnet', agentType: 'skeptical-refuter', schema: VERDICT_SCHEMA },
-      ).then((v) => {
-        if (v && !v.refuted) return { ...f, persona: rv.key }
-        if (v) reviewDrops.refuted.push(`(${rv.key}) ${f.file}${f.line ? ':' + f.line : ''} — ${f.title}: ${String(v.reason || '').replace(/\s*\n\s*/g, ' ')}`)
-        else reviewDrops.verifierDied.push(`(${rv.key}, ${f.severity}) ${f.file}${f.line ? ':' + f.line : ''} — ${f.title}`)
-        return null
-      }),
-    )).then((vs) => vs.filter(Boolean))
+    return parallel(processFindings(rev.findings, rv.key))
   },
 )
-// Cross-reviewer dedup (mirrors ce-code-review's fingerprint): the SAME issue
-// from two reviewers is ONE — merge it, keep the higher severity, credit both
-// personas. Fingerprint on file + line + title so two DISTINCT problems that
-// share a short title at different lines are not collapsed (which would silently
-// drop the second before any fixer sees it).
-const byFingerprint = new Map()
-for (const f of reviewed.filter(Boolean).flat()) {
-  const key = `${f.file}::${f.line || 0}::${f.title}`
-  const prev = byFingerprint.get(key)
-  if (!prev) byFingerprint.set(key, f)
-  else byFingerprint.set(key, { ...prev, severity: prev.severity === 'blocking' || f.severity === 'blocking' ? 'blocking' : prev.severity, persona: `${prev.persona}+${f.persona}` })
+
+// Gap-hunting sweep — a sequential post-pipeline step, NOT a reviewer pipeline
+// stage: it needs the COMPLETE verified set so it hunts only what the first
+// pass missed. Gated on diff size like simplify; the skip is logged because
+// the gate bounds coverage.
+if (changedLines < 50) {
+  log(`Sweep skipped: diff is ${changedLines} lines (<50)`)
+} else if (belowBudgetFloor()) {
+  log('Sweep skipped: token budget floor reached')
+} else {
+  // Exclude EVERYTHING the first pass already examined — verified, refuted,
+  // and cap-dropped alike — so the sweep's 8 candidate slots go to genuine
+  // gaps instead of re-deriving known-dead candidates that die in dedup.
+  const exclusionLines = kept.map((e) =>
+    e.verdict ? findingRef(e)
+    : e.refuted ? `${findingRef(e)} (already examined and refuted — do not re-report)`
+    : e.dropped ? `${findingRef(e)} (already reported, dropped at a verifier cap — do not re-report)`
+    : `${findingRef(e)} (already reported — do not re-report)`)
+  const sweep = await agent(
+    `Hunt for gaps a first review pass MISSED in the changes on branch ${INTEGRATION_BRANCH} relative to ${BASE}.
+Work inside the worktree at ${INTEGRATION_WT}; diff with: git diff origin/${BASE}...HEAD
+(fall back to ${BASE}). The work implements the plan at ${PLAN}.
+
+These findings were already examined by the first pass — do NOT re-derive or re-confirm these:
+${exclusionLines.join('\n') || '(none — the first pass reported nothing)'}
+
+Gap focus: moved/extracted code that dropped a guard or anchor; second-tier footguns (dataclass default evaluated once, hash() non-determinism, lock-scope shrink, predicate methods with side effects); setup/teardown asymmetry in tests; config defaults flipped.
+
+Report at most 8 candidates, each with file, line where possible, severity
+(blocking | suggested | nit), and enough detail that a fixer who has not seen
+your reasoning can act.
+Each finding must include a \`failure_scenario\`: the concrete inputs or state that produce the wrong outcome; for cleanup-style findings, state the concrete cost instead of a crash.
+If nothing new, return an empty list — do not pad.`,
+    { label: 'sweep', phase: 'Quality', schema: FINDINGS_SCHEMA },
+  )
+  if (!sweep) {
+    log('Sweep agent failed — no gap candidates collected')
+  } else {
+    let sweepFindings = sweep.findings
+    if (sweepFindings.length > 8) {
+      log(`Sweep returned ${sweepFindings.length} candidates — keeping the first 8, dropping ${sweepFindings.slice(8).map(findingRef).join('; ')}`)
+      sweepFindings = sweepFindings.slice(0, 8)
+    }
+    const keptBefore = kept.length
+    const survivors = (await parallel(processFindings(sweepFindings, 'sweep'))).filter(Boolean)
+    log(`Sweep: ${kept.length - keptBefore} new candidate(s), ${survivors.length} survived verification`)
+  }
 }
-const confirmed = [...byFingerprint.values()]
+// Confirmed = kept entries that were verified and not refuted. Budget-dropped
+// entries are NOT confirmed, NOT fixed, NOT residuals — logs and stats only.
+const confirmed = kept.filter((e) => e.verdict)
 confirmedCount = confirmed.length
-log(`${confirmed.length} confirmed finding(s) after adversarial verification and dedup${
+if (dupes) log(`${dupes} duplicate finding(s) merged by proximity dedup before verification`)
+if (budgetDropped) log(`${budgetDropped} finding(s) dropped unverified at a verifier cap (suggested ${MAX_VERIFY}, blocking ${MAX_BLOCKING_VERIFY}) — identities in the drop logs above`)
+log(`${confirmed.length} confirmed finding(s) after pre-verification dedup and adversarial verification${
   reviewDrops.refuted.length ? `; ${reviewDrops.refuted.length} refuted with evidence` : ''}${
   reviewDrops.verifierDied.length ? `; ${reviewDrops.verifierDied.length} dropped UNVERIFIED — refuter produced no verdict (died or skipped)` : ''}${
   reviewDrops.reviewerDied.length ? `; ${reviewDrops.reviewerDied.length} reviewer perspective(s) MISSING (${reviewDrops.reviewerDied.join(', ')})` : ''}`)
+reviewStats = { candidates, verified: confirmedCount, refuted: refutedCount, dupes, budgetDropped, verifierFailed }
 
 if (confirmed.length) {
   // Batch by file, but apply SEQUENTIALLY: all fixers share the one integration
@@ -925,10 +1093,15 @@ if (confirmed.length) {
   for (const [file, fs] of Object.entries(byFile)) {
     const fx = await agent(
       `In the worktree ${INTEGRATION_WT} (branch ${INTEGRATION_BRANCH}): fix these
-confirmed review findings in ${file}. Make the smallest correct fix for each, run
+verified review findings in ${file}. Make the smallest correct fix for each, run
 ${recon.testCommand}, stage ONLY the files you changed, and commit
 ("fix: address review findings in ${file}").
-If a finding turns out to be wrong once you read the code, skip it and say why.
+Each finding carries a verifier verdict; apply the verdict-conditional policy:
+- CONFIRMED findings: fix them unless you can prove from the code that the
+  finding is wrong; if you skip one, say exactly why it is provably wrong.
+- PLAUSIBLE findings: fix only when the fix is local and behavior-preserving;
+  otherwise skip it and cite the verifier's evidence (included with each finding
+  below) in your skip reason.
 Report every finding as either fixed (by title) or skipped (title + reason).${fixLog.length ? `
 Outcomes of earlier fix batches this round, as REPORTED by each fixer — verify
 against git log before treating a claimed fix as settled. Do not undo or
@@ -936,7 +1109,9 @@ rework their commits; if your fix genuinely conflicts with one, skip the
 finding and say so instead:
 ${fixLog.join('\n')}` : ''}
 The findings to fix now:
-${fs.map((f) => `- (${f.severity}, ${f.persona}) ${f.title}: ${f.detail}`).join('\n')}`,
+${fs.map((f) => `- (${f.severity}, ${f.verdict}, ${f.persona}) ${f.title}: ${f.detail}
+  Failure scenario: ${f.failure_scenario}
+  Verifier evidence: ${f.evidence}`).join('\n')}`,
       { label: `fix-${file.split('/').pop()}`, phase: 'Quality', schema: FIX_SCHEMA },
     )
     const oneLine = (s) => String(s).replace(/\s*\n\s*/g, ' ')
@@ -944,14 +1119,17 @@ ${fs.map((f) => `- (${f.severity}, ${f.persona}) ${f.title}: ${f.detail}`).join(
       ? `- ${file}: fixed [${fx.fixed.map(oneLine).join('; ') || 'none'}], skipped [${fx.skipped.map((s) => oneLine(s.title)).join('; ') || 'none'}]`
       : `- ${file}: fixer agent died — findings became residuals; whether it committed is unverified, check git log`)
     // Anything not verifiably fixed becomes a residual — durable in the PR body.
-    if (!fx) residuals.push(...fs.map((f) => ({ title: f.title, file: f.file, severity: f.severity, reason: 'fixer agent failed' })))
+    const residualOf = (f, reason) => ({ title: f.title, file: f.file, severity: f.severity, verdict: f.verdict, reason })
+    if (!fx) residuals.push(...fs.map((f) => residualOf(f, 'fixer agent failed')))
     else {
-      residuals.push(...fx.skipped.map((s) => {
-        const orig = fs.find((f) => f.title === s.title)
-        return { title: s.title, file, severity: orig ? orig.severity : 'suggested', reason: s.reason }
-      }))
+      residuals.push(...fx.skipped.map((s) => residualOf(
+        // UNKNOWN, not a verifier grade: a skip title matching no finding in the
+        // batch was never verified, and the PR body must not claim it was.
+        fs.find((f) => f.title === s.title) || { title: s.title, file, severity: 'suggested', verdict: 'UNKNOWN' },
+        s.reason,
+      )))
       const unaccounted = fs.filter((f) => !fx.fixed.includes(f.title) && !fx.skipped.some((s) => s.title === f.title))
-      residuals.push(...unaccounted.map((f) => ({ title: f.title, file, severity: f.severity, reason: 'fixer did not account for this finding' })))
+      residuals.push(...unaccounted.map((f) => residualOf(f, 'fixer did not account for this finding')))
     }
   }
   if (residuals.length) log(`${residuals.length} review residual(s) will be recorded in the PR body`)
@@ -1125,7 +1303,7 @@ if (!SHIP_ENABLED) {
     phase('Ship')
     const reqLines = (validation.requirements || []).map((r) => `- ${r.id}: ${r.verdict} — ${r.evidence}`)
     const residualLines = [
-      ...residuals.map((f) => `- (${f.severity}) ${f.file} — ${f.title}: ${f.reason}`),
+      ...residuals.map((f) => `- (${f.severity}, ${f.verdict}) ${f.file} — ${f.title}: ${f.reason}`),
       ...reviewDrops.verifierDied.map((k) => `- (UNVERIFIED) ${k} — refuter produced no verdict; dropped fail-closed without verification`),
       ...reviewDrops.reviewerDied.map((k) => `- (COVERAGE GAP) reviewer ${k} produced no result — its entire review perspective is missing from this PR's quality gate`),
       ...simplifyKept.map((k) => `- (info) simplify kept a dead-code candidate, not deleted — ${k}`),
@@ -1268,6 +1446,7 @@ return {
   codexCircuitBreakerTripped: codexBroken,
   confirmedReviewFindings: confirmedCount,
   reviewDrops,
+  reviewStats,
   residualReviewFindings: residuals,
   simplifyKept,
   validation,

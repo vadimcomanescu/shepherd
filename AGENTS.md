@@ -16,7 +16,7 @@ Before authoring, editing, running, or reviewing **ANY** dynamic workflow in thi
 
 3. **Ground every context-less agent.** Each agent gets a fresh context window and cannot see the coordinator's variables or other agents' work. Pass every agent exactly the data, file paths, and authoritative facts it needs in its prompt.
 
-4. **Verify adversarially; default to "fail if uncertain".** For findings that must be trusted, spawn independent verifier agents prompted to REFUTE. Require a majority. If uncertain, fail — do not silently pass.
+4. **Verify adversarially; default to "fail if uncertain".** For findings that must be trusted, spawn independent verifier agents prompted to REFUTE. Require a majority. If uncertain, fail — do not silently pass. One carved-out exception: code-review findings are graded by the recall-biased finding-verifier persona (uncertain lands on PLAUSIBLE, never REFUTED) because dropping a real defect costs more than keeping an uncertain one; the mitigation is verdict-conditional fixing — PLAUSIBLE findings may only receive local, behavior-preserving fixes.
 
 5. **No silent caps.** If the workflow bounds coverage (top-N, sampling, no-retry), call `log()` to surface what was dropped. Silent truncation is a bug.
 
@@ -61,4 +61,4 @@ Single-context: `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/
 
 ## Repo Context
 
-This repository contains the dynamic-workflow rules under [`docs/workflows/`](docs/workflows/), subagent persona definitions under [`agents/`](agents/) (symlinked into `.claude/agents`), coordinator scripts and their tests under [`workflows/`](workflows/), and the domain glossary in [`CONTEXT.md`](CONTEXT.md). Product direction lives in [`STRATEGY.md`](STRATEGY.md). The principles above are not advisory; they are structural requirements for any workflow you author. Violating coordinator I/O rules, using unbounded loops, or skipping adversarial verification can silently corrupt results or cause runaway agent usage. Read the docs before writing any workflow.
+This repository contains the dynamic-workflow rules under [`docs/workflows/`](docs/workflows/), subagent persona definitions under [`agents/`](agents/) (symlinked into `.claude/agents`), coordinator scripts and their tests under [`workflows/`](workflows/), and the domain glossary in [`CONTEXT.md`](CONTEXT.md). Product direction lives in [`STRATEGY.md`](STRATEGY.md). Documented solutions to past problems live under [`docs/solutions/`](docs/solutions/) (bugs, patterns, best practices), organized by category with YAML frontmatter (`module`, `tags`, `problem_type`) — relevant when implementing or debugging in documented areas. The principles above are not advisory; they are structural requirements for any workflow you author. Violating coordinator I/O rules, using unbounded loops, or skipping adversarial verification can silently corrupt results or cause runaway agent usage. Read the docs before writing any workflow.
