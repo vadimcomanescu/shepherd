@@ -693,6 +693,39 @@ S('S31 nit cap is loud: deferred nits are logged, listed in the result, and neve
   return 'nit cost cap is explicit: logged + result, zero refuter spawns for nits'
 })
 
+S('S32 verification drops are loud and distinguishable: refuted-with-evidence vs refuter death', async () => {
+  const d = makeDispatcher({
+    'review-correctness': () => ({ findings: [
+      { title: 'real bug', file: 'src/u1.js', line: 4, severity: 'blocking', detail: 'd' },
+      { title: 'phantom bug', file: 'src/u1.js', line: 9, severity: 'suggested', detail: 'd' },
+      { title: 'unverifiable bug', file: 'src/u2.js', line: 2, severity: 'blocking', detail: 'd' },
+    ] }),
+    'verify-correctness-u1.js': (p) => p.includes('phantom bug')
+      ? { refuted: true, reason: 'cannot occur: the guard on line 8\nprevents it' }
+      : { refuted: false, reason: 'confirmed' },
+    'verify-correctness-u2.js': () => { throw new Error('refuter died') },
+    'fix-': () => ({ fixed: ['real bug'], skipped: [], detail: 'ok' }),
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  assert.equal(result.confirmedReviewFindings, 1, 'only the confirmed finding survives')
+  assert.deepEqual(result.reviewDrops.refuted,
+    ['(correctness) src/u1.js:9 — phantom bug: cannot occur: the guard on line 8 prevents it'],
+    'refuted drop carries the refuter evidence, newline-flattened')
+  assert.deepEqual(result.reviewDrops.verifierDied,
+    ['(correctness, blocking) src/u2.js:2 — unverifiable bug'],
+    'a dead refuter drops the finding fail-closed but distinguishably, with severity')
+  assert.ok(trace.logs.some((l) => l.includes('1 refuted with evidence') && l.includes('1 dropped UNVERIFIED — refuter produced no verdict (died or skipped)')),
+    'both drop classes appear in the confirmed-count log line')
+  assert.deepEqual(result.residualReviewFindings, [], 'drops never leak into residual accounting')
+  const shipCall = trace.calls.find((c) => c.label === 'ship')
+  assert.ok(shipCall.prompt.includes('(UNVERIFIED) (correctness, blocking) src/u2.js:2 — unverifiable bug'),
+    'UNVERIFIED drops are durable in the PR-body residuals')
+  assert.ok(!shipCall.prompt.includes('phantom bug'),
+    'refuted-with-evidence drops stay out of the PR body — they were judged not real')
+  return 'verification stage cannot drop a finding silently in either direction'
+})
+
 S('S26 tail budget floor: waves finish but Proof/Ship/Compound are skipped with logs', async () => {
   // Single unit; diffstat lowered so reviewer roster is fixed at 6 (no adversarial).
   // Call ledger at 10k/call: parse+recon(2) setup(3) split(4) route(5) exec(6) merge(7)

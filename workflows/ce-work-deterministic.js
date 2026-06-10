@@ -735,6 +735,7 @@ if (halted) log(`Skipping Quality and Validate phases (${planInvalidation ? 'pla
 // ============================================================
 let confirmedCount = 0
 let validation = null
+const reviewDrops = { refuted: [], verifierDied: [] } // per-verdict records of finding instances NOT confirmed at verification: refuted-with-evidence vs no verdict (refuter died or was skipped). A duplicate of a refuted instance may still be confirmed via another reviewer. Fail-closed by design, but loud, never silent.
 let residuals = []            // confirmed-but-unfixed findings — made durable in the PR body (lfg residual contract)
 let proof = null
 let proofFixSucceeded = false // a proof fix round ran AND the retest cleared every previously failing route
@@ -848,7 +849,12 @@ ${f.detail}
 
 Where to look: the worktree at ${INTEGRATION_WT} (branch ${INTEGRATION_BRANCH}, base ${BASE}).`,
         { label: `verify-${rv.key}-${f.file.split('/').pop()}`, phase: 'Quality', model: 'sonnet', agentType: 'skeptical-refuter', schema: VERDICT_SCHEMA },
-      ).then((v) => (v && !v.refuted ? { ...f, persona: rv.key } : null)),
+      ).then((v) => {
+        if (v && !v.refuted) return { ...f, persona: rv.key }
+        if (v) reviewDrops.refuted.push(`(${rv.key}) ${f.file}${f.line ? ':' + f.line : ''} — ${f.title}: ${String(v.reason || '').replace(/\s*\n\s*/g, ' ')}`)
+        else reviewDrops.verifierDied.push(`(${rv.key}, ${f.severity}) ${f.file}${f.line ? ':' + f.line : ''} — ${f.title}`)
+        return null
+      }),
     )).then((vs) => vs.filter(Boolean))
   },
 )
@@ -866,7 +872,9 @@ for (const f of reviewed.filter(Boolean).flat()) {
 }
 const confirmed = [...byFingerprint.values()]
 confirmedCount = confirmed.length
-log(`${confirmed.length} confirmed finding(s) after adversarial verification and dedup`)
+log(`${confirmed.length} confirmed finding(s) after adversarial verification and dedup${
+  reviewDrops.refuted.length ? `; ${reviewDrops.refuted.length} refuted with evidence` : ''}${
+  reviewDrops.verifierDied.length ? `; ${reviewDrops.verifierDied.length} dropped UNVERIFIED — refuter produced no verdict (died or skipped)` : ''}`)
 
 if (confirmed.length) {
   // Batch by file, but apply SEQUENTIALLY: all fixers share the one integration
@@ -1067,6 +1075,7 @@ if (!SHIP_ENABLED) {
     const reqLines = (validation.requirements || []).map((r) => `- ${r.id}: ${r.verdict} — ${r.evidence}`)
     const residualLines = [
       ...residuals.map((f) => `- (${f.severity}) ${f.file} — ${f.title}: ${f.reason}`),
+      ...reviewDrops.verifierDied.map((k) => `- (UNVERIFIED) ${k} — refuter produced no verdict; dropped fail-closed without verification`),
       ...Object.entries(results).filter(([, r]) => r.status !== 'merged').map(([id, r]) => `- task ${id}: ${r.status} — ${r.detail}`),
       ...droppedUnits.map((u) => `- unit ${u.uid} (${u.name}): splitter failed — never executed`),
       ...preSkipped.map((t) => `- task ${t.id}: skipped — ${t.skipReason}`),
@@ -1195,6 +1204,7 @@ return {
   effortFloor: EFFORT_FLOOR || 'none',
   codexCircuitBreakerTripped: codexBroken,
   confirmedReviewFindings: confirmedCount,
+  reviewDrops,
   residualReviewFindings: residuals,
   validation,
   proof,
