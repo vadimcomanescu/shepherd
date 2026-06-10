@@ -962,6 +962,17 @@ S('S25 halt-taxonomy completeness', async () => {
 })
 
 // ---------- runner ----------
+S('S26 first-class repo arg: every dispatch is grounded with the target repository; absent by default', async () => {
+  const grounded = await run(makeDispatcher(), { args: { ...ARGS, repo: '/sibling/target-repo/' } })
+  assert.ifError(grounded.error)
+  const ungroundedCalls = grounded.trace.calls.filter((c) => !c.prompt.startsWith('TARGET REPOSITORY: /sibling/target-repo\n'))
+  assert.deepEqual(ungroundedCalls.map((c) => c.label), [], 'every agent dispatch carries the repo grounding prefix (trailing slash trimmed)')
+  const plain = await run(makeDispatcher())
+  assert.ifError(plain.error)
+  assert.ok(!plain.trace.calls.some((c) => c.prompt.includes('TARGET REPOSITORY:')), 'no grounding prefix when args.repo is unset')
+  return 'one chokepoint grounds every contextless agent with the target repo'
+})
+
 let pass = 0, fail = 0
 for (const { name, fn } of scenarios) {
   try {

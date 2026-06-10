@@ -42,7 +42,23 @@ const SPIKES_ENABLED = args.spikes !== false
 const EXTERNAL_RESEARCH = args.externalResearch !== false
 // Args echo — a launch whose args never arrived (observed live: a scriptPath
 // launch delivered no tool-level args) must die loudly AND legibly, never silently.
-log(`nadia-plan args resolved: request=${REQUEST ? `"${REQUEST.slice(0, 80)}${REQUEST.length > 80 ? '…' : ''}"` : '(none)'}, origin=${ORIGIN || '(none)'}, depth=${PINNED_DEPTH || '(auto)'}, date=${PLAN_DATE || '(derived)'}, commit=${COMMIT}, editorRounds=${EDITOR_ROUNDS}, reviewRounds=${PERSONA_ROUNDS}, spikes=${SPIKES_ENABLED}, externalResearch=${EXTERNAL_RESEARCH}`)
+log(`nadia-plan args resolved: request=${REQUEST ? `"${REQUEST.slice(0, 80)}${REQUEST.length > 80 ? '…' : ''}"` : '(none)'}, origin=${ORIGIN || '(none)'}, depth=${PINNED_DEPTH || '(auto)'}, date=${PLAN_DATE || '(derived)'}, commit=${COMMIT}, editorRounds=${EDITOR_ROUNDS}, reviewRounds=${PERSONA_ROUNDS}, spikes=${SPIKES_ENABLED}, externalResearch=${EXTERNAL_RESEARCH}, repo=${args.repo || '(session cwd)'}`)
+
+// ---- target-repo grounding (first-class repo arg) ----
+// Every agent runs with the session cwd, which is NOT necessarily the repo the
+// plan is for (observed live: planning for a sibling checkout required shimming
+// a grounding prefix into every prompt). One chokepoint grounds every dispatch.
+const REPO = args.repo ? String(args.repo).replace(/\/+$/, '') : ''
+if (REPO) {
+  const ungroundedAgent = agent
+  agent = (prompt, opts) => ungroundedAgent(`TARGET REPOSITORY: ${REPO}
+You are working on the repository at ${REPO}, NOT your current working directory.
+Resolve every relative path in this brief (docs/plans/..., lib/..., test and git
+commands) against ${REPO}: cd into it first in any shell command, search and
+read only there, and write files only under ${REPO}.
+
+${prompt}`, opts)
+}
 const BUDGET_FLOOR = 30000                            // sibling line-548 constant, unchanged
 const belowBudgetFloor = () => !!budget.total && budget.remaining() <= BUDGET_FLOOR
 

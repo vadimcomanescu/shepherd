@@ -34,7 +34,23 @@ const COMPOUND_ENABLED = args.compound !== false
 const CI_ROUNDS = Math.max(1, Math.min(10, args.ciRounds || 3)) // lfg default 3; hard-clamped 1..10 so a bad arg cannot unbound the loop
 // Args echo — a launch whose args never arrived (observed live: a scriptPath
 // launch delivered no tool-level args) must die loudly AND legibly, never silently.
-log(`nadia-deliver args resolved: plan=${PLAN}, base=${args.base || '(default)'}, slug=${args.slug || '(derived)'}, codex=${CODEX_ENABLED}, sandbox=${SANDBOX}, proof=${PROOF_ENABLED}, ship=${SHIP_ENABLED}, compound=${COMPOUND_ENABLED}, ciRounds=${CI_ROUNDS}`)
+log(`nadia-deliver args resolved: plan=${PLAN}, base=${args.base || '(default)'}, slug=${args.slug || '(derived)'}, codex=${CODEX_ENABLED}, sandbox=${SANDBOX}, proof=${PROOF_ENABLED}, ship=${SHIP_ENABLED}, compound=${COMPOUND_ENABLED}, ciRounds=${CI_ROUNDS}, repo=${args.repo || '(session cwd)'}`)
+
+// ---- target-repo grounding (first-class repo arg) ----
+// Every agent runs with the session cwd, which is NOT necessarily the repo the
+// plan targets (observed live: executing against a sibling checkout required
+// shimming a grounding prefix into every prompt). One chokepoint grounds every dispatch.
+const REPO = args.repo ? String(args.repo).replace(/\/+$/, '') : ''
+if (REPO) {
+  const ungroundedAgent = agent
+  agent = (prompt, opts) => ungroundedAgent(`TARGET REPOSITORY: ${REPO}
+You are working on the repository at ${REPO}, NOT your current working directory.
+Resolve every relative path in this brief (the plan document, worktrees, test
+and git commands) against ${REPO}: cd into it first in any shell command, search
+and read only there, and write only under ${REPO} and its worktrees.
+
+${prompt}`, opts)
+}
 
 // ============================================================
 // Schemas
