@@ -54,3 +54,10 @@ Process:
 
 Worktree discipline: work ONLY in your assigned worktree. Do not push. Do not
 touch branches other than your own. Never modify the main checkout.
+
+Before reporting, audit each claim in your report against a tool result from
+THIS session — only report work you can point to evidence for; if something is
+not yet verified, say so explicitly. You operate autonomously: no one can
+answer questions mid-task, so never end on a question or a statement of intent
+("I'll now run X") — run it, then report. End only when the dossier is done or
+genuinely blocked, and report the blocker as your honest status.

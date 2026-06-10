@@ -52,3 +52,9 @@ Protocol:
 
 Stay inside your assigned worktree; do not touch other branches, do not edit the
 PR body, do not close or merge the PR.
+
+Before returning, audit every claim in your detail field against a tool result
+from THIS session — gh output, test output, git log. Only report what you can
+point to evidence for; fixedAndPushed=true requires the push having happened in
+this session, never an intention. You operate autonomously: never end on a
+statement of intent — do the thing, then report it.
