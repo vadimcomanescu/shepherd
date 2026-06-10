@@ -120,9 +120,10 @@ const ROUTE_SCHEMA = {
   properties: {
     executor: { enum: ['codex', 'claude'] },
     effort: { enum: ['default', 'medium', 'high', 'xhigh'], description: 'codex reasoning effort; ignored for claude' },
+    model: { enum: ['haiku', 'sonnet', 'opus'], description: 'claude model tier — used by the claude executor, and by fallback/finisher dispatches when codex fails' },
     reason: { type: 'string' },
   },
-  required: ['executor', 'effort', 'reason'],
+  required: ['executor', 'effort', 'model', 'reason'],
 }
 
 const EXEC_SCHEMA = {
@@ -417,7 +418,7 @@ Task ${t.id} (${t.title}) — risk: ${t.risk}, ambiguity: ${t.ambiguity}, est di
 Dossier:
 ${t.dossier}`,
         { label: `route-${t.id}`, phase: 'Route', agentType: 'executor-router', schema: ROUTE_SCHEMA },
-      ).then((route) => ({ ...t, route: route || { executor: 'claude', effort: 'default', reason: 'router failed — defaulted to claude' } })),
+      ).then((route) => ({ ...t, route: route || { executor: 'claude', effort: 'default', model: 'sonnet', reason: 'router failed — defaulted to claude/sonnet' } })),
     )).then((routed) => ({ unit: u, tasks: routed.filter(Boolean) }))
   },
 )
@@ -576,7 +577,7 @@ for (let w = 0; w < waves.length; w++) {
         phase: 'Execute',
         agentType: useCodex ? 'codex-runner' : 'unit-executor',
         schema: EXEC_SCHEMA,
-        ...(useCodex ? { model: 'sonnet' } : {}), // runner is mechanical; claude executor inherits
+        model: useCodex ? 'sonnet' : (t.route.model || 'sonnet'), // runner is mechanical; claude executor uses the routed tier (never inherits the session model)
       },
     ).then((r) => ({ t, usedCodex: useCodex, r }))
   }))
@@ -613,11 +614,11 @@ verify, and commit. Report "completed" only if verification passes.`
         log(`${e.t.id}: codex failed (${e.r ? e.r.issues.join('; ') : 'runner returned null'}) — re-dispatching to claude in a fresh worktree`)
         retried.push(agent(
           `${staleCleanup(e.t, `wf/${SLUG}/${e.t.id.toLowerCase()}`)}\n${claudeExecutorPrompt(e.t)}`,
-          { label: `exec-${e.t.id}-claude-fallback`, phase: 'Execute', agentType: 'unit-executor', schema: EXEC_SCHEMA },
+          { label: `exec-${e.t.id}-claude-fallback`, phase: 'Execute', agentType: 'unit-executor', model: e.t.route.model || 'sonnet', schema: EXEC_SCHEMA },
         ).then((r) => ({ t: e.t, usedCodex: false, r, wasFallback: true })))
       } else if (status === 'partial') {
         log(`${e.t.id}: codex partial — dispatching claude finisher in the same worktree`)
-        retried.push(agent(finisherPrompt(e.t, e.r), { label: `finish-${e.t.id}`, phase: 'Execute', agentType: 'unit-executor', schema: EXEC_SCHEMA })
+        retried.push(agent(finisherPrompt(e.t, e.r), { label: `finish-${e.t.id}`, phase: 'Execute', agentType: 'unit-executor', model: e.t.route.model || 'sonnet', schema: EXEC_SCHEMA })
           .then((r) => ({ t: e.t, usedCodex: false, r, wasFinisher: true })))
       }
     } else if (status === 'partial' && e.r.branch) {
@@ -650,7 +651,7 @@ verify, and commit. Report "completed" only if verification passes.`
 \nNOTE: an earlier attempt conflicted when merging into ${INTEGRATION_BRANCH}.
 After the cleanup above, create a FRESH worktree from the CURRENT tip of
 ${INTEGRATION_BRANCH} and implement the dossier against the code as it now stands.`,
-        { label: `redo-${t.id}`, phase: 'Execute', agentType: 'unit-executor', schema: EXEC_SCHEMA },
+        { label: `redo-${t.id}`, phase: 'Execute', agentType: 'unit-executor', model: t.route.model || 'sonnet', schema: EXEC_SCHEMA },
       )
       if (redo && redo.status === 'completed' && redo.branch) {
         e = { t, usedCodex: false, r: redo, wasRedo: true } // rebind so reporting reflects the work that actually merged
