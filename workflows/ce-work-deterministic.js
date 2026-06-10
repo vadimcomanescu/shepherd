@@ -1116,19 +1116,26 @@ if (ship.pushed && ship.prUrl) {
   phase('CI')
   let ciStop = ''            // why the loop ended while still red: budget | no-fix-path | rounds
   let ciLastFixPushed = false // a fix landed after the last watch and was never re-watched
+  const ciHistory = []       // one line per completed round — each watcher is contextless, so prior outcomes must ride the brief
   for (let attempt = 1; attempt <= CI_ROUNDS; attempt++) {
     if (!tailBudget(`CI attempt ${attempt}`)) { ciStop = 'budget'; break }
     const r = await agent(
       `CI watch iteration ${attempt}/${CI_ROUNDS}.
 PR: ${ship.prUrl}
 Worktree: ${INTEGRATION_WT}   Branch: ${INTEGRATION_BRANCH}
-Test command: ${recon.testCommand}`,
+Test command: ${recon.testCommand}${ciHistory.length ? `
+Previous rounds — a check that fails again after one of these pushed fixes
+means that round's diagnosis was wrong or partial: diagnose afresh (including
+reverting the prior fix if it proves to be a symptom patch), and do not repeat
+an approach listed here:
+${ciHistory.join('\n')}` : ''}`,
       { label: `ci-watch-${attempt}`, phase: 'CI', agentType: 'ci-watcher', schema: CI_SCHEMA },
     )
     ci.attempts = attempt
     if (!r) { ci.status = 'unknown'; ci.detail = 'ci watch agent failed'; log('CI watch agent failed — PR checks state unknown'); break }
     ci.status = r.checks
     ci.detail = r.detail
+    ciHistory.push(`- round ${attempt}: checks=${r.checks}, fixedAndPushed=${r.fixedAndPushed} — ${r.detail}`)
     ciLastFixPushed = r.checks === 'red' && r.fixedAndPushed
     if (r.checks !== 'red') break
     if (!r.fixedAndPushed) { ciStop = 'no-fix-path'; break } // nothing was pushed — re-watching would loop on the same failure
