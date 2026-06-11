@@ -6,7 +6,7 @@ The vocabulary this repo uses when talking about dynamic workflows. Definitions 
 
 - **Dynamic workflow** — a JavaScript script that orchestrates many subagents at scale, executed by a runtime in the background while the main session stays responsive. The plan moves into code, not the model's context.
 - **Coordinator** — the workflow script body. Holds all control flow (loops, branching, accumulation) and does **no I/O**: no filesystem, shell, git, or network. Plain JavaScript, never TypeScript.
-- **Agent** — a subagent spawned by `agent()`. Does all real-world work. Starts with a fresh, empty context window; it sees only what its prompt contains.
+- **Agent** — a subagent spawned by `agent()`. Does all real-world work. Starts with a fresh, empty context window; it sees only what its prompt contains. Distinct from the **AFK agent** of the triage vocabulary — an autonomous agent that owns a `ready-for-agent` issue end-to-end (see [`docs/agents/triage-labels.md`](docs/agents/triage-labels.md)). When both could be meant, qualify: "workflow agent" vs "AFK agent."
 - **Grounding** — passing an agent every fact, path, and datum it needs inline in its prompt, because it cannot see coordinator variables or other agents' work.
 - **`pipeline()`** — the default multi-stage primitive: each item flows through all stages independently, no barrier between stages.
 - **Barrier** — the synchronization point a `parallel()` call creates: all tasks finish before the script continues. Justified only when a stage needs ALL prior-stage results together.
