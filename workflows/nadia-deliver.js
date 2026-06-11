@@ -767,7 +767,8 @@ merged and later tasks will build on this tree, so consolidate duplication NOW
 but leave intentional seams alone.`, `refactor: simplify after wave ${w + 1}`),
       { label: `simplify-wave-${w + 1}`, phase: 'Integrate', schema: SIMPLIFY_SCHEMA },
     )
-    if (sw && sw.kept.length) {
+    if (!sw) log(`Simplify wave ${w + 1} agent died — pass skipped, no simplification applied`)
+    else if (sw.kept.length) {
       simplifyKept.push(...sw.kept.map((k) => `wave ${w + 1}: ${k}`))
       log(`Simplify wave ${w + 1}: ${sw.kept.length} dead-code candidate(s) kept, not deleted — ${sw.kept.join('; ')}`)
     }
@@ -792,9 +793,11 @@ let reviewStats = null        // { candidates, verified, refuted, dupes, budgetD
 let validation = null
 const reviewDrops = { refuted: [], verifierDied: [], reviewerDied: [] } // coverage lost in the Quality gate, loud, never silent: refuted-with-evidence and no-verdict (refuter died/skipped) are per-verdict instance records (a duplicate of a refuted instance may still be confirmed via another reviewer; fail-closed by design); reviewerDied lists reviewer perspectives that produced NO result at all — their entire viewpoint is missing from the review.
 let residuals = []            // confirmed-but-unfixed findings — made durable in the PR body (lfg residual contract)
+let fixAudit = null           // independent audit of fixer "fixed" self-reports — { claimed, unsupported, unaudited } or null when nothing was claimed fixed
+let shipGate = null           // independent fresh-context recheck of tests+lint at the ship boundary — null when ship never reached the gate
 let proof = null
 let proofFixSucceeded = false // a proof fix round ran AND the retest cleared every previously failing route
-let ship = { pushed: false, prUrl: '', prCreated: false, planStatusFlipped: false, detail: halted ? 'run halted before quality/validation' : '' }
+let ship = { pushed: false, prUrl: '', prCreated: false, planStatusFlipped: false, verified: false, detail: halted ? 'run halted before quality/validation' : '' }
 let ci = { status: 'skipped', attempts: 0, detail: '', residualRecorded: false }
 let compounded = null
 const nitsDeferred = []       // nit findings excluded from verification (deliberate cost cap) — logged and returned, never silently dropped
@@ -813,7 +816,8 @@ if (changedLines >= 30) {
     simplifyPrompt('', `refactor: simplify after ${SLUG} implementation`),
     { label: 'simplify', phase: 'Quality', schema: SIMPLIFY_SCHEMA },
   )
-  if (sq && sq.kept.length) {
+  if (!sq) log('Simplify agent died — pass skipped, no simplification applied')
+  else if (sq.kept.length) {
     simplifyKept.push(...sq.kept.map((k) => `quality: ${k}`))
     log(`Simplify: ${sq.kept.length} dead-code candidate(s) kept, not deleted — ${sq.kept.join('; ')}`)
   }
@@ -1114,6 +1118,7 @@ if (confirmed.length) {
   const byFile = {}
   for (const f of confirmed) (byFile[f.file] = byFile[f.file] || []).push(f)
   const fixLog = []   // one line per completed batch — each fixer is contextless, so prior batches' commits must ride the brief
+  const claimedFixed = []  // findings the fixers self-reported as fixed — audited independently below, never trusted as-is
   for (const [file, fs] of Object.entries(byFile)) {
     const fx = await agent(
       `In the worktree ${INTEGRATION_WT} (branch ${INTEGRATION_BRANCH}): fix these
@@ -1126,7 +1131,10 @@ Each finding carries a verifier verdict; apply the verdict-conditional policy:
 - PLAUSIBLE findings: fix only when the fix is local and behavior-preserving;
   otherwise skip it and cite the verifier's evidence (included with each finding
   below) in your skip reason.
-Report every finding as either fixed (by title) or skipped (title + reason).${fixLog.length ? `
+Report every finding as either fixed (by title) or skipped (title + reason).
+Report a finding as fixed ONLY when its fix commit now exists on the branch —
+audit the claim against git log output from THIS session; attempted or intended
+but uncommitted work is skipped, not fixed.${fixLog.length ? `
 Outcomes of earlier fix batches this round, as REPORTED by each fixer — verify
 against git log before treating a claimed fix as settled. Do not undo or
 rework their commits; if your fix genuinely conflicts with one, skip the
@@ -1154,7 +1162,47 @@ ${fs.map((f) => `- (${f.severity}, ${f.verdict}, ${f.persona}) ${f.title}: ${f.d
       )))
       const unaccounted = fs.filter((f) => !fx.fixed.includes(f.title) && !fx.skipped.some((s) => s.title === f.title))
       residuals.push(...unaccounted.map((f) => residualOf(f, 'fixer did not account for this finding')))
+      claimedFixed.push(...fs.filter((f) => fx.fixed.includes(f.title)))
     }
+  }
+  // Fixer "fixed" lists are self-reports, not facts (lfg: "an unverified fix is
+  // not finished"). One fresh-context auditor checks every claim against the
+  // actual commits: unsupported claims demote to residuals; a dead or
+  // budget-skipped audit leaves a durable UNAUDITED residual instead of
+  // silently trusting the claims.
+  if (claimedFixed.length && !belowBudgetFloor()) {
+    const audit = await agent(
+      `Independently audit fixer self-reports in the worktree ${INTEGRATION_WT} (branch ${INTEGRATION_BRANCH}).
+Fix agents claim they fixed and committed these review findings
+("fix: address review findings in <file>" commits):
+${claimedFixed.map((f) => `- ${f.file} — ${f.title}: ${String(f.detail).replace(/\s*\n\s*/g, ' ')}`).join('\n')}
+For EACH claim: read the actual commits touching that file (git log --oneline -- <file>,
+then git show) and judge whether a committed diff hunk plausibly addresses the
+finding. Never take the claim's word for it — judge only from commits you read
+in THIS session. Report in unsupported every claim (exact title and file as
+listed above) with no backing commit; an empty unsupported list asserts you
+checked every claim and each one is backed by a commit. Change nothing.`,
+      { label: 'audit-fixes', phase: 'Quality', model: 'sonnet', schema: { type: 'object', properties: { unsupported: { type: 'array', items: { type: 'object', properties: { title: { type: 'string' }, file: { type: 'string' }, evidence: { type: 'string' } }, required: ['title', 'file', 'evidence'] } }, detail: { type: 'string' } }, required: ['unsupported', 'detail'] } }, // mechanical commit-vs-claim check; the claims and the judging rule are fully specified
+    )
+    if (!audit) {
+      fixAudit = { claimed: claimedFixed.length, unsupported: [], unaudited: claimedFixed.map((f) => `${f.file} — ${f.title}`) }
+      log(`Fix-audit agent died — ${claimedFixed.length} fixed claim(s) stand UNAUDITED; recorded as a PR residual, not trusted silently`)
+    } else {
+      const unsupported = []
+      for (const u of audit.unsupported) {
+        const f = claimedFixed.find((c) => c.title === u.title && c.file === u.file) || claimedFixed.find((c) => c.title === u.title)
+        if (!f) { log(`Fix-audit reported an unknown claim "${u.title}" — ignored (matches no fixer-claimed finding)`); continue }
+        unsupported.push(`${f.file} — ${f.title}`)
+        residuals.push({ title: f.title, file: f.file, severity: f.severity, verdict: f.verdict, reason: `fixer claimed fixed, but the audit found no supporting commit: ${u.evidence}` })
+      }
+      fixAudit = { claimed: claimedFixed.length, unsupported, unaudited: [] }
+      log(unsupported.length
+        ? `Fix-audit: ${unsupported.length}/${claimedFixed.length} fixed claim(s) NOT backed by a commit — demoted to residuals`
+        : `Fix-audit: all ${claimedFixed.length} fixed claim(s) backed by commits`)
+    }
+  } else if (claimedFixed.length) {
+    fixAudit = { claimed: claimedFixed.length, unsupported: [], unaudited: claimedFixed.map((f) => `${f.file} — ${f.title}`) }
+    log(`Fix-audit skipped: token budget floor reached — ${claimedFixed.length} fixed claim(s) stand UNAUDITED; recorded as a PR residual`)
   }
   if (residuals.length) log(`${residuals.length} review residual(s) will be recorded in the PR body`)
 }
@@ -1195,7 +1243,10 @@ ${(planDoc.deferredQuestions || []).map((q) => `   - ${q}`).join('\n') || '   (n
 6. Post-deploy checks — from what the diff touches, list the 2-5 concrete
    things to monitor or manually validate after this deploys (metrics, logs,
    user flows). These go into the PR body verbatim.
-Do not fix anything; report honestly.`,
+Do not fix anything; report honestly. Audit every verdict you report against a
+tool result from THIS session — testsPass and lintPasses come strictly from the
+exit codes of the commands you ran above, never from memory, expectation, or a
+prior agent's report.`,
   { label, phase: 'Validate', schema: VALIDATION_SCHEMA },
 )
 
@@ -1307,7 +1358,36 @@ If you write docs: validate their frontmatter as the skill requires and commit
 phase owns pushing.`,
       { label: 'compound', phase: 'Compound', model: 'sonnet', schema: COMPOUND_SCHEMA }, // mechanical authoring from enumerated solved-problem candidates; skill prescribes template and commit
     )
-    if (compounded) log(compounded.documented ? `Compounded: ${compounded.paths.join(', ')}` : `Compound: nothing qualifying (${compounded.detail})`)
+    if (!compounded) log('Compound agent failed — nothing documented')
+    else if (!compounded.documented) log(`Compound: nothing qualifying (${compounded.detail})`)
+    else {
+      log(`Compounded: ${compounded.paths.join(', ')}`)
+      // documented=true is a self-report: docs that were never committed would
+      // vanish from the shipped branch while the run summary still cites them.
+      // One mechanical check per claimed path; failures demote from the result.
+      const cv = await agent(
+        `Verify claimed solution docs in the worktree ${INTEGRATION_WT} (branch ${INTEGRATION_BRANCH}).
+For each path below confirm, strictly from command output you observe in THIS
+session: the file exists, it is committed on the branch (git log -1 -- <path>
+returns a commit), and its YAML frontmatter parses. Paths:
+${compounded.paths.map((p) => `- ${p}`).join('\n')}
+Change nothing. Report each failing path with evidence; an empty failures list
+asserts you checked every path listed and each one passed.`,
+        { label: 'audit-compound', phase: 'Compound', model: 'sonnet', schema: { type: 'object', properties: { failures: { type: 'array', items: { type: 'object', properties: { path: { type: 'string' }, evidence: { type: 'string' } }, required: ['path', 'evidence'] } }, detail: { type: 'string' } }, required: ['failures', 'detail'] } }, // mechanical exists/committed/frontmatter check over an enumerated path list
+      )
+      if (!cv) {
+        compounded = { ...compounded, detail: `${compounded.detail} [UNVERIFIED — compound-verify agent died; paths stand on the compound agent's self-report]` }
+        log("Compound-verify agent died — documented paths stand on the compound agent's self-report, UNVERIFIED")
+      } else if (cv.failures.length) {
+        const failedPaths = cv.failures.map((f) => f.path)
+        compounded = {
+          documented: compounded.paths.some((p) => !failedPaths.includes(p)),
+          paths: compounded.paths.filter((p) => !failedPaths.includes(p)),
+          detail: `${compounded.detail} [audit demoted ${failedPaths.length} claimed path(s): ${cv.failures.map((f) => `${f.path} — ${f.evidence}`).join('; ')}]`,
+        }
+        log(`Compound-verify: ${failedPaths.length} claimed doc(s) failed the audit — demoted from the result`)
+      }
+    }
   }
 }
 
@@ -1325,9 +1405,32 @@ if (!SHIP_ENABLED) {
   ship.detail = 'token budget floor reached'
 } else {
     phase('Ship')
+    // Independent ship gate: the push is the one irreversible step, and
+    // validation's testsPass/lintPasses are a single agent's self-report. A
+    // fresh-context agent re-observes both commands before anything leaves the
+    // machine; a contradiction or a dead recheck fails closed — no push.
+    shipGate = await agent(
+      `Independent ship-gate recheck in ${INTEGRATION_WT} (branch ${INTEGRATION_BRANCH}).
+Run exactly these two commands and report strictly from the exit codes you
+observe in THIS session — never from memory, a prior agent's report, or
+inference:
+1. ${recon.testCommand}
+2. ${recon.lintCommand}
+evidence: each command's exit code plus its last few output lines.
+Do not fix anything, do not commit — observe and report.`,
+      { label: 'gate-recheck', phase: 'Ship', model: 'sonnet', schema: { type: 'object', properties: { testsPass: { type: 'boolean' }, lintPasses: { type: 'boolean' }, evidence: { type: 'string' } }, required: ['testsPass', 'lintPasses', 'evidence'] } }, // mechanical run-and-report; both commands are fully specified
+    )
+    if (!shipGate) {
+      ship.detail = 'independent ship-gate recheck agent died — failing closed, branch left unpushed'
+      log(`Ship blocked: ${ship.detail}`)
+    } else if (!shipGate.testsPass || !shipGate.lintPasses) {
+      ship.detail = `independent ship-gate recheck contradicted validation (${[!shipGate.testsPass ? 'tests failing' : '', !shipGate.lintPasses ? 'lint failing' : ''].filter(Boolean).join(', ')}) — branch left unpushed: ${shipGate.evidence}`
+      log(`Ship blocked: ${ship.detail}`)
+    } else {
     const reqLines = (validation.requirements || []).map((r) => `- ${r.id}: ${r.verdict} — ${r.evidence}`)
     const residualLines = [
       ...residuals.map((f) => `- (${f.severity}, ${f.verdict}) ${f.file} — ${f.title}: ${f.reason}`),
+      ...(fixAudit && fixAudit.unaudited.length ? [`- (UNAUDITED) ${fixAudit.unaudited.length} review-fix claim(s) were never independently audited (${fixAudit.unaudited.join('; ')}) — verify the "fix: address review findings" commits by hand`] : []),
       ...reviewDrops.verifierDied.map((k) => `- (UNVERIFIED) ${k} — refuter produced no verdict; dropped fail-closed without verification`),
       ...reviewDrops.reviewerDied.map((k) => `- (COVERAGE GAP) reviewer ${k} produced no result — its entire review perspective is missing from this PR's quality gate`),
       ...simplifyKept.map((k) => `- (info) simplify kept a dead-code candidate, not deleted — ${k}`),
@@ -1337,6 +1440,9 @@ if (!SHIP_ENABLED) {
       ...(validation.requirements || []).filter((r) => r.verdict !== 'satisfied').map((r) => `- requirement ${r.id} ${r.verdict}: ${r.evidence}`),
       ...(validation.deferredQuestions || []).filter((q) => !q.resolved).map((q) => `- unresolved deferred question: ${q.question} (${q.evidence})`),
       ...(proof ? proof.routes.filter((r) => r.result === 'fail').map((r) => `- browser-proof failure: ${r.route} — ${r.detail}`) : []),
+      // proof === null only when the proof agent died (every skip path sets an
+      // object): a dead proof must be durable and distinguishable from a skip.
+      ...(PROOF_ENABLED && !proof ? ['- (UNVERIFIED) browser-proof agent died — affected routes were never browser-tested'] : []),
     ]
     const proofSummary = !proof ? 'not run (proof agent failed)'
       : proof.status === 'skipped' ? `skipped (${proof.detail})`
@@ -1379,8 +1485,36 @@ ${(validation.postDeployChecks || []).map((c) => `- ${c}`).join('\n') || '- noth
 Report honestly: pushed=true only if the push succeeded; prUrl "" when no PR exists.`,
       { label: 'ship', phase: 'Ship', model: 'sonnet', schema: SHIP_SCHEMA }, // mechanical commit/push/PR creation; steps and PR body sections are fully specified in the prompt
     )
-    if (shipRes) ship = shipRes
+    if (shipRes) ship = { ...shipRes, verified: false }
     else { ship.detail = 'ship agent failed — check the worktree state by hand'; log(`Ship: ${ship.detail}`) }
+    if (shipRes) {
+      // pushed/prUrl are outward-facing self-reports that gate the CI phase: a
+      // wrong one either watches a phantom PR or strands a live one unwatched.
+      // One fresh-context observation wins over the self-report, both directions.
+      const sv = await agent(
+        `Independently verify a ship outcome in ${INTEGRATION_WT} (branch ${INTEGRATION_BRANCH}).
+Report strictly from command output you observe in THIS session:
+- pushed: does the branch's HEAD exist on its upstream? (git fetch the remote,
+  then compare git rev-parse @ against @{u} — pushed means the upstream has
+  this HEAD, i.e. ahead 0)
+- prUrl: the open PR's URL for this branch from gh pr view --json url,state
+  (gh available: ${recon.ghAvailable}); report "" when none exists or gh is unusable.
+Change nothing: no push, no commit, no PR edits.`,
+        { label: 'ship-verify', phase: 'Ship', model: 'sonnet', schema: { type: 'object', properties: { pushed: { type: 'boolean' }, prUrl: { type: 'string' }, evidence: { type: 'string' } }, required: ['pushed', 'prUrl', 'evidence'] } }, // mechanical observe-and-report against two commands
+      )
+      if (!sv) {
+        log("Ship-verify agent died — ship outcome stands on the ship agent's self-report, UNVERIFIED")
+      } else {
+        ship.verified = true
+        if (sv.pushed !== ship.pushed || (sv.prUrl || '') !== (ship.prUrl || '')) {
+          log(`Ship-verify contradicted the ship self-report (claimed pushed=${ship.pushed}, prUrl=${ship.prUrl || '""'}; observed pushed=${sv.pushed}, prUrl=${sv.prUrl || '""'}) — adopting the observed state`)
+          ship.detail = `${ship.detail} [self-report corrected by ship-verify: ${sv.evidence}]`
+        }
+        ship.pushed = sv.pushed
+        ship.prUrl = sv.prUrl
+      }
+    }
+    }
 }
 
 // ---- Phase: CI (lfg step 8) — watch checks, bounded autofix, durable residuals ----
@@ -1428,8 +1562,7 @@ ${ciHistory.join('\n')}` : ''}`,
     : ci.status === 'skipped' ? 'CI was never watched — the token budget floor was reached before the first watch. The PR\'s checks are running unverified.'
     : ''
   if (ciSituation) {
-    const recorded = await agent(
-      `PR ${ship.prUrl} needs a durable note: ${ciSituation}
+    const ciResidualPrompt = `PR ${ship.prUrl} needs a durable note: ${ciSituation}
 Last detail: ${ci.detail || 'none'}${ciHistory.length ? `
 Round history (include it in the note — it tells the next human or agent what
 was already tried):
@@ -1438,9 +1571,14 @@ Make this durable per the autopilot contract: from ${INTEGRATION_WT}, fetch the
 current PR body (gh pr view --json body), append or replace a
 "## CI Status Unresolved" section stating the situation above and listing any
 failing checks with their links. Write the new body to a temp file and apply it
-with gh pr edit --body-file. Do NOT change code.`,
-      { label: 'ci-residual', phase: 'CI', model: 'sonnet' },
-    )
+with gh pr edit --body-file. Do NOT change code.`
+    let recorded = await agent(ciResidualPrompt, { label: 'ci-residual', phase: 'CI', model: 'sonnet' })
+    if (!recorded) {
+      // One bounded retry: a live PR with no CI note silently drops the
+      // autopilot contract, so a single recorder crash must not be terminal.
+      log('CI residual recorder died — retrying once before leaving the PR unannotated')
+      recorded = await agent(ciResidualPrompt, { label: 'ci-residual-retry', phase: 'CI', model: 'sonnet' })
+    }
     ci.residualRecorded = !!recorded
     log(recorded
       ? `CI unresolved (${ci.status}) — recorded in the PR body, not looping further`
@@ -1472,8 +1610,10 @@ return {
   reviewDrops,
   reviewStats,
   residualReviewFindings: residuals,
+  fixAudit,
   simplifyKept,
   validation,
+  shipGate,
   proof,
   ship,
   ci,

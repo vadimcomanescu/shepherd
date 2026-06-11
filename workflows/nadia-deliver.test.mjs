@@ -113,8 +113,12 @@ function makeDispatcher(overrides = {}, opts = {}) {
     if (label === 'proof' || label === 'proof-retest') return { status: 'pass', routes: [{ route: '/', result: 'pass', detail: 'renders' }], detail: 'ok' }
     if (label === 'proof-fix') return { committed: true, detail: 'fixed and committed' }
     if (label === 'proof-revalidate') return { ...VALIDATION, notes: 're-validated after proof fix' }
+    if (label === 'audit-fixes') return { unsupported: [], detail: 'every claim backed by a commit' }
+    if (label === 'gate-recheck') return { testsPass: true, lintPasses: true, evidence: 'npm test exit 0; npm run lint exit 0' }
+    if (label === 'ship-verify') return { pushed: true, prUrl: 'https://github.com/o/r/pull/7', evidence: 'ahead 0; PR open' }
+    if (label === 'audit-compound') return { failures: [], detail: 'all paths committed' }
     if (label === 'ship') return { pushed: true, prUrl: 'https://github.com/o/r/pull/7', prCreated: true, planStatusFlipped: true, detail: 'shipped' }
-    if (label === 'ci-residual') return 'recorded in PR body'
+    if (label.startsWith('ci-residual')) return 'recorded in PR body'
     if (label.startsWith('ci-watch-')) return { checks: 'green', fixedAndPushed: false, detail: 'all checks green' }
     if (label === 'compound') return { documented: false, paths: [], detail: 'nothing qualifying' }
     throw Object.assign(new Error(`UNHANDLED LABEL: ${label}`), { __hardThrow: true })
@@ -1270,6 +1274,185 @@ S('S25 args opt-outs: ship:false stays local, proof:false and compound:false ski
   return 'every tail phase individually opt-out-able'
 })
 
+S('S57 fix-claim audit: unsupported "fixed" claim demoted to a residual; supported claim stays fixed', async () => {
+  const d = makeDispatcher({
+    'review-correctness': () => ({ findings: [
+      { title: 'bug-one', file: 'src/u1.js', line: 10, severity: 'blocking', detail: 'd1', failure_scenario: 'empty input crashes the handler' },
+      { title: 'bug-two', file: 'src/u1.js', line: 40, severity: 'blocking', detail: 'd2', failure_scenario: 'overflow on large input' },
+    ] }),
+    'fix-': () => ({ fixed: ['bug-one', 'bug-two'], skipped: [], detail: 'ok' }),
+    'audit-fixes': () => ({ unsupported: [{ title: 'bug-two', file: 'src/u1.js', evidence: 'no commit touches the overflow path' }], detail: 'checked both claims' }),
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  const audit = trace.calls.find((c) => c.label === 'audit-fixes')
+  assert.ok(audit, 'audit dispatched when fixers claim fixes')
+  assert.ok(audit.prompt.includes('bug-one') && audit.prompt.includes('bug-two'), 'audit grounded with every claim')
+  assert.ok(audit.prompt.includes('THIS session'), 'audit judges only from session-observed commits')
+  assert.equal(result.residualReviewFindings.length, 1)
+  const r = result.residualReviewFindings[0]
+  assert.equal(r.title, 'bug-two')
+  assert.equal(r.verdict, 'CONFIRMED', 'demoted claim keeps its verifier verdict')
+  assert.match(r.reason, /audit found no supporting commit/)
+  assert.deepEqual(result.fixAudit, { claimed: 2, unsupported: ['src/u1.js — bug-two'], unaudited: [] })
+  const shipCall = trace.calls.find((c) => c.label === 'ship')
+  assert.ok(shipCall.prompt.includes('bug-two') && shipCall.prompt.includes('audit found no supporting commit'), 'demoted claim durable in the PR body')
+  assert.ok(!shipCall.prompt.includes('(UNAUDITED)'), 'a completed audit leaves no UNAUDITED line')
+  return 'fixer self-report audited against commits; unbacked claim becomes a residual'
+})
+
+S('S58 fix-claim audit agent dies: claims stand UNAUDITED and durable, never fabricated as residuals', async () => {
+  const d = makeDispatcher({
+    'review-correctness': () => ({ findings: [{ title: 'bug-one', file: 'src/u1.js', line: 10, severity: 'blocking', detail: 'd', failure_scenario: 'empty input crashes the handler' }] }),
+    'fix-': () => ({ fixed: ['bug-one'], skipped: [], detail: 'ok' }),
+    'audit-fixes': () => { throw new Error('auditor died') },
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  assert.deepEqual(result.residualReviewFindings, [], 'a dead auditor does not fabricate per-finding residuals')
+  assert.deepEqual(result.fixAudit, { claimed: 1, unsupported: [], unaudited: ['src/u1.js — bug-one'] })
+  assert.ok(trace.logs.some((m) => /UNAUDITED/.test(m)), 'death logged loudly')
+  const shipCall = trace.calls.find((c) => c.label === 'ship')
+  assert.ok(shipCall.prompt.includes('(UNAUDITED) 1 review-fix claim'), 'unaudited claims durable in the PR body')
+  return 'dead audit -> aggregate UNAUDITED residual line; claims not silently trusted'
+})
+
+S('S59 independent ship gate: recheck contradicting green validation blocks the push', async () => {
+  const d = makeDispatcher({
+    'gate-recheck': () => ({ testsPass: false, lintPasses: true, evidence: 'npm test exit 1: 2 failing' }),
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  assert.equal(result.ship.pushed, false)
+  assert.match(result.ship.detail, /recheck contradicted validation \(tests failing\)/)
+  assert.ok(!trace.calls.some((c) => c.label === 'ship'), 'ship agent never dispatched on a contradicted gate')
+  assert.ok(!trace.calls.some((c) => c.label.startsWith('ci-')), 'no CI watch without a push')
+  assert.deepEqual(result.shipGate, { testsPass: false, lintPasses: true, evidence: 'npm test exit 1: 2 failing' })
+  const gate = trace.calls.find((c) => c.label === 'gate-recheck')
+  assert.ok(gate.prompt.includes('npm test') && gate.prompt.includes('npm run lint'), 'recheck grounded with both commands')
+  assert.ok(gate.prompt.includes('THIS session'), 'recheck reports only session-observed exit codes')
+  return 'self-reported green is not enough: a fresh-context recheck gates the irreversible push'
+})
+
+S('S60 ship gate recheck agent dies: fail closed, branch left unpushed', async () => {
+  const d = makeDispatcher({ 'gate-recheck': () => { throw new Error('recheck died') } })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  assert.equal(result.ship.pushed, false)
+  assert.match(result.ship.detail, /failing closed/)
+  assert.ok(!trace.calls.some((c) => c.label === 'ship'), 'no push on an unobserved gate')
+  assert.equal(result.shipGate, null)
+  return 'a dead recheck cannot ship'
+})
+
+S('S61 ship-verify: observed git/gh state overrides the ship self-report in both directions', async () => {
+  // (a) claimed pushed+PR, observed unpushed -> CI never watches a phantom PR
+  const a = await run(makeDispatcher({
+    'ship-verify': () => ({ pushed: false, prUrl: '', evidence: 'ahead 1; no PR exists' }),
+  }))
+  assert.ifError(a.error)
+  assert.equal(a.result.ship.pushed, false, 'observed unpushed wins over claimed pushed')
+  assert.equal(a.result.ship.prUrl, '')
+  assert.equal(a.result.ship.verified, true)
+  assert.match(a.result.ship.detail, /corrected by ship-verify/)
+  assert.ok(a.trace.logs.some((m) => /Ship-verify contradicted/.test(m)))
+  assert.ok(!a.trace.calls.some((c) => c.label.startsWith('ci-')), 'no CI watch against a phantom PR')
+  // (b) claimed not pushed, observed pushed+PR -> the live PR is not stranded unwatched
+  const b = await run(makeDispatcher({
+    'ship-verify': () => ({ pushed: true, prUrl: 'https://github.com/o/r/pull/9', evidence: 'ahead 0; PR open' }),
+    'ship': () => ({ pushed: false, prUrl: '', prCreated: false, planStatusFlipped: true, detail: 'push reported failed' }),
+  }))
+  assert.ifError(b.error)
+  assert.equal(b.result.ship.pushed, true, 'observed push wins over a claimed failure')
+  assert.match(b.result.ship.prUrl, /pull\/9/)
+  assert.ok(b.trace.calls.some((c) => c.label === 'ci-watch-1'), 'live PR gets watched, not stranded')
+  return 'self-report corrected by observation; CI keyed off observed state'
+})
+
+S('S62 ship-verify agent dies: self-report kept but marked unverified; CI proceeds', async () => {
+  const d = makeDispatcher({ 'ship-verify': () => { throw new Error('verifier died') } })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  assert.equal(result.ship.pushed, true, 'self-report kept when no observation exists')
+  assert.equal(result.ship.verified, false, 'and marked unverified, never silently trusted')
+  assert.ok(trace.logs.some((m) => /Ship-verify agent died/.test(m)))
+  assert.ok(trace.calls.some((c) => c.label === 'ci-watch-1'), 'CI watch still runs — the watcher observes gh itself')
+  return 'dead verifier degrades to a flagged self-report, not a halt'
+})
+
+S('S63 proof agent dies: durable UNVERIFIED residual, distinguishable from a skip; ship still gated on tests+lint only', async () => {
+  const d = makeDispatcher({ proof: () => { throw new Error('proof died') } })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  assert.equal(result.proof, null)
+  assert.ok(trace.logs.some((m) => /Proof agent failed/.test(m)))
+  assert.equal(result.ship.pushed, true, 'a dead proof agent does not block a green-gated ship')
+  const shipCall = trace.calls.find((c) => c.label === 'ship')
+  assert.ok(shipCall.prompt.includes('(UNVERIFIED) browser-proof agent died'), 'death durable in PR residuals')
+  assert.ok(shipCall.prompt.includes('not run (proof agent failed)'), 'evidence section states proof never ran')
+  return 'proof death is durable, never silently equivalent to not-applicable'
+})
+
+S('S64 compound docs claim audited: failing path demoted; dead auditor flags the claim unverified', async () => {
+  const claim = () => ({ documented: true, paths: ['docs/solutions/a.md', 'docs/solutions/b.md'], detail: 'wrote two docs' })
+  const a = await run(makeDispatcher({
+    'audit-compound': () => ({ failures: [{ path: 'docs/solutions/b.md', evidence: 'not committed on the branch' }], detail: 'checked both' }),
+    compound: claim,
+  }))
+  assert.ifError(a.error)
+  assert.equal(a.result.compound.documented, true)
+  assert.deepEqual(a.result.compound.paths, ['docs/solutions/a.md'], 'unbacked path demoted from the result')
+  assert.match(a.result.compound.detail, /audit demoted 1 claimed path/)
+  assert.ok(a.trace.logs.some((m) => /failed the audit/.test(m)))
+  const auditCall = a.trace.calls.find((c) => c.label === 'audit-compound')
+  assert.ok(auditCall.prompt.includes('docs/solutions/a.md') && auditCall.prompt.includes('docs/solutions/b.md'), 'audit grounded with every claimed path')
+  assert.match(auditCall.prompt, /THIS\s+session/, 'audit judges only from session-observed output')
+  // dead auditor: claim kept but flagged, never silently trusted
+  const b = await run(makeDispatcher({
+    'audit-compound': () => { throw new Error('auditor died') },
+    compound: claim,
+  }))
+  assert.ifError(b.error)
+  assert.equal(b.result.compound.documented, true)
+  assert.match(b.result.compound.detail, /UNVERIFIED/)
+  assert.ok(b.trace.logs.some((m) => /Compound-verify agent died/.test(m)))
+  // no claim -> no audit dispatched
+  const c = await run(makeDispatcher({}))
+  assert.ifError(c.error)
+  assert.ok(!c.trace.calls.some((x) => x.label === 'audit-compound'), 'documented=false claims nothing, audits nothing')
+  return 'documented=true is audited; failures demote, a dead auditor flags'
+})
+
+S('S65 simplify agent deaths are loud at both call sites', async () => {
+  const d = makeDispatcher({
+    'simplify-wave-': () => { throw new Error('wave simplify died') },
+    'simplify': () => { throw new Error('quality simplify died') },
+  }, { routeExecutor: () => 'claude' })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  assert.ok(trace.logs.some((m) => /Simplify wave 1 agent died/.test(m)), 'wave-site death logged')
+  assert.ok(trace.logs.some((m) => /Simplify agent died — pass skipped/.test(m)), 'quality-site death logged')
+  assert.equal(result.ship.pushed, true, 'a dead simplify never blocks the run')
+  return 'no silent simplify skips'
+})
+
+S('S66 CI residual recorder retry: first recorder dies, the retry lands the note', async () => {
+  let recorderCalls = 0
+  const d = makeDispatcher({
+    'ci-watch-': () => ({ checks: 'red', fixedAndPushed: false, detail: 'flaky, no fix path' }),
+    'ci-residual': () => { recorderCalls++; if (recorderCalls === 1) throw new Error('recorder died'); return 'recorded on retry' },
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  assert.equal(result.ci.residualRecorded, true, 'retry made the residual durable')
+  const first = trace.calls.find((c) => c.label === 'ci-residual')
+  const retry = trace.calls.find((c) => c.label === 'ci-residual-retry')
+  assert.ok(first && retry, 'retry dispatched after the first recorder died')
+  assert.equal(first.prompt, retry.prompt, 'retry carries the identical durable-note brief')
+  assert.ok(trace.logs.some((m) => /retrying once/.test(m)))
+  return 'one bounded retry before a live PR is left unannotated'
+})
+
 S('S56 model-tier policy: pinned labels use sonnet, keep-inherit labels stay on session model', async () => {
   // Use a dispatcher that triggers all 7 pinned labels in one run:
   // - a blocking finding in src/u1.js triggers fix-u1.js
@@ -1297,12 +1480,16 @@ S('S56 model-tier policy: pinned labels use sonnet, keep-inherit labels stay on 
   assert.equal(model('proof-retest'), 'sonnet', 'proof-retest is grunt-tier; pinned to sonnet')
   assert.equal(model('compound'), 'sonnet', 'compound is grunt-tier; pinned to sonnet')
   assert.equal(model('ship'), 'sonnet', 'ship is grunt-tier; pinned to sonnet')
+  assert.equal(model('audit-fixes'), 'sonnet', 'audit-fixes is mechanical commit-vs-claim checking; pinned to sonnet')
+  assert.equal(model('gate-recheck'), 'sonnet', 'gate-recheck is mechanical run-and-report; pinned to sonnet')
+  assert.equal(model('ship-verify'), 'sonnet', 'ship-verify is mechanical observe-and-report; pinned to sonnet')
+  assert.equal(model('audit-compound'), 'sonnet', 'audit-compound is mechanical path checking; pinned to sonnet')
   // keep-inherit — session-model labels must NOT set model
   assert.equal(model('split-U1'), undefined, 'split-${u.uid} is keep-inherit; must not set model')
   assert.equal(model('triage-wave-1'), undefined, 'triage-wave-${w+1} is keep-inherit; must not set model')
   assert.equal(model('simplify'), undefined, 'simplify is keep-inherit; must not set model')
   assert.equal(model('sweep'), undefined, 'sweep is keep-inherit; must not set model')
-  return '7 sonnet pins confirmed; 4 keep-inherit labels confirmed undefined'
+  return '11 sonnet pins confirmed; 4 keep-inherit labels confirmed undefined'
 })
 
 // ---------- runner ----------
