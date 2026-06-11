@@ -200,9 +200,27 @@ const VERDICT_SCHEMA = {
   required: ['refuted', 'reason'],
 }
 
+// Referent-explicit verdicts (observed live, twice: a refuter wrote "cannot be
+// refuted" as its reason yet returned 'refuted' — the old enum never said WHAT
+// was sustained/refuted, the claim or the refutation attempt).
 const KTD_VERDICT_SCHEMA = {
   type: 'object',
-  properties: { verdict: { enum: ['sustained', 'refuted', 'unverifiable'] }, reason: { type: 'string' } },
+  properties: {
+    verdict: { enum: ['claim-correct', 'claim-refuted', 'unverifiable'], description: "about the QUOTED CLAIM itself — claim-correct: the claim accurately describes the codebase/design (your refutation attempt failed); claim-refuted: you hold concrete contradicting evidence from code or docs; unverifiable: cannot be settled from code and docs" },
+    reason: { type: 'string', description: 'first sentence must restate the verdict referent in words ("The claim is correct/contradicted/unverifiable because ..."), then the concrete evidence' },
+  },
+  required: ['verdict', 'reason'],
+}
+
+// The 2-of-3 arbitration that settles a challenged KTD is the second inversion
+// surface ("refute the refutation" stacks negations): arbiters judge THE
+// DECISION itself on referent-explicit values, never a wrapped finding.
+const KTD_ARBITRATION_SCHEMA = {
+  type: 'object',
+  properties: {
+    verdict: { enum: ['ktd-is-wrong', 'ktd-is-right', 'cannot-tell'], description: "about the plan's Key Technical Decision quoted in the brief — ktd-is-wrong: the decision misdescribes the codebase or is technically unsound (the challenge holds); ktd-is-right: the decision is accurate and sound (the challenge fails); cannot-tell: not settleable from code and docs" },
+    reason: { type: 'string', description: 'first sentence restates the referent ("The KTD is right/wrong because ..."), then the concrete evidence' },
+  },
   required: ['verdict', 'reason'],
 }
 
@@ -845,9 +863,33 @@ ${CODEBASE_CONTEXT}
 Where to look: ${repo && repo.relevantFiles.length ? repo.relevantFiles.join(', ') : 'derive the relevant files from the document'}
 
 Attempt to refute this technical decision/assumption against the actual
-codebase. IMPORTANT — override of your default: if you can neither confirm nor
-refute it from code and docs, return verdict 'unverifiable', NOT 'refuted'.
-Fail-if-uncertain here means surface, not auto-block.`
+codebase. Your verdict is about THE QUOTED CLAIM itself: 'claim-refuted' ONLY
+when you hold concrete contradicting evidence; 'claim-correct' when the claim
+accurately describes the codebase — a failed refutation attempt is
+'claim-correct', not 'claim-refuted'. IMPORTANT — override of your default: if
+you can neither confirm nor refute it from code and docs, return verdict
+'unverifiable', NOT 'claim-refuted'. Fail-if-uncertain here means surface, not
+auto-block. Your reason's first sentence must restate your verdict's referent
+in words ("The claim is correct/contradicted/unverifiable because ...").`
+
+const ktdArbitrationPrompt = (k, challengeReason) => `A first refuter judged this Key Technical Decision from the plan to be WRONG.
+You are one of three independent arbiters settling the question.
+
+KTD as quoted from ${planPath}:
+${k}
+
+The first refuter's case against it:
+${window300(challengeReason)}
+
+${CODEBASE_CONTEXT}
+
+Where to look: ${repo && repo.relevantFiles.length ? repo.relevantFiles.join(', ') : 'derive the relevant files from the document'}
+
+Judge THE DECISION itself on the actual code — read the relevant files
+yourself rather than adopting the first refuter's framing; where the claim is
+deterministic runtime behavior, settle it by executing (read-only: never
+modify the worktree). Your verdict is about the KTD itself (see the schema),
+and your reason's first sentence must restate it in words.`
 
 const fixerPrompt = (fixNow, docList) => `Plan document to edit: ${planPath} (edit ONLY this file).
 
@@ -958,6 +1000,26 @@ sectionsTouched.`
 // legitimately add backticks or rewrap whitespace while editing surrounding text,
 // and that must not read as a rename (observed live: playground run 2026-06-10).
 const canonUnitName = (s) => String(s).replace(/`/g, '').replace(/\s+/g, ' ').trim()
+// Finding identity is the defect it names, not its wording: reviewers and the
+// fixer routinely paraphrase titles (observed live: five wordings of one R10
+// mismatch became five "fixer-failed" residuals re-feeding every round).
+// Same section + >=60% token overlap on normalized titles = the same finding.
+const normFindingTitle = (t) => String(t || '').toLowerCase().replace(/[^a-z0-9\s]+/g, ' ').replace(/\s+/g, ' ').trim()
+const titleTokens = (t) => new Set(normFindingTitle(t).split(' ').filter((w) => w.length >= 2))
+const sameFinding = (a, b) => {
+  if (String(a.section || '').trim().toLowerCase() !== String(b.section || '').trim().toLowerCase()) return false
+  const na = normFindingTitle(a.title), nb = normFindingTitle(b.title)
+  if (na === nb) return true
+  const ta = titleTokens(a.title), tb = titleTokens(b.title)
+  if (!ta.size || !tb.size) return false
+  let shared = 0
+  for (const w of ta) if (tb.has(w)) shared++
+  // 0.8, not lower: boilerplate suffixes (e.g. the re-open marker) put DISTINCT
+  // findings at ~0.71 overlap; true paraphrases measure >=0.83. A missed dupe
+  // is noise; a false merge silently drops a real finding — fail conservative.
+  return shared / Math.min(ta.size, tb.size) >= 0.8
+}
+const matchesTitle = (f, title) => normFindingTitle(f.title) === normFindingTitle(title) || sameFinding(f, { title, section: f.section })
 const uidStabilityViolations = (baseline, current, rIdEditAuthorized) => {
   const v = []
   const baseByUid = new Map(baseline.pairs.map((p) => [p.uid, p.name]))
@@ -1300,31 +1362,33 @@ for (let r = 1; r <= EDITOR_ROUNDS; r++) {
         const k = claims[i]
         const v = ktdVerdicts[i]
         if (!v) { log(`KTD refuter died for claim "${head80(k)}" — claim stands unrefuted`); continue }
-        if (v.verdict === 'sustained') continue
+        if (v.verdict === 'claim-correct') continue
         if (v.verdict === 'unverifiable') {
           // Fail-if-uncertain means surface, not auto-block.
           pendingDocEntries.push({ title: `unverifiable KTD: ${head80(k)}`, section: 'Key Technical Decisions', routedTo: 'Open Questions', whyItMatters: v.reason, evidence: k, confidence: 100 })
           openQuestions.push(`unverifiable KTD: ${head80(k)}: ${v.reason}`)
           continue
         }
-        // refuted -> synthesize a HALT-CLASS-SHAPED finding and arbitrate it
-        // with a dedicated majority allowance: no single refuter's verdict
-        // halts the run, and no confirmed-wrong KTD can reach 'ready'.
+        // claim-refuted -> arbitrate THE DECISION ITSELF with a dedicated
+        // majority allowance: no single refuter's verdict halts the run, and
+        // no confirmed-wrong KTD can reach 'ready'. Arbiters get the KTD and
+        // the challenge directly (never a wrapped finding — stacked negations
+        // are how verdicts invert).
         const kf = { section: 'Key Technical Decisions', title: `KTD refuted: ${head80(k)}`, severity: 'P0', findingType: 'error', confidence: 100, autofixClass: 'manual', evidence: k, whyItMatters: v.reason, suggestedFix: '', reviewer: 'ktd-refuter' }
         if (ktdHaltUsed < KTD_HALT_CAP) {
           ktdHaltUsed++
           const votes = await parallel([0, 1, 2].map((j) => () =>
-            agent(refutePrompt(kf), { label: `refute-halt-ktd-p${pass}-${i}-v${j}`, phase: 'Review', model: 'sonnet', agentType: 'skeptical-refuter', schema: VERDICT_SCHEMA })))
-          const sustainedVotes = votes.filter((vv) => vv && !vv.refuted).length
-          if (sustainedVotes >= 2) {
+            agent(ktdArbitrationPrompt(k, v.reason), { label: `refute-halt-ktd-p${pass}-${i}-v${j}`, phase: 'Review', model: 'sonnet', agentType: 'skeptical-refuter', schema: KTD_ARBITRATION_SCHEMA })))
+          const wrongVotes = votes.filter((vv) => vv && vv.verdict === 'ktd-is-wrong').length
+          if (wrongVotes >= 2) {
             openQuestions.push(`KTD refuted: ${head80(k)}: ${v.reason}`)
             return summary('halted', {
               haltStage: 'S4-halt-class-finding',
-              haltReason: `2-of-3 refuters sustained: KTD refuted: ${head80(k)}`,
+              haltReason: `2-of-3 arbiters judged the KTD wrong: KTD refuted: ${head80(k)}`,
               nextStep: `Rework the refuted Key Technical Decision (draft preserved at ${planPath}), then re-invoke nadia-plan`,
             })
           }
-          log(`Refuted-KTD finding "${kf.title}" refuted by majority — dropped`)
+          log(`KTD challenge rejected by arbitration — "${kf.title}" dropped`)
           roundRefuted.push(kf)
         } else {
           refutedKtdOverflow++
@@ -1357,6 +1421,19 @@ for (let r = 1; r <= EDITOR_ROUNDS; r++) {
     docCost.push(...haltDocs.map((f) => ({ ...f, routedTo: routeTarget(f) })))
     docCost.push(...pendingDocEntries)
     pendingDocEntries = []
+    // Paraphrase dedup before the fixer: one defect in N wordings reaches the
+    // fixer once and is accounted once. Absorptions are logged, never silent.
+    const dedupeFindings = (list, tag) => {
+      const kept = []
+      for (const f of list) {
+        const dup = kept.find((kf2) => sameFinding(kf2, f))
+        if (dup) log(`Round ${r}: paraphrase duplicate absorbed into "${dup.title}" (${tag}): "${f.title}"`)
+        else kept.push(f)
+      }
+      return kept
+    }
+    fixNow.splice(0, fixNow.length, ...dedupeFindings([...fixNow], 'fix-now'))
+    docCost.splice(0, docCost.length, ...dedupeFindings([...docCost], 'document'))
 
     let fx = null
     let appliedSet = []
@@ -1371,7 +1448,7 @@ for (let r = 1; r <= EDITOR_ROUNDS; r++) {
         log(`Round ${r}: fixer failed — ${routed.length} finding(s) recorded as fixer-failed residuals`)
       } else {
         for (const u of fx.unapplied) {
-          const orig = routed.find((f) => f.title === u.title)
+          const orig = routed.find((f) => matchesTitle(f, u.title))
           const section = orig ? orig.section : ''
           if (u.reason.startsWith('scope-widening:')) {
             residualFindings.push({ title: u.title, section, class: 'scope-widening-routed', reason: u.reason })
@@ -1381,12 +1458,14 @@ for (let r = 1; r <= EDITOR_ROUNDS; r++) {
           }
         }
         for (const dd of fx.documented) {
-          const orig = routed.find((f) => f.title === dd.title)
+          const orig = routed.find((f) => matchesTitle(f, dd.title))
           residualFindings.push({ title: dd.title, section: orig ? orig.section : '', class: 'documented', reason: `documented in ${dd.routedTo}` })
         }
-        const unaccounted = routed.filter((f) => !fx.applied.includes(f.title) && !fx.documented.some((dd) => dd.title === f.title) && !fx.unapplied.some((uu) => uu.title === f.title))
+        // Accounting by finding identity, not exact string: the fixer's report
+        // may paraphrase a title; that must never mint a fixer-failed residual.
+        const unaccounted = routed.filter((f) => !fx.applied.some((t) => matchesTitle(f, t)) && !fx.documented.some((dd) => matchesTitle(f, dd.title)) && !fx.unapplied.some((uu) => matchesTitle(f, uu.title)))
         residualFindings.push(...unaccounted.map((f) => ({ title: f.title, section: f.section, class: 'fixer-failed', reason: 'fixer did not account for this finding' })))
-        appliedSet = fixNow.filter((f) => fx.applied.includes(f.title))
+        appliedSet = fixNow.filter((f) => fx.applied.some((t) => matchesTitle(f, t)))
       }
       ktdDirty = !!(fx && fx.sectionsTouched.some((s) => /key technical decisions/i.test(s)))
 

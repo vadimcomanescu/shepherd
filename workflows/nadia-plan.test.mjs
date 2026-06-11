@@ -16,7 +16,7 @@ function makeRuntime(dispatcher, { budgetTotal = null, costPerCall = 10000 } = {
   const trace = { calls: [], logs: [], phases: [] }
   let spent = 0
   const agent = async (prompt, opts = {}) => {
-    trace.calls.push({ label: opts.label || '(none)', prompt, agentType: opts.agentType, model: opts.model })
+    trace.calls.push({ label: opts.label || '(none)', prompt, agentType: opts.agentType, model: opts.model, schema: opts.schema })
     spent += costPerCall
     try {
       return await dispatcher(prompt, opts, trace.calls.length)
@@ -167,7 +167,7 @@ function makeDispatcher(overrides = {}, opts = {}) {
     if (label === 'author-plan') return AUTHOR(opts.author)
     if (label === 'classify-personas') return CLASSIFY(opts.classify)
     if (label.startsWith('review-')) return { findings: [] }
-    if (label.startsWith('ktd-refute-')) return { verdict: 'sustained', reason: 'holds against the code' }
+    if (label.startsWith('ktd-refute-')) return { verdict: 'claim-correct', reason: 'The claim is correct: it holds against the code.' }
     if (label.startsWith('refute-')) return { refuted: false, reason: 'confirmed' } // covers refute-halt- too
     if (label.startsWith('fix-round-')) return FIX_ECHO(prompt)
     if (label === 'revise-spike' || label === 'parse-fix' || label === 'gate-fix') return { applied: [], documented: [], unapplied: [], sectionsTouched: [], detail: 'ok' }
@@ -799,26 +799,29 @@ S('S22 KTD refutation', async () => {
   const ktds2 = { ktds: ['use sqlite as the queue store', 'use polling over websockets'], loadBearingAssumptions: ['a single writer suffices'] }
   // (b1) refuted KTD, majority sustains -> halt
   const b1 = await run(makeDispatcher({
-    'ktd-refute-p1-0': () => ({ verdict: 'refuted', reason: 'the code already uses postgres' }),
-    'refute-halt-ktd-': (p, o, label) => ({ refuted: label.endsWith('-v2'), reason: 'vote' }),
+    'ktd-refute-p1-0': () => ({ verdict: 'claim-refuted', reason: 'The claim is contradicted: the code already uses postgres.' }),
+    'refute-halt-ktd-': (p, o, label) => ({ verdict: label.endsWith('-v2') ? 'ktd-is-right' : 'ktd-is-wrong', reason: 'vote' }),
   }, { classify: ktds2 }))
   assert.ifError(b1.error)
   assert.equal(b1.result.status, 'halted')
   assert.equal(b1.result.haltStage, 'S4-halt-class-finding')
-  assert.ok(b1.result.haltReason.includes('KTD refuted:'))
+  assert.ok(b1.result.haltReason.includes('2-of-3 arbiters judged the KTD wrong') && b1.result.haltReason.includes('KTD refuted:'))
+  const arb = b1.trace.calls.find((c) => c.label === 'refute-halt-ktd-p1-0-v0')
+  assert.ok(arb.prompt.includes('Judge THE DECISION itself') && arb.prompt.includes('the code already uses postgres'), 'arbiters judge the KTD directly with the challenge evidence, never a wrapped finding')
+  assert.ok(arb.schema.properties.verdict.enum.includes('ktd-is-wrong'), 'referent-explicit arbitration enum')
   assert.equal(count(b1.trace, 'refute-halt-ktd-p1-0-v'), 3)
   assert.ok(b1.result.openQuestions.some((q) => q.startsWith('KTD refuted:')))
   // (b2) majority refutes the refuter -> dropped, ready; no single verdict is ground truth
   const b2 = await run(makeDispatcher({
-    'ktd-refute-p1-0': () => ({ verdict: 'refuted', reason: 'the code already uses postgres' }),
-    'refute-halt-ktd-': (p, o, label) => ({ refuted: !label.endsWith('-v2'), reason: 'vote' }),
+    'ktd-refute-p1-0': () => ({ verdict: 'claim-refuted', reason: 'The claim is contradicted: the code already uses postgres.' }),
+    'refute-halt-ktd-': (p, o, label) => ({ verdict: label.endsWith('-v2') ? 'ktd-is-wrong' : 'ktd-is-right', reason: 'vote' }),
   }, { classify: ktds2 }))
   assert.ifError(b2.error)
   assert.equal(b2.result.status, 'ready')
-  assert.ok(b2.trace.logs.some((m) => /Refuted-KTD finding .* refuted by majority/.test(m)))
+  assert.ok(b2.trace.logs.some((m) => /KTD challenge rejected by arbitration/.test(m)))
   // (a)+(c)+(d) prompt contract, unverifiable routing, dirty-KTD re-refutation, pass cap
   const cd = await run(makeDispatcher({
-    'ktd-refute-': (p, o, label) => (label.endsWith('-2') ? { verdict: 'unverifiable', reason: 'no evidence either way' } : { verdict: 'sustained', reason: 'holds' }),
+    'ktd-refute-': (p, o, label) => (label.endsWith('-2') ? { verdict: 'unverifiable', reason: 'no evidence either way' } : { verdict: 'claim-correct', reason: 'The claim is correct: holds.' }),
     'fix-round-': (p) => ({ ...FIX_ECHO(p), sectionsTouched: ['Key Technical Decisions'] }),
     'editor-r1': () => EDITOR_REVISED(),
     'editor-r2': () => EDITOR_REVISED(),
@@ -829,7 +832,8 @@ S('S22 KTD refutation', async () => {
   const k0 = cd.trace.calls.find((c) => c.label === 'ktd-refute-p1-0')
   assert.equal(k0.agentType, 'skeptical-refuter')
   assert.equal(k0.model, 'sonnet')
-  assert.ok(/return verdict 'unverifiable', NOT 'refuted'/.test(k0.prompt))
+  assert.ok(/return verdict\n'unverifiable', NOT 'claim-refuted'/.test(k0.prompt) || k0.prompt.includes("'unverifiable', NOT 'claim-refuted'"))
+  assert.ok(k0.prompt.includes('about THE QUOTED CLAIM itself'), 'verdict referent stated in the refute prompt')
   assert.ok(k0.prompt.includes(PLAN_PATH) && /CURRENT/.test(k0.prompt))
   assert.ok(cd.result.openQuestions.some((q) => q.startsWith('unverifiable KTD: a single writer suffices')))
   assert.ok(cd.trace.calls.find((c) => c.label === 'fix-round-1').prompt.includes('unverifiable KTD: a single writer suffices'), 'routed to the doc batch')
@@ -1014,6 +1018,28 @@ S('S27 model-tier policy: grunt sites pinned to sonnet; keep-inherit sites stay 
   assert.ok(reviseSpike, 'revise-spike fired')
   assert.equal(reviseSpike.model, 'sonnet', 'revise-spike pinned to sonnet')
   return 'research-repo/fix-round/refix-uid/revise-spike/parse-fix = sonnet; intake/author-plan = inherit'
+})
+
+S('S28 paraphrase findings: deduped before the fixer, accounted by identity not exact title', async () => {
+  const W = [
+    'R10 lists 7 requirements but U1 has 8',
+    'R10 lists only 7 requirements while U1 actually has 8',
+    'requirements mismatch: R10 lists 7 requirements, U1 has 8',
+  ]
+  const d = await run(makeDispatcher({
+    'review-r1-coherence': () => ({ findings: W.map((t) => FINDING({ title: t, evidence: 'count mismatch', suggestedFix: 'fix the count' })) }),
+    // fixer reports the fix under a FOURTH paraphrase of the same defect
+    'fix-round-1': () => ({ applied: ['R10 lists 7 requirements yet U1 has 8'], documented: [], unapplied: [], sectionsTouched: ['Requirements'], detail: 'ok' }),
+    'editor-r1': () => EDITOR_REVISED(),
+  }))
+  assert.ifError(d.error)
+  const fix1 = d.trace.calls.find((c) => c.label === 'fix-round-1')
+  const briefed = W.filter((t) => fix1.prompt.includes(t))
+  assert.equal(briefed.length, 1, 'exactly one wording of the defect reaches the fixer')
+  assert.ok(d.trace.logs.filter((l) => l.includes('paraphrase duplicate absorbed')).length >= 2, 'absorptions are logged, never silent')
+  assert.deepEqual(d.result.residualFindings.filter((f) => f.class === 'fixer-failed'), [],
+    'a paraphrased applied-report never mints fixer-failed residuals')
+  return 'one defect in four wordings: one fixer dispatch, zero residual noise'
 })
 
 let pass = 0, fail = 0
