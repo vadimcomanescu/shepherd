@@ -463,7 +463,7 @@ relevant to the request, conventions distilled from AGENTS.md/CLAUDE.md, and
 the files a planner must know about. Extended scope: include the test harness
 inventory, the project's test/lint commands, testing conventions, and whether a
 CONTEXT.md domain glossary exists at the repo root — report its path (or "").`,
-  { label: 'research-repo', phase: 'Research', agentType: 'compound-engineering:ce-repo-research-analyst', schema: REPO_RESEARCH_SCHEMA },
+  { label: 'research-repo', phase: 'Research', agentType: 'compound-engineering:ce-repo-research-analyst', model: 'sonnet', schema: REPO_RESEARCH_SCHEMA }, // extraction of stack/conventions/paths is mechanical digest work
 ) })
 researchRoster.push({ key: 'learnings', thunk: () => agent(
   `${researchGrounding}
@@ -508,7 +508,7 @@ if (DEPTH !== 'lightweight') {
 Analyze the user/data/control flows this request touches in this repository.
 Return a digest of the flow picture a planner needs plus the edge cases the
 plan must not miss.`,
-    { label: 'research-flow', phase: 'Research', agentType: 'compound-engineering:ce-spec-flow-analyzer', schema: FLOW_SCHEMA },
+    { label: 'research-flow', phase: 'Research', model: 'sonnet', agentType: 'compound-engineering:ce-spec-flow-analyzer', schema: FLOW_SCHEMA }, // flow/edge-case digest is extraction work, like the rest of the research roster
   ) })
 } else {
   log('Spec-flow analysis skipped: lightweight tier')
@@ -1042,7 +1042,7 @@ const postMutationChecks = async (checkerIn, ctx) => {
   let violations = uidStabilityViolations(uidBaseline, current, ctx.rIdEditAuthorized)
   if (violations.length) {
     log(`uid/R-ID stability violation after ${ctx.tag}: ${violations.join('; ')}`)
-    await agent(refixUidPrompt(violations), { label: `refix-uid-${ctx.tag}`, phase: ctx.phase, schema: FIX_SCHEMA })
+    await agent(refixUidPrompt(violations), { label: `refix-uid-${ctx.tag}`, phase: ctx.phase, model: 'sonnet', schema: FIX_SCHEMA }) // restoring exact uid/R-ID strings from a diff of violations is mechanical targeted repair
     const recheck = await agent(checkerPrompt([], []), { label: `check-refix-${ctx.tag}`, phase: ctx.phase, model: 'sonnet', schema: CHECKER_SCHEMA })
     if (!recheck) {
       return { haltStage: 'S4-uid-stability', haltReason: `uid stability re-check failed after violation: ${violations.join('; ')}`, nextStep: `Restore the original U-ID/R-ID identities in ${planPath} by hand (draft preserved at ${planPath}), then re-invoke nadia-plan` }
@@ -1364,7 +1364,7 @@ for (let r = 1; r <= EDITOR_ROUNDS; r++) {
       log(`Round ${r}: nothing to fix or document — fixer and checker skipped`)
     } else {
       log(`Round ${r}: ${fixNow.length} fix-now, ${docCost.length} document-as-known-cost`)
-      fx = await agent(fixerPrompt(fixNow, docCost), { label: `fix-round-${r}`, phase: 'Review', schema: FIX_SCHEMA })
+      fx = await agent(fixerPrompt(fixNow, docCost), { label: `fix-round-${r}`, phase: 'Review', model: 'sonnet', schema: FIX_SCHEMA }) // applying confirmed-gating and safe-auto fixes from supplied suggestedFix text is mechanical editing
       const routed = [...fixNow, ...docCost]
       if (!fx) {
         residualFindings.push(...routed.map((f) => ({ title: f.title, section: f.section, class: 'fixer-failed', reason: 'fixer agent failed' })))
@@ -1514,7 +1514,7 @@ for (let r = 1; r <= EDITOR_ROUNDS; r++) {
       })
       for (const s of spikeResults) if (s.resolution === 'runtime-blocked') openQuestions.push(s.unknown)
       // ONE revision pass (label prefix-disjoint from spike- investigations).
-      const rev = await agent(reviseSpikePrompt(spikeResults), { label: 'revise-spike', phase: 'Review', schema: FIX_SCHEMA })
+      const rev = await agent(reviseSpikePrompt(spikeResults), { label: 'revise-spike', phase: 'Review', model: 'sonnet', schema: FIX_SCHEMA }) // routing resolved/blocked spike results to fixed sections is mechanical document folding
       if (!rev) log('Spike revision agent failed — spike results were not folded into the document')
       const spikeChecker = await runChecker('spike', [], carryFindings, 'Review')
       if (!spikeChecker) return summary('halted', CHECKER_HALT('spike revision'))
@@ -1655,7 +1655,7 @@ parsed = filterRiskSurfaces(parsed)
 let violations = parseViolations(parsed)
 if (violations.length) {
   log(`Parse gate violations: ${violations.join('; ')}`)
-  await agent(parseFixPrompt(violations), { label: 'parse-fix', phase: 'Gates', schema: FIX_SCHEMA })
+  await agent(parseFixPrompt(violations), { label: 'parse-fix', phase: 'Gates', model: 'sonnet', schema: FIX_SCHEMA }) // correcting structural parse violations (missing targets, cycles, file-overlap) against explicit checker output is mechanical repair
   const parseFixChecker = await runChecker('parse-fix', [], [], 'Gates')
   if (!parseFixChecker) return summary('halted', CHECKER_HALT('parse-fix'))
   const parseBatteryHalt = await postMutationChecks(parseFixChecker, { tag: 'parse-fix', phase: 'Gates', applied: [], rIdEditAuthorized: true })

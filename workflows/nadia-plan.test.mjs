@@ -977,6 +977,45 @@ S('S26 first-class repo arg: every dispatch is grounded with the target reposito
   return 'one chokepoint grounds every contextless agent with the target repo'
 })
 
+S('S27 model-tier policy: grunt sites pinned to sonnet; keep-inherit sites stay undefined', async () => {
+  // (a) happy-path run: research-repo is always dispatched; intake + author-plan are keep-inherit
+  const a = await run(makeDispatcher())
+  assert.ifError(a.error)
+  const byLabel = (label) => a.trace.calls.find((c) => c.label === label)
+  assert.equal(byLabel('research-repo').model, 'sonnet', 'research-repo pinned to sonnet')
+  assert.equal(byLabel('research-flow').model, 'sonnet', 'research-flow pinned to sonnet like the rest of the research roster')
+  assert.equal(byLabel('intake').model, undefined, 'intake is keep-inherit')
+  assert.equal(byLabel('author-plan').model, undefined, 'author-plan is keep-inherit')
+  // (b) trigger fix-round-1: reviewer returns a finding, editor REVISED carries it
+  const RENAMED = UID_PAIRS.map((p) => (p.uid === 'U2' ? { uid: 'U2', name: 'TWO-renamed' } : p))
+  const b = await run(makeDispatcher({
+    'review-r1-coherence': () => ({ findings: [FINDING()] }),
+    'check-r1': () => CHECKER({ fixesVerified: [{ title: 'missing dep', landed: true, matchesIntent: true, note: '' }], uidNamePairs: RENAMED }),
+  }))
+  assert.ifError(b.error)
+  const fixRound = b.trace.calls.find((c) => c.label.startsWith('fix-round-'))
+  assert.ok(fixRound, 'fix-round fired')
+  assert.equal(fixRound.model, 'sonnet', 'fix-round pinned to sonnet')
+  const refixUid = b.trace.calls.find((c) => c.label.startsWith('refix-uid-'))
+  assert.ok(refixUid, 'refix-uid fired')
+  assert.equal(refixUid.model, 'sonnet', 'refix-uid pinned to sonnet')
+  // (c) trigger parse-fix: parse-plan returns a PARSED with a missing dependsOn target
+  const badDep = () => PARSED({ units: PARSED().units.map((u) => (u.uid === 'U3' ? { ...u, dependsOn: ['U9'] } : u)) })
+  const c = await run(makeDispatcher({ 'parse-plan': (p, o, label) => (label === 'parse-plan' ? badDep() : PARSED()) }))
+  assert.ifError(c.error)
+  const parseFix = c.trace.calls.find((c2) => c2.label === 'parse-fix')
+  assert.ok(parseFix, 'parse-fix fired')
+  assert.equal(parseFix.model, 'sonnet', 'parse-fix pinned to sonnet')
+  // (d) trigger revise-spike: editor returns designUnknowns -> spike branch -> revise-spike
+  const unknowns = [{ unknown: 'queue storage', affectedUids: ['U1'], whyDesignLevel: 'architecture-level' }]
+  const d = await run(makeDispatcher({ 'editor-r1': () => EDITOR_REVISED({ designUnknowns: unknowns }) }))
+  assert.ifError(d.error)
+  const reviseSpike = d.trace.calls.find((c2) => c2.label === 'revise-spike')
+  assert.ok(reviseSpike, 'revise-spike fired')
+  assert.equal(reviseSpike.model, 'sonnet', 'revise-spike pinned to sonnet')
+  return 'research-repo/fix-round/refix-uid/revise-spike/parse-fix = sonnet; intake/author-plan = inherit'
+})
+
 let pass = 0, fail = 0
 for (const { name, fn } of scenarios) {
   try {

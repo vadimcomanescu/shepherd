@@ -462,7 +462,7 @@ ${(planDoc.scopeBoundaries || []).join('\n') || 'none'}`,
 Task ${t.id} (${t.title}) — risk: ${t.risk}, ambiguity: ${t.ambiguity}, est diff: ${t.estDiffLines} lines, files: ${t.files.join(', ')}
 Dossier:
 ${t.dossier}`,
-        { label: `route-${t.id}`, phase: 'Route', agentType: 'executor-router', schema: ROUTE_SCHEMA },
+        { label: `route-${t.id}`, phase: 'Route', agentType: 'executor-router', model: 'sonnet', schema: ROUTE_SCHEMA }, // routing is mechanical; output is a ROUTE_SCHEMA enum, not a design judgment
       ).then((route) => ({ ...t, route: route || { executor: 'claude', effort: 'default', model: 'sonnet', reason: 'router failed — defaulted to claude/sonnet' } })),
     )).then((routed) => ({ unit: u, tasks: routed.filter(Boolean) }))
   },
@@ -669,7 +669,7 @@ verify, and commit. Report "completed" only if verification passes.`
       }
     } else if (status === 'partial' && e.r.branch) {
       log(`${e.t.id}: claude partial — dispatching finisher in the same worktree`)
-      retried.push(agent(finisherPrompt(e.t, e.r), { label: `finish-${e.t.id}`, phase: 'Execute', agentType: 'unit-executor', schema: EXEC_SCHEMA })
+      retried.push(agent(finisherPrompt(e.t, e.r), { label: `finish-${e.t.id}`, phase: 'Execute', agentType: 'unit-executor', model: e.t.route.model || 'sonnet', schema: EXEC_SCHEMA }) // finisher continues the unit at its routed tier, same as the codex-partial path
         .then((r) => ({ t: e.t, usedCodex: false, r, wasFinisher: true })))
     }
   }
@@ -1136,7 +1136,7 @@ The findings to fix now:
 ${fs.map((f) => `- (${f.severity}, ${f.verdict}, ${f.persona}) ${f.title}: ${f.detail}
   Failure scenario: ${f.failure_scenario}
   Verifier evidence: ${f.evidence}`).join('\n')}`,
-      { label: `fix-${file.split('/').pop()}`, phase: 'Quality', schema: FIX_SCHEMA },
+      { label: `fix-${file.split('/').pop()}`, phase: 'Quality', model: 'sonnet', schema: FIX_SCHEMA }, // file-level fix application is mechanical; findings and policy are fully specified in the prompt
     )
     const oneLine = (s) => String(s).replace(/\s*\n\s*/g, ' ')
     fixLog.push(fx
@@ -1238,7 +1238,7 @@ kill any server you started when done.${focus}
 If no changed file maps to a web route or page, return status "not-applicable" —
 do not invent routes. If agent-browser turns out to be unusable, return
 "tool-missing". Screenshot every failure.`
-  proof = await agent(proofPrompt(''), { label: 'proof', phase: 'Proof', schema: PROOF_SCHEMA })
+  proof = await agent(proofPrompt(''), { label: 'proof', phase: 'Proof', model: 'sonnet', schema: PROOF_SCHEMA }) // browser-proofing is a mechanical pass/fail operation; route results are enumerated, not designed
   if (!proof) log('Proof agent failed — browser testing recorded as not run')
   const failedRoutes = proof ? proof.routes.filter((r) => r.result === 'fail') : []
   if (failedRoutes.length) {
@@ -1251,12 +1251,12 @@ Run ${recon.testCommand}, stage only the files you changed, and commit
 ("fix: repair browser-test failures"). Report committed=true ONLY if a fix
 commit now exists on the branch.
 ${failedRoutes.map((r) => `- ${r.route}: ${r.detail}`).join('\n')}`,
-      { label: 'proof-fix', phase: 'Proof', schema: { type: 'object', properties: { committed: { type: 'boolean' }, detail: { type: 'string' } }, required: ['committed', 'detail'] } },
+      { label: 'proof-fix', phase: 'Proof', model: 'sonnet', schema: { type: 'object', properties: { committed: { type: 'boolean' }, detail: { type: 'string' } }, required: ['committed', 'detail'] } }, // fix is one commit targeting a concrete failing route; scope and steps are fully prescribed
     )
     if (fixRes && fixRes.committed) {
       const retest = await agent(
         proofPrompt(`\nRetest after a fix: previously failing routes were ${failedRoutes.map((r) => r.route).join(', ')} — check them all again.`),
-        { label: 'proof-retest', phase: 'Proof', schema: PROOF_SCHEMA },
+        { label: 'proof-retest', phase: 'Proof', model: 'sonnet', schema: PROOF_SCHEMA }, // retest is identical mechanical pass/fail browsing against a fixed route list
       )
       if (retest) proof = retest
       proofFixSucceeded = !!retest && retest.routes.every((r) => r.result !== 'fail')
@@ -1305,7 +1305,7 @@ nothing. If nothing qualifies, write nothing and return documented=false.
 If you write docs: validate their frontmatter as the skill requires and commit
 ("docs(solutions): compound learnings from ${SLUG}"). Do NOT push — the Ship
 phase owns pushing.`,
-      { label: 'compound', phase: 'Compound', schema: COMPOUND_SCHEMA },
+      { label: 'compound', phase: 'Compound', model: 'sonnet', schema: COMPOUND_SCHEMA }, // mechanical authoring from enumerated solved-problem candidates; skill prescribes template and commit
     )
     if (compounded) log(compounded.documented ? `Compounded: ${compounded.paths.join(', ')}` : `Compound: nothing qualifying (${compounded.detail})`)
   }
@@ -1377,7 +1377,7 @@ ${residualLines.join('\n')}
 ${(validation.postDeployChecks || []).map((c) => `- ${c}`).join('\n') || '- nothing specific noted'}
 
 Report honestly: pushed=true only if the push succeeded; prUrl "" when no PR exists.`,
-      { label: 'ship', phase: 'Ship', schema: SHIP_SCHEMA },
+      { label: 'ship', phase: 'Ship', model: 'sonnet', schema: SHIP_SCHEMA }, // mechanical commit/push/PR creation; steps and PR body sections are fully specified in the prompt
     )
     if (shipRes) ship = shipRes
     else { ship.detail = 'ship agent failed — check the worktree state by hand'; log(`Ship: ${ship.detail}`) }

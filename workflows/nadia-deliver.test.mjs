@@ -18,7 +18,7 @@ function makeRuntime(dispatcher, { budgetTotal = null, costPerCall = 10000 } = {
   const trace = { calls: [], logs: [], phases: [] }
   let spent = 0
   const agent = async (prompt, opts = {}) => {
-    trace.calls.push({ label: opts.label || '(none)', prompt, agentType: opts.agentType, schema: opts.schema })
+    trace.calls.push({ label: opts.label || '(none)', prompt, agentType: opts.agentType, schema: opts.schema, model: opts.model })
     spent += costPerCall
     try {
       return await dispatcher(prompt, opts, trace.calls.length)
@@ -237,6 +237,7 @@ S('S4 codex partial -> claude finisher completes -> merged with finisher attribu
   assert.equal(result.tasks.U1.executor, 'partial + claude finisher')
   const finish = trace.calls.find((c) => c.label === 'finish-U1')
   assert.ok(finish && finish.prompt.includes('error path missing'), 'finisher sees the gaps')
+  assert.equal(finish.model, 'sonnet', 'finisher runs at the routed tier (stub route carries no model, so the sonnet fallback applies)')
   return 'codex partial finished and merged'
 })
 
@@ -1267,6 +1268,41 @@ S('S25 args opt-outs: ship:false stays local, proof:false and compound:false ski
   assert.match(result.proof.detail, /args\.proof/)
   assert.equal(result.compound, null)
   return 'every tail phase individually opt-out-able'
+})
+
+S('S56 model-tier policy: pinned labels use sonnet, keep-inherit labels stay on session model', async () => {
+  // Use a dispatcher that triggers all 7 pinned labels in one run:
+  // - a blocking finding in src/u1.js triggers fix-u1.js
+  // - a failing proof route triggers proof-fix + proof-retest
+  const FAIL_PROOF = { status: 'fail', routes: [{ route: '/', result: 'fail', detail: '500 on render' }], detail: 'broken' }
+  // proof-retest and proof-fix are listed before proof so startsWith('proof') does not shadow them
+  const d = makeDispatcher({
+    'review-correctness': () => ({ findings: [{ title: 'off-by-one', file: 'src/u1.js', line: 4, severity: 'blocking', detail: 'd', failure_scenario: 'empty input crashes' }] }),
+    'verify-correctness': () => ({ verdict: 'CONFIRMED', evidence: 'real' }),
+    'fix-': () => ({ fixed: ['off-by-one'], skipped: [], detail: 'ok' }),
+    'proof-retest': () => ({ status: 'pass', routes: [{ route: '/', result: 'pass', detail: 'ok' }], detail: 'ok' }),
+    'proof-fix': () => ({ committed: true, detail: 'fixed' }),
+    'proof-revalidate': () => VALIDATION,
+    proof: () => FAIL_PROOF,
+    compound: () => ({ documented: true, paths: ['docs/solutions/x.md'], detail: 'wrote one doc' }),
+  }, { routeExecutor: () => 'claude' })
+  const { trace, error } = await run(d)
+  assert.ifError(error)
+  const model = (label) => trace.calls.find((c) => c.label === label)?.model
+  // pinned — grunt-tier sites must dispatch with model: 'sonnet'
+  assert.equal(model('route-U1'), 'sonnet', 'route-${t.id} is grunt-tier; pinned to sonnet')
+  assert.equal(model('fix-u1.js'), 'sonnet', 'fix-${filename} is grunt-tier; pinned to sonnet')
+  assert.equal(model('proof'), 'sonnet', 'proof is grunt-tier; pinned to sonnet')
+  assert.equal(model('proof-fix'), 'sonnet', 'proof-fix is grunt-tier; pinned to sonnet')
+  assert.equal(model('proof-retest'), 'sonnet', 'proof-retest is grunt-tier; pinned to sonnet')
+  assert.equal(model('compound'), 'sonnet', 'compound is grunt-tier; pinned to sonnet')
+  assert.equal(model('ship'), 'sonnet', 'ship is grunt-tier; pinned to sonnet')
+  // keep-inherit — session-model labels must NOT set model
+  assert.equal(model('split-U1'), undefined, 'split-${u.uid} is keep-inherit; must not set model')
+  assert.equal(model('triage-wave-1'), undefined, 'triage-wave-${w+1} is keep-inherit; must not set model')
+  assert.equal(model('simplify'), undefined, 'simplify is keep-inherit; must not set model')
+  assert.equal(model('sweep'), undefined, 'sweep is keep-inherit; must not set model')
+  return '7 sonnet pins confirmed; 4 keep-inherit labels confirmed undefined'
 })
 
 // ---------- runner ----------
