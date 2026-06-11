@@ -51,8 +51,11 @@ R3. Each of the 13 imported personas passes its per-persona doctrine checklist
 every distinct upstream check, mandate, and output expectation survives,
 restated Fable-brief or replaced by a reference to a doctrine skill that
 carries it. Upstream frontmatter tool grants survive verbatim per persona (the
-external researchers keep `WebFetch, WebSearch, mcp__context7__*`). An import
-that drops a checklist item is a defect. (origin R3)
+grounding researchers keep `WebFetch, WebSearch, mcp__context7__*`; one
+exception by upstream fact: ce-web-researcher declares NO `tools:` line —
+inherits-all — so the owned `web-researcher` makes its grants explicit:
+`Read, Grep, Glob, Bash, WebFetch, WebSearch`). An import that drops a
+checklist item is a defect. (origin R3)
 
 R4. Every owned persona follows the role-binding shape: identity and role in
 2–3 sentences → named skills by session-root path with one when-to-apply line
@@ -107,8 +110,8 @@ workflows/nadia-plan.js` passes, zero banned forms, zero coordinator I/O.
 (origin R10)
 
 R11. Slimming is proven, not claimed: the summed line count of the owned
-persona files carrying the 13 upstream personas (12 files after the U2 merge)
-is below 1,471, asserted by a test. The five doctrine skills are budgeted
+persona files carrying the 13 upstream personas (12 files after the U2 merge;
+13 under its documented fallback) is below 1,471, asserted by a test. The five doctrine skills are budgeted
 separately (40–80 lines each, R2). (origin R11)
 
 R12. `INTAKE_SCHEMA`'s `confirmedIntent` carries `constraints: string[]`
@@ -329,8 +332,10 @@ doctrine skill covers research procedure — that is allowed by R4, which only
 bans restating what a skill carries). Frontmatter tool grants survive
 verbatim: `Read, Grep, Glob, Bash` for repo/learnings/flow;
 `Read, Grep, Glob, Bash, WebFetch, WebSearch, mcp__context7__*` for
-external-grounding; web-researcher gets the web-search + web-fetch grants its
-AE5 precondition requires (confirm exact upstream frontmatter at import time).
+external-grounding; web-researcher's upstream declares no `tools:` line
+(inherits-all), so the owned persona declares explicitly:
+`Read, Grep, Glob, Bash, WebFetch, WebSearch` (satisfying its AE5
+web-search + web-fetch precondition).
 If any AE3/AE4 item cannot survive the union, take the KTD fallback: two
 personas, reason recorded in both files.
 **Patterns to follow**: `agents/skeptical-refuter.md` (28-line slim persona
@@ -462,7 +467,12 @@ green with updated mechanism pins.
 `web-researcher`; `research-flow` → `flow-analyzer`; the seven
 `review-r{r}-*` roster entries (lines ~1162–1168) → `coherence-lens`,
 `feasibility-lens`, `product-lens`, `design-lens`, `security-lens`,
-`scope-lens`, `adversarial-lens`. Delete the v1 line-469 log
+`scope-lens`, `adversarial-lens`. Normalize the reviewer brief while swapping:
+wrap its existing document-type and origin lines in a `<review-context>` block
+with the exact slot labels `Document type:` and `Origin:` (literal `none` when
+no origin) — the imported lenses read those slots by name; v1's bare
+"Origin document:" label would leave seven personas reading a slot that does
+not exist. Delete the v1 line-469 log
 (`ce-framework-docs-researcher is not in the verified agent registry …`) and
 its now-false comment. In the REPO chokepoint wrapper (lines ~55–65), add
 exactly one line to the brief text — the skills-root exception: `skills/`
@@ -485,6 +495,9 @@ and prompts must stay deterministic across runs).
   exception line; with `args.repo` absent, no prompt contains the
   `TARGET REPOSITORY:` grounding at all (existing S26 behavior preserved).
 - No `log()` output matches /verified agent registry/.
+- Every `review-r{r}-*` prompt contains a `<review-context>` block carrying
+  `Document type:` and `Origin:` slots (`Origin: none` when args.origin is
+  absent).
 - S19 determinism, S20 roster, and S27 model pins all pass against the new
   agentTypes; sonnet/inherit assignments unchanged per station.
 
@@ -584,12 +597,13 @@ inline prompt: keep the schema contract, the grounding blocks
 present today), and the pinned surfaces; cut doctrine now carried by personas
 and skills (the persona dispatch no longer needs its checklist restated in the
 brief) and rule-enumeration sprawl, per Fable brief-steering guidance.
-Reviewer briefs keep the `Document type:` / `Origin:` review-context slots the
-lens personas read. Add to `originCoveragePrompt()` the R13 instruction (exact
+Reviewer briefs keep the `<review-context>` block (`Document type:` /
+`Origin:` slots, established in U5) that the lens personas read. Add to `originCoveragePrompt()` the R13 instruction (exact
 string, pinned): list items inside a principles/lessons-style origin section
 are individual coverage units — a section judged "addressed" while member
 items are dropped is an omission. Convert test pins that assert slim-able
-prose (e.g. the research-repo "Extended scope:" sentence) into mechanism pins
+prose (identified by sweeping the suite for prompt-substring asserts against
+non-verbatim surfaces) into mechanism pins
 (labels, agentTypes, schemas, grounding-block presence, the verbatim
 surfaces); the M6 AUTHOR-REASONING-SENTINEL sweep and no-interpolation sweep
 stay.
@@ -610,9 +624,11 @@ parsers split on, or the fixtures update in the same commit).
 - S13 hygiene (no `undefined`, `[object Object]`, `${`, placeholder), M6
   no-claim-passing, and S19 determinism all pass post-slim.
 
-**Verification**: All verbatim-surface pins green; suite green; the pins
-demonstrably predate the slimming edits in the commit history (pin-first
-discipline); `node --check workflows/nadia-plan.js` passes.
+**Verification**: All verbatim-surface pins green; suite green; pin-first
+discipline is evidenced by the pins matching v1 surface text byte-identically
+after the slim (work order: pins authored and run green against unmodified
+surfaces, then slimming — one atomic commit lands both);
+`node --check workflows/nadia-plan.js` passes.
 
 ### U8. Sovereignty pins and the full-suite gate
 
@@ -630,15 +646,18 @@ full happy-path trace (plus the conditional personas forced on), assert
 node script, not the coordinator; I/O is legal here); (c) parse every
 `agents/*.md` for `skills/<name>` references and assert each referenced
 `skills/<name>/SKILL.md` exists — no dangling references; (d) sum line counts
-over the 12 import-derived persona files and assert < 1,471 (R11), and assert
-each of the five doctrine skills is ≤ 80 lines; (e) sweep for residual prose
+over the import-derived persona files (12, or 13 under the U2 fallback —
+derive the file list from the dispatch trace, not a hard-coded count) and
+assert < 1,471 (R11), and assert each of the five doctrine skills is between
+40 and 80 lines (R2's full band, not just the ceiling); (e) sweep for residual prose
 pins that assert slim-able sentences (convert any stragglers). Then run the
 full gate set and fix anything red: `node --test workflows/nadia-plan.test.mjs`
 green, `node --check workflows/nadia-plan.js`, banned-forms scan (no
 `Date.now()`, `Math.random()`, `new Date()` in the coordinator), no
 coordinator I/O. Record the live end-to-end acceptance: one nadia-plan
-invocation on this branch completing with only owned agents dispatched (origin
-success criterion — run-log evidence attached to the campaign issue/PR).
+invocation on this branch completing with only owned agents dispatched AND
+only owned `skills/` files read by them (both halves of the origin success
+criterion — run-log evidence attached to the campaign issue/PR).
 **Patterns to follow**: S12 (no-silent-caps log assertion style); the
 `RELEASE_IDS` const enumeration style for fixed checklists; the scenario
 runner's `S(name, fn)` registration.
@@ -1113,9 +1132,17 @@ defect.
 - Section 1 Premise challenge: right problem? actual outcome (trace to user
   impact, watch proxy problems)? what if we did nothing (real pain with
   evidence vs hypothetical)? inversion (what would make this fail?).
-- Section 2 Strategic consequences: trajectory, identity impact, adoption
-  dynamics, opportunity cost (only with a visible concrete competing
-  priority), compounding direction.
+- Section 2 Strategic consequences, each with its defining question:
+  trajectory (toward or away from the system's natural evolution? flag plans
+  that paint the system into a corner — path dependencies, expiring hardcoded
+  assumptions — even when goal alignment is clean); identity impact (every
+  feature choice is a positioning statement; flag when the bet is implicit
+  rather than deliberate); adoption dynamics (easier or harder to adopt,
+  learn, trust? surface who it gets easier for and who harder); opportunity
+  cost (what is NOT being built — only with a visible concrete competing
+  priority); compounding direction (positive: data/learning/ecosystem
+  advantages; negative: maintenance burden, complexity tax — flag when
+  unexamined).
 - Section 3 Implementation alternatives: findings only when a concrete simpler
   alternative exists; 80%/20% paths, buy-vs-build, different sequencing for
   earlier value.
@@ -1153,13 +1180,18 @@ defect.
 - Dimensional rating: each applicable dimension 0–10 in the format
   "[Dimension]: [N]/10 -- it's a [N] because [gap]. A 10 would have [what's
   needed]"; findings only at ≤7/10; skip irrelevant dimensions.
-- Dimensions: information architecture (first/second/third, hierarchy,
-  navigation model, grouping rationale); interaction state coverage (loading,
-  empty, error, success, partial per element); user flow completeness (entry
-  points, happy path with decisions, 2–3 edge cases, exits);
-  responsive/accessibility (breakpoints, keyboard nav, screen readers, touch
-  targets); unresolved design decisions ('TBD', vague descriptions, features
-  described by function not interaction).
+- Dimensions, each with its 10-anchor definition: information architecture
+  (first/second/third, hierarchy, navigation model, grouping rationale; a 10
+  has clear priority, a navigation model, and grouping reasoning); interaction
+  state coverage (loading, empty, error, success, partial per element; a 10
+  has every state specified with content); user flow completeness (entry
+  points, happy path with decisions, 2–3 edge cases, exits; a 10 has a flow
+  description covering all of these); responsive/accessibility (breakpoints,
+  keyboard nav, screen readers, touch targets; a 10 has an explicit responsive
+  strategy and accessibility alongside feature requirements); unresolved
+  design decisions ('TBD', vague descriptions, features described by function
+  not interaction; a 10 has every interaction specific enough to implement
+  without asking "how should this work?").
 - AI slop check: flag plans that would produce generic AI-generated interfaces
   (3-column feature grids, purple/blue gradients, icons in colored circles,
   uniform border-radius, stock-photo heroes, "modern and clean" as the entire
@@ -1352,8 +1384,10 @@ defect.
 - Coordinator: `workflows/nadia-plan.js` (1,979 lines) — dispatch sites at
   lines ~484–541 (research) and ~1162–1168 (lens roster); stale log line 469;
   REPO chokepoint lines ~55–65; INTAKE_SCHEMA lines ~83–101; CONFIRMED_INTENT
-  block lines ~449–459; prompt factories lines ~823–996; GATE_AUTHORITY
-  ~1711; ANCHOR_RUBRIC ~808–816.
+  block lines ~449–459; review-loop prompt factories lines ~823–996 and the
+  gate factories ~1648–1848 (parse, parse-fix, releasability, origin-coverage,
+  gate-fix — fifteen factories total); GATE_AUTHORITY ~1711; ANCHOR_RUBRIC
+  ~808–816.
 - Tests: `workflows/nadia-plan.test.mjs` (1,057 lines, S1–S28; harness shape,
   pin and fixture conventions, S26/S27 precedents).
 - Locked-mechanism rationale:
