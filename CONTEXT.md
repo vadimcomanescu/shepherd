@@ -41,3 +41,11 @@ The repo's own workflow ([`workflows/nadia-deliver.js`](workflows/nadia-deliver.
 - **Proof** — the browser-testing phase: an agent follows the installed `ce-test-browser` skill in pipeline mode against the merged worktree, with exactly one fix-and-retest round.
 - **CI watcher** — the `ci-watcher` persona: one watch-fix-push iteration per dispatch of the bounded (default 3) CI autofix loop; never weakens or deletes tests to get green.
 - **Compound step** — the pre-ship agent following the installed `ce-compound` skill headlessly: documents non-trivial solved-and-verified problems from the run under `docs/solutions/`. Runs before Ship so its docs commit rides the one push (a post-ship push would restart CI).
+
+## nadia-plan terms
+
+The plan-production workflow ([`workflows/nadia-plan.js`](workflows/nadia-plan.js)) adds:
+
+- **Intake** — the first-stage classifier agent in nadia-plan: reads the raw request or origin document and outputs a structured JSON object (conforming to `INTAKE_SCHEMA`) that names the plan type, research intent, blocking unknowns, and non-code-deliverable flag. All downstream routing decisions derive from intake output.
+- **Intake schema** — the JSON schema object (`INTAKE_SCHEMA` in `workflows/nadia-plan.js`) that the intake classifier must conform to. It is also the canonical list of valid values for the `research.intent` enum; adding a new intent option to agent guidance without updating this schema leaves the option unreachable.
+- **Origin coverage** — the gate-phase check that walks every section of the origin document (brainstorm, requirements doc, or ADR) and verifies that each normative item is addressed or explicitly deferred in the generated plan. A named phase in the nadia-plan `meta.phases` array; skipped when no origin doc is provided.
