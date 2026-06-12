@@ -485,10 +485,14 @@ if (intake.blockingUnknowns.length > 0) {
 // a PINNED depth (args.depth) or an origin doc means the caller deliberately
 // wants a plan — never below-floor-halt then.
 if (intake.belowFloor && intake.belowFloor.verdict === true && !PINNED_DEPTH && !ORIGIN) {
-  log(`Below-floor: ${intake.belowFloor.reason} — halting with a direct-execution brief; pin args.depth to force a plan`)
+  // The schema requires reason but cannot require it non-empty (observed live:
+  // an intake put everything in directPrompt and left reason '') — the halt
+  // trace must never carry an empty reason.
+  const floorReason = intake.belowFloor.reason || 'request judged below the planning floor (single-executor scale; see directPrompt)'
+  log(`Below-floor: ${floorReason} — halting with a direct-execution brief; pin args.depth to force a plan`)
   return summary('halted', {
     haltStage: 'S0-below-floor',
-    haltReason: intake.belowFloor.reason,
+    haltReason: floorReason,
     nextStep: 'Execute directly using the directPrompt in this summary (single executor, conventional commit), or re-invoke nadia-plan with args.depth pinned to force a plan',
     directPrompt: intake.belowFloor.directPrompt,
   })

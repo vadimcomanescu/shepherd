@@ -1519,7 +1519,16 @@ S('S45 below-floor halt: trivial request halts at S0 with a directPrompt, intake
   assert.equal(trace.calls.length, 1, 'exactly one agent dispatched (intake only)')
   assert.equal(trace.calls[0].label, 'intake')
   assert.ok(trace.logs.some((m) => m.startsWith('Below-floor:') && /pin args\.depth to force a plan/.test(m)), 'below-floor log fired')
-  return 'trivial request halts at S0-below-floor with a ready-to-use directPrompt; only intake dispatched'
+
+  // Empty-reason fallback (observed live: an intake put everything in
+  // directPrompt and left reason '') — the halt trace must never be reasonless.
+  const e = await run(makeDispatcher({}, {
+    intake: { belowFloor: { verdict: true, reason: '', directPrompt: BRIEF } },
+  }))
+  assert.ifError(e.error)
+  assert.equal(e.result.haltStage, 'S0-below-floor')
+  assert.ok(e.result.haltReason && e.result.haltReason.length > 0, 'haltReason falls back to a non-empty default when intake leaves reason blank')
+  return 'trivial request halts at S0-below-floor with a ready-to-use directPrompt; only intake dispatched; empty reason falls back'
 })
 
 S('S46 pinned depth (and origin) override the below-floor halt: the run proceeds to author', async () => {
