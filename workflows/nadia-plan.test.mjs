@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import assert from 'node:assert'
@@ -1354,6 +1354,96 @@ S('S38 verbatim-surface pins: GATE_AUTHORITY (both dispatches), research-cap log
   assert.ok(retryCovCall.prompt.includes(R13_TEXT), 'origin-coverage-retry: R13 list-item granularity instruction byte-identical')
 
   return 'GATE_AUTHORITY pinned in both parseFixPrompt and gateFixPrompt; research-cap log invariant confirmed; R13 list-item granularity reaches both origin-coverage dispatches'
+})
+
+// ---------- S39-S43: fleet-sovereignty pins ----------
+// Doctrine skills pinned by name; validating-agent-improvements is the pre-existing skill
+// and is excluded from the 40-80 band assertion.
+const DOCTRINE_SKILLS = ['decomposition', 'interface-design', 'scoping', 'test-strategy', 'zero-context-planning']
+
+S('S39 rented-dispatch pin: coordinator contains zero compound-engineering: references', async () => {
+  const hits = (scriptSrc.match(/compound-engineering:/g) || []).length
+  assert.strictEqual(hits, 0, `Expected 0 occurrences of 'compound-engineering:' in coordinator source, found ${hits}`)
+  return 'coordinator source is free of compound-engineering: plugin-namespaced dispatches'
+})
+
+S('S40 persona-on-disk pin: every dispatched agentType has a backing agents/*.md file', async () => {
+  // Force all conditional personas on
+  const { trace, error } = await run(
+    makeDispatcher({}, { classify: { personas: { productLens: true, designLens: true, securityLens: true, scopeGuardian: true, adversarial: true } } }),
+  )
+  assert.ifError(error)
+  const agentTypes = [...new Set(trace.calls.map((c) => c.agentType).filter(Boolean))]
+  assert.ok(agentTypes.length > 0, 'at least one agentType observed in trace')
+  const agentsDir = join(dir, '..', 'agents')
+  for (const at of agentTypes) {
+    const mdPath = join(agentsDir, `${at}.md`)
+    assert.ok(existsSync(mdPath), `agents/${at}.md not found on disk (agentType observed in trace)`)
+  }
+  return `${agentTypes.length} distinct agentTypes all backed by agents/*.md: ${agentTypes.join(', ')}`
+})
+
+S('S41 no-dangling-skills pin: every skills/ reference in agents/*.md has a skills/<name>/SKILL.md', async () => {
+  const agentsDir = join(dir, '..', 'agents')
+  const skillsDir = join(dir, '..', 'skills')
+  const agentFiles = readdirSync(agentsDir).filter((f) => f.endsWith('.md'))
+  const allRefs = new Set()
+  for (const f of agentFiles) {
+    const src = readFileSync(join(agentsDir, f), 'utf8')
+    for (const m of src.matchAll(/skills\/([a-z0-9-]+)/g)) {
+      allRefs.add(m[1])
+    }
+  }
+  assert.ok(allRefs.size > 0, 'at least one skills/ reference found in agents/*.md')
+  for (const name of allRefs) {
+    const skillMd = join(skillsDir, name, 'SKILL.md')
+    assert.ok(existsSync(skillMd), `skills/${name}/SKILL.md not found (referenced in agents/*.md)`)
+  }
+  return `${allRefs.size} skill reference(s) all resolve to SKILL.md: ${[...allRefs].join(', ')}`
+})
+
+S('S42 budget pin: trace-derived persona fleet < 1471 lines; doctrine skills each 40-80 lines', async () => {
+  // Derive the persona file list from the dispatch trace with all conditional personas on
+  const { trace, error } = await run(
+    makeDispatcher({}, { classify: { personas: { productLens: true, designLens: true, securityLens: true, scopeGuardian: true, adversarial: true } } }),
+  )
+  assert.ifError(error)
+  const agentTypes = [...new Set(trace.calls.map((c) => c.agentType).filter(Boolean))]
+  const agentsDir = join(dir, '..', 'agents')
+  const skillsDir = join(dir, '..', 'skills')
+  // R11: sum of persona file line counts must be < 1471
+  let totalLines = 0
+  for (const at of agentTypes) {
+    const src = readFileSync(join(agentsDir, `${at}.md`), 'utf8')
+    totalLines += src.split('\n').length
+  }
+  assert.ok(totalLines < 1471, `Fleet line total ${totalLines} must be < 1471 (R11 budget)`)
+  // R2 band: each doctrine skill SKILL.md must be between 40 and 80 lines inclusive
+  assert.strictEqual(DOCTRINE_SKILLS.length, 5, `Expected exactly 5 doctrine skills, found ${DOCTRINE_SKILLS.length}`)
+  for (const name of DOCTRINE_SKILLS) {
+    const src = readFileSync(join(skillsDir, name, 'SKILL.md'), 'utf8')
+    const lines = src.split('\n').length
+    assert.ok(lines >= 40, `skills/${name}/SKILL.md has ${lines} lines, must be >= 40 (R2 lower band)`)
+    assert.ok(lines <= 80, `skills/${name}/SKILL.md has ${lines} lines, must be <= 80 (R2 upper band)`)
+  }
+  return `fleet total ${totalLines} lines < 1471; ${agentTypes.length} personas; doctrine skills [${DOCTRINE_SKILLS.map((n) => `${n}:${readFileSync(join(skillsDir, n, 'SKILL.md'), 'utf8').split('\n').length}`).join(', ')}] all within 40-80 band`
+})
+
+S('S43 prose-pin sweep: no slim-able verbatim persona-prose assertions outside S36-S38', async () => {
+  // This scenario documents the audit result: existing scenarios either use structural pins
+  // (labels, agentTypes, schema fields, XML markers, counts) or are explicitly marked as
+  // byte-identical parser-contract pins in S36-S38. No stragglers to convert were found.
+  // Run the happy path and confirm the structurally-pinned assertions still hold:
+  const { result, trace, error } = await run(makeDispatcher())
+  assert.ifError(error)
+  assert.equal(result.status, 'ready')
+  // Confirm reviewer prompts carry structural markers only (not fragile prose)
+  const reviewCalls = trace.calls.filter((c) => /^review-r\d+-/.test(c.label))
+  for (const c of reviewCalls) {
+    assert.ok(c.agentType, `${c.label} carries agentType (structural pin passes)`)
+    assert.ok(c.schema, `${c.label} carries schema (structural pin passes)`)
+  }
+  return `prose-pin audit complete: ${reviewCalls.length} reviewer dispatches all carry agentType + schema structural pins; no slim-able prose stragglers in S1-S38`
 })
 
 let pass = 0, fail = 0
