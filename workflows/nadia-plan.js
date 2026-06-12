@@ -1819,7 +1819,8 @@ Walk the origin document section by section; confirm each
 requirement/decision/boundary is addressed or explicitly deferred in the plan
 at ${planPath}; do NOT take the plan's word — check the plan text. Your
 sections[] walk is the evidence of work: return one entry per origin section.
-You have not seen the plan author's claims and must not assume coverage.`
+You have not seen the plan author's claims and must not assume coverage.
+When an origin section contains a list (principles, lessons, rules, examples), each list item is an individual coverage unit — do not judge the whole section "addressed" if member items were not individually traced to the plan. A section marked "addressed" while specific list items are unaddressed is an omission.`
 let originOmissions = []
 if (!ORIGIN) {
   log('Origin coverage skipped: no origin doc')
