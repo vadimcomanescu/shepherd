@@ -1142,6 +1142,88 @@ S('S35 author prompt contains constraint-surfacing instruction', async () => {
   return 'author prompt explicitly requires constraint coverage'
 })
 
+S('S36 verbatim-surface pins: ktdRefutePrompt, ktdArbitrationPrompt, ANCHOR_RUBRIC, editorPrompt, cap log()s', async () => {
+  // ---- ktdRefutePrompt verbatim surface ----
+  // trigger: classify returns ktds so ktdRefutePrompt is called
+  const withKtds = makeDispatcher({}, {
+    classify: { ktds: ['use sqlite as the queue store'], loadBearingAssumptions: [] },
+  })
+  const { result: r1, trace: t1, error: e1 } = await run(withKtds)
+  assert.ifError(e1)
+  const ktdRefuteCall = t1.calls.find((c) => c.label === 'ktd-refute-p1-0')
+  assert.ok(ktdRefuteCall, 'ktd-refute-p1-0 dispatched')
+  assert.ok(ktdRefuteCall.prompt.includes(
+    `Your verdict is about THE QUOTED CLAIM itself: 'claim-refuted' ONLY\nwhen you hold concrete contradicting evidence; 'claim-correct' when the claim\naccurately describes the codebase — a failed refutation attempt is\n'claim-correct', not 'claim-refuted'. IMPORTANT — override of your default: if\nyou can neither confirm nor refute it from code and docs, return verdict\n'unverifiable', NOT 'claim-refuted'. Fail-if-uncertain here means surface, not\nauto-block. Your reason's first sentence must restate your verdict's referent\nin words ("The claim is correct/contradicted/unverifiable because ...").`
+  ), 'ktdRefutePrompt: referent-explicit verdict block byte-identical')
+
+  // ---- ktdArbitrationPrompt verbatim surface ----
+  // trigger: classify returns ktd, first refuter returns claim-refuted
+  const arbRun = await run(makeDispatcher({
+    'ktd-refute-p1-0': () => ({ verdict: 'claim-refuted', reason: 'The claim is contradicted: the code already uses postgres.' }),
+    'refute-halt-ktd-': (p, o, label) => ({ verdict: label.endsWith('-v2') ? 'ktd-is-right' : 'ktd-is-wrong', reason: 'vote' }),
+  }, { classify: { ktds: ['use sqlite as the queue store'], loadBearingAssumptions: [] } }))
+  assert.ifError(arbRun.error)
+  const arbCall = arbRun.trace.calls.find((c) => c.label === 'refute-halt-ktd-p1-0-v0')
+  assert.ok(arbCall, 'ktdArbitrationPrompt dispatched')
+  assert.ok(arbCall.prompt.includes(
+    `Judge THE DECISION itself on the actual code — read the relevant files\nyourself rather than adopting the first refuter's framing; where the claim is\ndeterministic runtime behavior, settle it by executing (read-only: never\nmodify the worktree). Your verdict is about the KTD itself (see the schema),\nand your reason's first sentence must restate it in words.`
+  ), 'ktdArbitrationPrompt: Judge-THE-DECISION passage byte-identical')
+
+  // ---- ANCHOR_RUBRIC verbatim surfaces (all five lines) ----
+  const { trace: t2, error: e2 } = await run(makeDispatcher())
+  assert.ifError(e2)
+  const reviewer = t2.calls.find((c) => c.label === 'review-r1-coherence')
+  assert.ok(reviewer, 'review-r1-coherence dispatched')
+  assert.ok(reviewer.prompt.includes('- 0 — Not confident at all: a false positive that does not stand up to light scrutiny. Do not emit.'), 'ANCHOR_RUBRIC: 0 line present')
+  assert.ok(reviewer.prompt.includes('- 25 — Somewhat confident: might be real but could be a false positive; you were not able to verify. Do not emit.'), 'ANCHOR_RUBRIC: 25 line present')
+  assert.ok(reviewer.prompt.includes('- 50 — Moderately confident: verified as real but advisory — "nothing breaks, but..." findings land here (FYI tier).'), 'ANCHOR_RUBRIC: 50 line present')
+  assert.ok(reviewer.prompt.includes('- 75 — Highly confident: double-checked and verified the issue will be hit in practice; requires naming a concrete downstream consequence someone will hit.'), 'ANCHOR_RUBRIC: 75 line present')
+  assert.ok(reviewer.prompt.includes('- 100 — Absolutely certain: double-checked and confirmed; the document text leaves no room for interpretation.'), 'ANCHOR_RUBRIC: 100 line present')
+  // also present in editorPrompt
+  const editor = t2.calls.find((c) => c.label === 'editor-r1')
+  assert.ok(editor.prompt.includes('- 0 — Not confident at all: a false positive that does not stand up to light scrutiny. Do not emit.'), 'ANCHOR_RUBRIC in editorPrompt: 0 line present')
+
+  // ---- editorPrompt READY/REVISED definitions verbatim surface ----
+  assert.ok(editor.prompt.includes(
+    `You are READ-ONLY. READY means: unchanged, execution-ready, you would stake\nthe run on it. REVISED means: this plan needs revision — return the problems\nas findings (section/title/severity/findingType/confidence/autofixClass/\nevidence/whyItMatters/suggestedFix); they will be refuted, fixed, and verified\nby other agents, never by you.`
+  ), 'editorPrompt: READY/REVISED definitions byte-identical')
+
+  // ---- cap log() verbatim invariants ----
+  // Refuter cap: 20 gating findings triggers the refuter-cap log
+  const twenty = Array.from({ length: 20 }, (_, i) => FINDING({ title: `finding-${String(i + 1).padStart(2, '0')}`, evidence: `evidence ${i + 1}` }))
+  const capA = await run(makeDispatcher({ 'review-r1-coherence': () => ({ findings: twenty }) }))
+  assert.ifError(capA.error)
+  assert.ok(capA.trace.logs.some((m) => m.includes('gating finding(s) beyond') && m.includes('routed to documentation without verification')), 'Refuter cap log: invariant text present')
+
+  // KTD cap: 10 ktds triggers the KTD-cap log
+  const tenKtds = { ktds: Array.from({ length: 10 }, (_, i) => `decision number ${i + 1}`), loadBearingAssumptions: [] }
+  const capB = await run(makeDispatcher({}, { classify: tenKtds }))
+  assert.ifError(capB.error)
+  assert.ok(capB.trace.logs.some((m) => m.includes('claim(s) beyond') && m.includes('not refuted — listed in run summary openQuestions')), 'KTD cap log: invariant text present')
+
+  // Halt-class cap: 4 halt-class findings -> 4th triggers the halt-class cap log
+  const hc = (title) => FINDING({ title, autofixClass: 'manual', severity: 'P0', suggestedFix: '', whyItMatters: 'no fix exists' })
+  const capC = await run(makeDispatcher({
+    'review-r1-coherence': () => ({ findings: [hc('hc one'), hc('hc two'), hc('hc three'), hc('hc four')] }),
+    'refute-halt-': () => ({ refuted: true, reason: 'vote' }),
+  }))
+  assert.ifError(capC.error)
+  assert.ok(capC.trace.logs.some((m) => m.includes('beyond') && m.includes('majority procedures — routed document-as-known-cost')), 'Halt-class cap log: invariant text present')
+
+  // KTD halt-majority residual reason: 4 refuted KTDs, 4th overflows KTD_HALT_CAP
+  // Use verdict:'refuted' (non-enum) so arbiters return 0 ktd-is-wrong votes -> challenge rejected
+  // -> all 3 uses of KTD_HALT_CAP exhaust the allowance; 4th ktd overflows -> residual
+  const fourKtds = { ktds: ['ktd alpha', 'ktd beta', 'ktd gamma', 'ktd delta'], loadBearingAssumptions: [] }
+  const capD = await run(makeDispatcher({
+    'ktd-refute-': () => ({ verdict: 'refuted', reason: 'The claim is contradicted.' }),
+    'refute-halt-ktd-': () => ({ refuted: true, reason: 'vote' }),
+  }, { classify: fourKtds }))
+  assert.ifError(capD.error)
+  assert.ok(capD.result.residualFindings.some((r) => r.class === 'dropped-cap' && r.reason.includes('KTD halt-majority allowance (') && r.reason.includes('/run) exhausted')), 'KTD halt-majority allowance residual reason: invariant text present')
+
+  return 'all verbatim surfaces pinned: ktdRefutePrompt, ktdArbitrationPrompt, ANCHOR_RUBRIC, editorPrompt READY/REVISED, cap logs'
+})
+
 let pass = 0, fail = 0
 for (const { name, fn } of scenarios) {
   try {
