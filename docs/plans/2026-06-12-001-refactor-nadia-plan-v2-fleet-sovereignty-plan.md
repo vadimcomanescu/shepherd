@@ -1,7 +1,7 @@
 ---
 title: "refactor: nadia-plan v2 — fleet sovereignty and the doctrine skills layer"
 type: refactor
-status: active
+status: completed
 date: 2026-06-12
 origin: docs/brainstorms/2026-06-11-nadia-plan-v2-requirements.md
 ---
