@@ -1063,7 +1063,36 @@ S('S29 reviewer prompts carry review-context block', async () => {
     assert.equal(blocks[0][1], 'Document type: plan\nOrigin: none', `${call.label} carries named document type and origin slots`)
     assert.ok(!blocks[0][1].includes('Origin document:'), `${call.label} does not use the stale origin label inside review-context`)
   }
-  return `${reviewCalls.length} reviewer prompts carry review-context slots`
+
+  // (b) origin-path slot: when args.origin is set, Origin renders as the path (not 'none')
+  const originRun = await run(
+    makeDispatcher(),
+    { args: { ...ARGS, origin: 'docs/brainstorm.md' } },
+  )
+  assert.ifError(originRun.error)
+  const originReviewCalls = originRun.trace.calls.filter((c) => /^review-r\d+-/.test(c.label))
+  assert.ok(originReviewCalls.length > 0, 'review prompts dispatched for origin run')
+  for (const call of originReviewCalls) {
+    const blocks = [...call.prompt.matchAll(/<review-context>\n([\s\S]*?)\n<\/review-context>/g)]
+    assert.equal(blocks.length, 1, `${call.label} (origin run) carries exactly one review-context block`)
+    assert.ok(blocks[0][1].includes('Origin: docs/brainstorm.md'), `${call.label} renders origin path in Origin slot`)
+    assert.ok(!blocks[0][1].includes('Origin: none'), `${call.label} does not render 'none' when origin is set`)
+  }
+
+  // (c) requirements documentType: when classify returns documentType 'requirements', slot renders correctly
+  const reqRun = await run(
+    makeDispatcher({}, { classify: { documentType: 'requirements' } }),
+  )
+  assert.ifError(reqRun.error)
+  const reqReviewCalls = reqRun.trace.calls.filter((c) => /^review-r\d+-/.test(c.label))
+  assert.ok(reqReviewCalls.length > 0, 'review prompts dispatched for requirements run')
+  for (const call of reqReviewCalls) {
+    const blocks = [...call.prompt.matchAll(/<review-context>\n([\s\S]*?)\n<\/review-context>/g)]
+    assert.equal(blocks.length, 1, `${call.label} (requirements run) carries exactly one review-context block`)
+    assert.ok(blocks[0][1].includes('Document type: requirements'), `${call.label} renders 'Document type: requirements' slot`)
+  }
+
+  return `${reviewCalls.length} reviewer prompts carry review-context slots; origin-path and requirements-doc slots verified`
 })
 
 S('S30 intent none: no researchers dispatched, skip log carries reason', async () => {
@@ -1313,24 +1342,14 @@ S('S38 verbatim-surface pins: GATE_AUTHORITY (both dispatches), research-cap log
   assert.ok(gateFix, 'gate-fix dispatched')
   assert.ok(gateFix.prompt.includes(GATE_AUTHORITY_TEXT), 'gateFixPrompt: GATE_AUTHORITY full text byte-identical')
 
-  // ---- research-cap log: invariant text around the interpolated count (S12 drives this) ----
-  // 7-item roster (standard tier with mixed intent) exceeds RESEARCH_CAP=6, so the cap fires
-  // But by construction the roster is always <=6 — to trigger, we need more than 6 items.
-  // The cap fires when researchRoster.length > RESEARCH_CAP. By construction this can only
-  // happen if the roster grows beyond 6. We verify the invariant text by confirming
-  // the research-cap log is emitted ONLY when it fires, matching the invariant around the count.
-  // (This log was already asserted in S12 via 'beyond 16' — we pin the invariant text here.)
-  // The S12 log check already drives this path; pin the surrounding invariant text pattern:
-  assert.ok(typeof `Research cap: ${42} researcher(s) beyond ${6} dropped` === 'string',
-    'research-cap log template: invariant structure confirmed (interpolation-only check)')
-  // The live log is driven by line 570 — verify the log format via the S12 infrastructure:
-  // "Research cap: N researcher(s) beyond M dropped" — pin the two invariant fragments.
-  // We verify by running a scenario where the cap fires: not possible by construction (roster <=6).
-  // So we pin that any fired log matches both invariant halves:
-  const capLogPattern = /^Research cap: \d+ researcher\(s\) beyond \d+ dropped$/
-  // Synthesize a log string matching the production template to assert the format is stable
-  const sampleLog = `Research cap: 2 researcher(s) beyond 6 dropped`
-  assert.ok(capLogPattern.test(sampleLog), 'research-cap log: invariant pattern holds for production template')
+  // ---- research-cap log: pin the production log template against scriptSrc ----
+  // The roster is at most 6 by construction (RESEARCH_CAP=6), so the cap branch
+  // can never fire in any test scenario — pinning via a live run() is not possible.
+  // Instead pin the log template in the coordinator source so a wording change is caught.
+  assert.ok(
+    /Research cap:.*researcher\(s\) beyond.*dropped/.test(scriptSrc),
+    'research-cap log template present in coordinator source (scriptSrc pin)'
+  )
 
   // ---- R13 list-item granularity instruction in originCoveragePrompt ----
   // Must reach both 'origin-coverage' and 'origin-coverage-retry' dispatches (same factory).
@@ -1368,12 +1387,26 @@ S('S39 rented-dispatch pin: coordinator contains zero compound-engineering: refe
 })
 
 S('S40 persona-on-disk pin: every dispatched agentType has a backing agents/*.md file', async () => {
-  // Force all conditional personas on
-  const { trace, error } = await run(
+  // Run 1: all conditional review personas on (default intent 'none')
+  const r1 = await run(
     makeDispatcher({}, { classify: { personas: { productLens: true, designLens: true, securityLens: true, scopeGuardian: true, adversarial: true } } }),
   )
-  assert.ifError(error)
-  const agentTypes = [...new Set(trace.calls.map((c) => c.agentType).filter(Boolean))]
+  assert.ifError(r1.error)
+  // Run 2: intent 'mixed' so both conditional research personas (web-researcher,
+  // external-grounding-researcher) enter the trace — they are only dispatched on
+  // non-'none' intents and were absent from the default-intent trace.
+  const r2 = await run(
+    makeDispatcher({}, {
+      classify: { personas: { productLens: true, designLens: true, securityLens: true, scopeGuardian: true, adversarial: true } },
+      intake: { research: { intent: 'mixed', reason: 'coverage run' } },
+    }),
+  )
+  assert.ifError(r2.error)
+  // Union: every agentType dispatched in either run must have a backing agents/*.md file
+  const agentTypes = [...new Set([
+    ...r1.trace.calls.map((c) => c.agentType),
+    ...r2.trace.calls.map((c) => c.agentType),
+  ].filter(Boolean))]
   assert.ok(agentTypes.length > 0, 'at least one agentType observed in trace')
   const agentsDir = join(dir, '..', 'agents')
   for (const at of agentTypes) {
@@ -1403,12 +1436,25 @@ S('S41 no-dangling-skills pin: every skills/ reference in agents/*.md has a skil
 })
 
 S('S42 budget pin: trace-derived persona fleet < 1471 lines; doctrine skills each 40-80 lines', async () => {
-  // Derive the persona file list from the dispatch trace with all conditional personas on
-  const { trace, error } = await run(
+  // Derive the persona file list from two runs so the full owned fleet is covered:
+  // Run 1: all conditional review personas on (default intent 'none')
+  const r1 = await run(
     makeDispatcher({}, { classify: { personas: { productLens: true, designLens: true, securityLens: true, scopeGuardian: true, adversarial: true } } }),
   )
-  assert.ifError(error)
-  const agentTypes = [...new Set(trace.calls.map((c) => c.agentType).filter(Boolean))]
+  assert.ifError(r1.error)
+  // Run 2: intent 'mixed' to dispatch web-researcher and external-grounding-researcher
+  const r2 = await run(
+    makeDispatcher({}, {
+      classify: { personas: { productLens: true, designLens: true, securityLens: true, scopeGuardian: true, adversarial: true } },
+      intake: { research: { intent: 'mixed', reason: 'coverage run' } },
+    }),
+  )
+  assert.ifError(r2.error)
+  // Union of agentTypes across both runs covers the full dispatch fleet
+  const agentTypes = [...new Set([
+    ...r1.trace.calls.map((c) => c.agentType),
+    ...r2.trace.calls.map((c) => c.agentType),
+  ].filter(Boolean))]
   const agentsDir = join(dir, '..', 'agents')
   const skillsDir = join(dir, '..', 'skills')
   // R11: sum of persona file line counts must be < 1471
@@ -1444,6 +1490,18 @@ S('S43 prose-pin sweep: no slim-able verbatim persona-prose assertions outside S
     assert.ok(c.schema, `${c.label} carries schema (structural pin passes)`)
   }
   return `prose-pin audit complete: ${reviewCalls.length} reviewer dispatches all carry agentType + schema structural pins; no slim-able prose stragglers in S1-S38`
+})
+
+S('S44 plan-editor verdict-correctness block byte-identical (R6/U4)', async () => {
+  // R6 and U4 require the eval-backed verdict block in agents/plan-editor.md to
+  // stay byte-identical with v1. No run() call is needed — this is a file-content pin.
+  const VERDICT_BLOCK = `You are judged on VERDICT CORRECTNESS, not on whether you found something.\nAn unnecessary rewrite is a failure. Missing a real problem is a failure.\nREADY means: unchanged, execution-ready, you would stake the run on it.\nREVISED means: you found real problems that must be fixed before execution.`
+  const planEditorSrc = readFileSync(join(dir, '..', 'agents', 'plan-editor.md'), 'utf8')
+  assert.ok(
+    planEditorSrc.includes(VERDICT_BLOCK),
+    'agents/plan-editor.md verdict-correctness block is byte-identical (R6/U4 pin)'
+  )
+  return 'plan-editor.md verdict-correctness block byte-identical with v1'
 })
 
 let pass = 0, fail = 0
