@@ -940,8 +940,7 @@ two fixes that contradict each other, or a premise challenge that moots
 others. Return conflicting findings UNAPPLIED with the conflict named in
 reason.
 
-You may apply safe_auto@confidence-100 fixes and refutation-survived fixes —
-every entry in your fix-now list is one or the other. PROTECTED SURFACES: any
+You may apply safe_auto@confidence-100 fixes and refutation-survived fixes. PROTECTED SURFACES: any
 change to the Requirements set, Scope Boundaries, or unit uid/Dependencies
 structure requires refutationSurvived=true — otherwise return it unapplied. A
 fix may NEVER widen scope; return scope-widening proposals unapplied with
@@ -1000,11 +999,7 @@ Plan document: ${planPath}
 
 ${CODEBASE_CONTEXT}
 
-Investigate by READING code and docs only. You may NOT run tests, build the
-app, execute the code, or probe runtime behavior — a question answerable only
-at runtime returns resolution 'runtime-blocked'. Return the unknown, the
-resolution (resolved | documented-trade-off | runtime-blocked), the evidence
-you found, and a recommendation.`
+Read code and docs only — no tests, no execution. A question answerable only at runtime returns 'runtime-blocked'. Return: unknown, resolution (resolved | documented-trade-off | runtime-blocked), evidence, recommendation.`
 
 const reviseSpikePrompt = (spikeResults) => `Plan document to edit: ${planPath} (edit ONLY this file).
 
