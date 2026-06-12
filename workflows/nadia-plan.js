@@ -499,49 +499,38 @@ anything that should change planning decisions for this request. Return a
 digest of <=25 lines ("" when nothing material) plus the source paths.`,
   { label: 'research-learnings', phase: 'Research', agentType: 'learnings-researcher', model: 'sonnet', schema: DIGEST_SCHEMA },
 ) })
+// Web/landscape and implementation-guidance researchers — one builder each,
+// keyed by an intent descriptor so the standalone and mixed-slice prompts stay
+// byte-identical apart from that descriptor.
+const webResearcher = (intentDescriptor) => ({ key: 'web', thunk: () => agent(
+  `${researchGrounding}
+
+Run web research on the landscape relevant to this request (intake research
+intent: ${intentDescriptor}; reason: ${intake.research.reason}). Return a digest of <=25 lines of findings
+that should change planning decisions ("" when nothing material) plus sources.`,
+  { label: 'research-web', phase: 'Research', agentType: 'web-researcher', model: 'sonnet', schema: DIGEST_SCHEMA },
+) })
+const groundingResearcher = (intentDescriptor) => ({ key: 'grounding', thunk: () => agent(
+  `${researchGrounding}
+
+Research current external implementation guidance relevant to this request
+(intake research intent: ${intentDescriptor}; reason:
+${intake.research.reason}). Return a digest of <=25 lines of findings
+that should change planning decisions ("" when nothing material) plus sources.`,
+  { label: 'research-grounding', phase: 'Research', agentType: 'external-grounding-researcher', model: 'sonnet', schema: DIGEST_SCHEMA },
+) })
 if (!EXTERNAL_RESEARCH) {
   log('External research skipped: args.externalResearch === false')
+} else if (intake.research.intent === 'implementation-guidance') {
+  researchRoster.push(groundingResearcher('implementation-guidance'))
+} else if (intake.research.intent === 'landscape') {
+  researchRoster.push(webResearcher('landscape'))
+} else if (intake.research.intent === 'mixed') {
+  // web before grounding — roster order is asserted (S33)
+  researchRoster.push(webResearcher('mixed, landscape slice'))
+  researchRoster.push(groundingResearcher('mixed, implementation-guidance slice'))
 } else {
-  if (intake.research.intent === 'implementation-guidance') {
-    researchRoster.push({ key: 'grounding', thunk: () => agent(
-      `${researchGrounding}
-
-Research current external implementation guidance relevant to this request
-(intake research intent: implementation-guidance; reason:
-${intake.research.reason}). Return a digest of <=25 lines of findings
-that should change planning decisions ("" when nothing material) plus sources.`,
-      { label: 'research-grounding', phase: 'Research', agentType: 'external-grounding-researcher', model: 'sonnet', schema: DIGEST_SCHEMA },
-    ) })
-  } else if (intake.research.intent === 'landscape') {
-    researchRoster.push({ key: 'web', thunk: () => agent(
-      `${researchGrounding}
-
-Run web research on the landscape relevant to this request (intake research
-intent: landscape; reason: ${intake.research.reason}). Return a digest of <=25 lines of findings
-that should change planning decisions ("" when nothing material) plus sources.`,
-      { label: 'research-web', phase: 'Research', agentType: 'web-researcher', model: 'sonnet', schema: DIGEST_SCHEMA },
-    ) })
-  } else if (intake.research.intent === 'mixed') {
-    researchRoster.push({ key: 'web', thunk: () => agent(
-      `${researchGrounding}
-
-Run web research on the landscape relevant to this request (intake research
-intent: mixed, landscape slice; reason: ${intake.research.reason}). Return a digest of <=25 lines of findings
-that should change planning decisions ("" when nothing material) plus sources.`,
-      { label: 'research-web', phase: 'Research', agentType: 'web-researcher', model: 'sonnet', schema: DIGEST_SCHEMA },
-    ) })
-    researchRoster.push({ key: 'grounding', thunk: () => agent(
-      `${researchGrounding}
-
-Research current external implementation guidance relevant to this request
-(intake research intent: mixed, implementation-guidance slice; reason:
-${intake.research.reason}). Return a digest of <=25 lines of findings
-that should change planning decisions ("" when nothing material) plus sources.`,
-      { label: 'research-grounding', phase: 'Research', agentType: 'external-grounding-researcher', model: 'sonnet', schema: DIGEST_SCHEMA },
-    ) })
-  } else {
-    log('External research skipped: intake.research.intent === none (' + intake.research.reason + ')')
-  }
+  log('External research skipped: intake.research.intent === none (' + intake.research.reason + ')')
 }
 if (DEPTH !== 'lightweight') {
   researchRoster.push({ key: 'flow', thunk: () => agent(
