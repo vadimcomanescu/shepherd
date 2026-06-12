@@ -24,7 +24,7 @@ liability.
 ## Use exact repo-relative paths
 
 - Never say "the utility file" or "the existing helper". Write
-  `workflows/nadia-plan.mjs` or `agents/reviewer.md` — the exact path from
+  `workflows/nadia-plan.js` or `agents/plan-editor.md` — the exact path from
   the repo root.
 - When a directory matters (test location, output destination), name it
   explicitly: `workflows/` holds coordinator scripts; `agents/` holds
