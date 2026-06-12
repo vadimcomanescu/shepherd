@@ -60,6 +60,7 @@ You are working on the repository at ${REPO}, NOT your current working directory
 Resolve every relative path in this brief (docs/plans/..., lib/..., test and git
 commands) against ${REPO}: cd into it first in any shell command, search and
 read only there, and write files only under ${REPO}.
+Exception: skills/ paths (doctrine skills) resolve from the session's starting directory, NOT ${REPO}.
 
 ${prompt}`, opts)
 }
@@ -464,10 +465,6 @@ ${narrowedScope.length ? 'Narrowed from a multi-part request. Primary: ' + intak
 // ============================================================
 phase('Research')
 
-// Unconditional no-silent-cap log (decisions Q8): one researcher in the ce-plan
-// roster has no verified agentType in this runtime's registry.
-log('ce-framework-docs-researcher is not in the verified agent registry — skipped; framework-docs coverage rides best-practices/web research')
-
 const researchGrounding = `${CONFIRMED_INTENT}
 
 Raw request: ${REQUEST || '(origin document only)'}${ORIGIN ? `\nOrigin document: ${ORIGIN} (version: ${ORIGIN_VERSION}) — read it.` : ''}`
@@ -481,7 +478,7 @@ relevant to the request, conventions distilled from AGENTS.md/CLAUDE.md, and
 the files a planner must know about. Extended scope: include the test harness
 inventory, the project's test/lint commands, testing conventions, and whether a
 CONTEXT.md domain glossary exists at the repo root — report its path (or "").`,
-  { label: 'research-repo', phase: 'Research', agentType: 'compound-engineering:ce-repo-research-analyst', model: 'sonnet', schema: REPO_RESEARCH_SCHEMA }, // extraction of stack/conventions/paths is mechanical digest work
+  { label: 'research-repo', phase: 'Research', agentType: 'repo-researcher', model: 'sonnet', schema: REPO_RESEARCH_SCHEMA }, // extraction of stack/conventions/paths is mechanical digest work
 ) })
 researchRoster.push({ key: 'learnings', thunk: () => agent(
   `${researchGrounding}
@@ -489,7 +486,7 @@ researchRoster.push({ key: 'learnings', thunk: () => agent(
 Search this repo's institutional learnings (docs/solutions/ and similar) for
 anything that should change planning decisions for this request. Return a
 digest of <=25 lines ("" when nothing material) plus the source paths.`,
-  { label: 'research-learnings', phase: 'Research', agentType: 'compound-engineering:ce-learnings-researcher', model: 'sonnet', schema: DIGEST_SCHEMA },
+  { label: 'research-learnings', phase: 'Research', agentType: 'learnings-researcher', model: 'sonnet', schema: DIGEST_SCHEMA },
 ) })
 if (!EXTERNAL_RESEARCH) {
   log('External research skipped: args.externalResearch === false')
@@ -501,7 +498,7 @@ if (!EXTERNAL_RESEARCH) {
 Research current external best practices relevant to this request (intake gate
 reason: ${intake.research.reason}). Return a digest of <=25 lines of findings
 that should change planning decisions ("" when nothing material) plus sources.`,
-      { label: 'research-best-practices', phase: 'Research', agentType: 'compound-engineering:ce-best-practices-researcher', model: 'sonnet', schema: DIGEST_SCHEMA },
+      { label: 'research-best-practices', phase: 'Research', agentType: 'external-grounding-researcher', model: 'sonnet', schema: DIGEST_SCHEMA },
     ) })
   } else {
     log('Best-practices research skipped: intake gates off (' + intake.research.reason + ')')
@@ -513,7 +510,7 @@ that should change planning decisions ("" when nothing material) plus sources.`,
 Run web research on the landscape relevant to this request (intake gate
 reason: ${intake.research.reason}). Return a digest of <=25 lines of findings
 that should change planning decisions ("" when nothing material) plus sources.`,
-      { label: 'research-web', phase: 'Research', agentType: 'compound-engineering:ce-web-researcher', model: 'sonnet', schema: DIGEST_SCHEMA },
+      { label: 'research-web', phase: 'Research', agentType: 'web-researcher', model: 'sonnet', schema: DIGEST_SCHEMA },
     ) })
   } else {
     log('Web research skipped: intake gates off (' + intake.research.reason + ')')
@@ -526,7 +523,7 @@ if (DEPTH !== 'lightweight') {
 Analyze the user/data/control flows this request touches in this repository.
 Return a digest of the flow picture a planner needs plus the edge cases the
 plan must not miss.`,
-    { label: 'research-flow', phase: 'Research', model: 'sonnet', agentType: 'compound-engineering:ce-spec-flow-analyzer', schema: FLOW_SCHEMA }, // flow/edge-case digest is extraction work, like the rest of the research roster
+    { label: 'research-flow', phase: 'Research', model: 'sonnet', agentType: 'flow-analyzer', schema: FLOW_SCHEMA }, // flow/edge-case digest is extraction work, like the rest of the research roster
   ) })
 } else {
   log('Spec-flow analysis skipped: lightweight tier')
@@ -804,7 +801,7 @@ const primerBlock = () => (primer.length
   ? `<decision-primer>\n${primer.map((e) => `- round ${e.round} ${e.decision}: [${e.section}] ${e.title} (reviewer: ${e.reviewer}, confidence ${e.confidence}) — evidence: ${e.evidence}`).join('\n')}\n</decision-primer>`
   : '<decision-primer>none — first round</decision-primer>')
 
-// Confidence-anchor rubric — ce-doc-review's behavioral anchors, condensed.
+// Confidence-anchor rubric: behavioral anchors, condensed.
 const ANCHOR_RUBRIC = `Confidence is a discrete anchor — exactly one of 0/25/50/75/100, never a value
 between anchors. Pick the anchor whose behavioral criterion you can honestly
 self-apply:
@@ -821,7 +818,10 @@ Anchor and severity are independent axes.`
 // document_content, but this coordinator cannot read files (runtime-forced
 // deviation) — every reviewer reads the document itself.
 const reviewPrompt = (p, r) => `Review the ${documentType} document at ${planPath} — read the document yourself, fully.
-Document type: ${documentType}. Origin document: ${ORIGIN || 'none'}.
+<review-context>
+Document type: ${documentType}
+Origin: ${ORIGIN || 'none'}
+</review-context>
 
 ${CONFIRMED_INTENT}
 
@@ -1159,13 +1159,13 @@ for (let r = 1; r <= EDITOR_ROUNDS; r++) {
   if (r <= PERSONA_ROUNDS) {
     personaRoundsUsed = r
     const personaRosterAll = [
-      { key: 'coherence', type: 'compound-engineering:ce-coherence-reviewer' },
-      { key: 'feasibility', type: 'compound-engineering:ce-feasibility-reviewer' },
-      ...(personaSel.productLens ? [{ key: 'product', type: 'compound-engineering:ce-product-lens-reviewer' }] : []),
-      ...(personaSel.designLens ? [{ key: 'design', type: 'compound-engineering:ce-design-lens-reviewer' }] : []),
-      ...(personaSel.securityLens ? [{ key: 'security', type: 'compound-engineering:ce-security-lens-reviewer' }] : []),
-      ...(personaSel.scopeGuardian ? [{ key: 'scope', type: 'compound-engineering:ce-scope-guardian-reviewer' }] : []),
-      ...(personaSel.adversarial ? [{ key: 'adversarial', type: 'compound-engineering:ce-adversarial-document-reviewer' }] : []),
+      { key: 'coherence', type: 'coherence-lens' },
+      { key: 'feasibility', type: 'feasibility-lens' },
+      ...(personaSel.productLens ? [{ key: 'product', type: 'product-lens' }] : []),
+      ...(personaSel.designLens ? [{ key: 'design', type: 'design-lens' }] : []),
+      ...(personaSel.securityLens ? [{ key: 'security', type: 'security-lens' }] : []),
+      ...(personaSel.scopeGuardian ? [{ key: 'scope', type: 'scope-lens' }] : []),
+      ...(personaSel.adversarial ? [{ key: 'adversarial', type: 'adversarial-lens' }] : []),
     ]
     const personaRoster = personaRosterAll.slice(0, PERSONA_CAP)
     if (personaRosterAll.length > personaRoster.length) log(`Persona cap: ${personaRosterAll.length - personaRoster.length} persona(s) beyond ${PERSONA_CAP} dropped this round`)
