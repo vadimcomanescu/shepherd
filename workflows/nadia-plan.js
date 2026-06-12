@@ -519,7 +519,7 @@ that should change planning decisions ("" when nothing material) plus sources.`,
 Run web research on the landscape relevant to this request (intake research
 intent: landscape; reason: ${intake.research.reason}). Return a digest of <=25 lines of findings
 that should change planning decisions ("" when nothing material) plus sources.`,
-      { label: 'research-web', phase: 'Research', agentType: 'compound-engineering:ce-web-researcher', model: 'sonnet', schema: DIGEST_SCHEMA },
+      { label: 'research-web', phase: 'Research', agentType: 'web-researcher', model: 'sonnet', schema: DIGEST_SCHEMA },
     ) })
   } else if (intake.research.intent === 'mixed') {
     researchRoster.push({ key: 'web', thunk: () => agent(
@@ -528,7 +528,7 @@ that should change planning decisions ("" when nothing material) plus sources.`,
 Run web research on the landscape relevant to this request (intake research
 intent: mixed, landscape slice; reason: ${intake.research.reason}). Return a digest of <=25 lines of findings
 that should change planning decisions ("" when nothing material) plus sources.`,
-      { label: 'research-web', phase: 'Research', agentType: 'compound-engineering:ce-web-researcher', model: 'sonnet', schema: DIGEST_SCHEMA },
+      { label: 'research-web', phase: 'Research', agentType: 'web-researcher', model: 'sonnet', schema: DIGEST_SCHEMA },
     ) })
     researchRoster.push({ key: 'grounding', thunk: () => agent(
       `${researchGrounding}
