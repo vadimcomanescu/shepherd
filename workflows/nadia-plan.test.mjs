@@ -212,11 +212,14 @@ S('S1 happy path / anti-churn THRESHOLD', async () => {
   assert.ok(!trace.calls.some((c) => c.label.startsWith('fix-round-')), 'no fixer on a clean round')
   assert.ok(!trace.calls.some((c) => c.label.startsWith('check-')), 'no checker without a mutation')
   const byLabel = Object.fromEntries(trace.calls.map((c) => [c.label, c]))
-  assert.equal(byLabel['review-r1-coherence'].agentType, 'compound-engineering:ce-coherence-reviewer')
-  assert.equal(byLabel['review-r1-feasibility'].agentType, 'compound-engineering:ce-feasibility-reviewer')
+  assert.equal(byLabel['research-repo'].agentType, 'repo-researcher')
+  assert.equal(byLabel['research-flow'].agentType, 'flow-analyzer')
+  assert.equal(byLabel['review-r1-coherence'].agentType, 'coherence-lens')
+  assert.equal(byLabel['review-r1-feasibility'].agentType, 'feasibility-lens')
   assert.equal(byLabel['editor-r1'].agentType, 'plan-editor')
   assert.equal(byLabel['author-plan'].agentType, 'plan-author')
   assert.equal(byLabel['parse-plan'].model, 'sonnet')
+  assert.ok(!trace.calls.some((c) => c.agentType && c.agentType.startsWith('compound-engineering:')), 'no compound-engineering: agentType in any dispatch')
   assert.equal(result.planPath, PLAN_PATH)
   assert.equal(result.planVersion, 'abc123')
   assert.equal(result.depthTier, 'standard')
@@ -224,7 +227,7 @@ S('S1 happy path / anti-churn THRESHOLD', async () => {
   assert.equal(result.requirementCount, 2)
   assert.ok(result.nextStep.includes('git add') && result.nextStep.includes('nadia-deliver') && result.nextStep.includes('abc123'), 'nextStep carries commit hint + ce-work invocation + planVersion')
   assert.deepEqual([...new Set(trace.phases)], ['Intake', 'Research', 'Gate', 'Draft', 'Review', 'Gates', 'Finalize'])
-  assert.ok(trace.logs.some((m) => /ce-framework-docs-researcher/.test(m)), 'unconditional registry-gap log present')
+  assert.ok(!trace.logs.some((m) => /verified agent registry/.test(m)), 'no stale registry-gap log')
   return `${trace.calls.length} agent calls, ready in round 1 with zero churn`
 })
 
@@ -493,8 +496,8 @@ S('S12 no-silent-caps logs', async () => {
   assert.equal(count(a.trace, 'refute-r1-f'), 16, 'refuter cap at 16')
   assert.ok(a.trace.logs.some((m) => /beyond 16/.test(m)))
   assert.equal(a.result.residualFindings.filter((r) => r.class === 'dropped-cap').length, 4)
-  // (b) the unconditional registry log fires on every run
-  assert.ok(a.trace.logs.some((m) => /ce-framework-docs-researcher/.test(m)))
+  // (b) deleted registry-gap log stays deleted
+  assert.ok(!a.trace.logs.some((m) => /verified agent registry/.test(m)), 'no stale registry-gap log')
   // (c) externalResearch:false suppresses both researchers with a log
   const c = await run(
     makeDispatcher({}, { intake: { research: { bestPractices: true, web: true, reason: 'new domain' } } }),
@@ -731,7 +734,7 @@ S('S20 persona roster + rounds', async () => {
   assert.ifError(a.error)
   const r1 = labels(a.trace).filter((l) => l.startsWith('review-r1-'))
   assert.deepEqual(r1, ['review-r1-coherence', 'review-r1-feasibility', 'review-r1-security'])
-  assert.equal(a.trace.calls.find((c) => c.label === 'review-r1-security').agentType, 'compound-engineering:ce-security-lens-reviewer')
+  assert.equal(a.trace.calls.find((c) => c.label === 'review-r1-security').agentType, 'security-lens')
   // (b) classifier dies -> duo only, surfaced
   const b = await run(makeDispatcher({ 'classify-personas': () => { throw new Error('classifier died') } }))
   assert.ifError(b.error)
@@ -971,6 +974,8 @@ S('S26 first-class repo arg: every dispatch is grounded with the target reposito
   assert.ifError(grounded.error)
   const ungroundedCalls = grounded.trace.calls.filter((c) => !c.prompt.startsWith('TARGET REPOSITORY: /sibling/target-repo\n'))
   assert.deepEqual(ungroundedCalls.map((c) => c.label), [], 'every agent dispatch carries the repo grounding prefix (trailing slash trimmed)')
+  const exceptionLine = "Exception: skills/ paths (doctrine skills) resolve from the session's starting directory, NOT /sibling/target-repo."
+  assert.deepEqual(grounded.trace.calls.filter((c) => !c.prompt.includes(exceptionLine)).map((c) => c.label), [], 'every grounded prompt carries the skills-root exception')
   const plain = await run(makeDispatcher())
   assert.ifError(plain.error)
   assert.ok(!plain.trace.calls.some((c) => c.prompt.includes('TARGET REPOSITORY:')), 'no grounding prefix when args.repo is unset')
@@ -978,6 +983,7 @@ S('S26 first-class repo arg: every dispatch is grounded with the target reposito
   const stringly = await run(makeDispatcher(), { args: JSON.stringify({ ...ARGS, repo: '/sibling/target-repo/' }) })
   assert.ifError(stringly.error)
   assert.ok(stringly.trace.calls.every((c) => c.prompt.startsWith('TARGET REPOSITORY: /sibling/target-repo\n')), 'JSON-string args are parsed at the boundary and behave identically')
+  assert.ok(stringly.trace.calls.every((c) => c.prompt.includes(exceptionLine)), 'JSON-string args carry the skills-root exception too')
   return 'one chokepoint grounds every contextless agent with the target repo'
 })
 
@@ -1040,6 +1046,21 @@ S('S28 paraphrase findings: deduped before the fixer, accounted by identity not 
   assert.deepEqual(d.result.residualFindings.filter((f) => f.class === 'fixer-failed'), [],
     'a paraphrased applied-report never mints fixer-failed residuals')
   return 'one defect in four wordings: one fixer dispatch, zero residual noise'
+})
+
+S('S29 reviewer prompts carry review-context block', async () => {
+  const { result, trace, error } = await run(makeDispatcher())
+  assert.ifError(error)
+  assert.equal(result.status, 'ready')
+  const reviewCalls = trace.calls.filter((c) => /^review-r\d+-/.test(c.label))
+  assert.ok(reviewCalls.length > 0, 'review prompts dispatched')
+  for (const call of reviewCalls) {
+    const blocks = [...call.prompt.matchAll(/<review-context>\n([\s\S]*?)\n<\/review-context>/g)]
+    assert.equal(blocks.length, 1, `${call.label} carries exactly one review-context block`)
+    assert.equal(blocks[0][1], 'Document type: plan\nOrigin: none', `${call.label} carries named document type and origin slots`)
+    assert.ok(!blocks[0][1].includes('Origin document:'), `${call.label} does not use the stale origin label inside review-context`)
+  }
+  return `${reviewCalls.length} reviewer prompts carry review-context slots`
 })
 
 let pass = 0, fail = 0
