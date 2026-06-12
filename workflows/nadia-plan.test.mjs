@@ -72,13 +72,13 @@ const RELEASE_IDS = ['scope-boundaries-substantive', 'verification-observable', 
 const INTAKE = (o = {}) => ({
   confirmedIntent: {
     outcome: 'widget exporter ships', user: 'data analysts', whyNow: 'quarterly reporting needs it',
-    success: 'exports complete in under a minute', constraint: 'no new services', outOfScope: ['import side'],
+    success: 'exports complete in under a minute', constraints: ['no new services'], outOfScope: ['import side'],
   },
   blockingUnknowns: [],
   decidableUnknowns: [{ question: 'export format', hypothesis: 'CSV is enough', invalidatedWhen: 'users request XLSX' }],
   split: { isMultiple: false, primary: '', excluded: [] },
   depthTier: 'standard', planType: 'feat',
-  research: { bestPractices: false, web: false, reason: 'local patterns sufficient' },
+  research: { intent: 'none', reason: 'local patterns sufficient' },
   nonCodeDeliverable: false,
   ...o,
 })
@@ -159,7 +159,7 @@ function makeDispatcher(overrides = {}, opts = {}) {
     if (label === 'intake') return INTAKE(opts.intake)
     if (label === 'research-repo') return REPO(opts.repo)
     if (label === 'research-learnings') return { digest: '', sources: [] }
-    if (label === 'research-best-practices') return { digest: 'bp digest', sources: ['https://example.com/bp'] }
+    if (label === 'research-grounding') return { digest: 'grounding digest', sources: ['https://example.com/grounding'] }
     if (label === 'research-web') return { digest: 'web digest', sources: ['https://example.com/web'] }
     if (label === 'research-flow') return { digest: 'flows ok', edgeCases: [] }
     if (label === 'research-cross-plan') return { activePlans: opts.activePlans || [] }
@@ -500,11 +500,11 @@ S('S12 no-silent-caps logs', async () => {
   assert.ok(!a.trace.logs.some((m) => /verified agent registry/.test(m)), 'no stale registry-gap log')
   // (c) externalResearch:false suppresses both researchers with a log
   const c = await run(
-    makeDispatcher({}, { intake: { research: { bestPractices: true, web: true, reason: 'new domain' } } }),
+    makeDispatcher({}, { intake: { research: { intent: 'mixed', reason: 'new domain' } } }),
     { args: { ...ARGS, externalResearch: false } },
   )
   assert.ifError(c.error)
-  assert.ok(!c.trace.calls.some((x) => x.label === 'research-best-practices' || x.label === 'research-web'))
+  assert.ok(!c.trace.calls.some((x) => x.label === 'research-grounding' || x.label === 'research-web'))
   assert.ok(c.trace.logs.some((m) => /externalResearch === false/.test(m)))
   // (d) 5 design unknowns -> 3 spikes, overflow logged
   const unknowns = Array.from({ length: 5 }, (_, i) => ({ unknown: `unknown ${i + 1}`, affectedUids: ['U1'], whyDesignLevel: 'architecture-level' }))
@@ -517,7 +517,7 @@ S('S12 no-silent-caps logs', async () => {
 
 S('S13 prompt hygiene + no-claim-passing', async () => {
   const d = makeDispatcher({}, {
-    intake: { research: { bestPractices: true, web: true, reason: 'new domain with thin local patterns' } },
+    intake: { research: { intent: 'mixed', reason: 'new domain with thin local patterns' } },
     classify: { ktds: ['use sqlite as the queue store because it avoids a new service'], loadBearingAssumptions: ['a single writer suffices'] },
   })
   const args = { ...ARGS, origin: 'docs/brainstorm.md', originVersion: 'ov-7' }
@@ -538,7 +538,7 @@ S('S13 prompt hygiene + no-claim-passing', async () => {
   }
   const cov = trace.calls.find((c) => c.label === 'origin-coverage')
   assert.ok(cov.prompt.includes('docs/brainstorm.md') && cov.prompt.includes('ov-7'), 'origin path + version reach the coverage gate')
-  assert.ok(trace.calls.some((c) => c.label === 'research-best-practices') && trace.calls.some((c) => c.label === 'research-web'))
+  assert.ok(trace.calls.some((c) => c.label === 'research-grounding') && trace.calls.some((c) => c.label === 'research-web'))
   return `${trace.calls.length} prompts clean; no author-claim threading`
 })
 
@@ -1061,6 +1061,85 @@ S('S29 reviewer prompts carry review-context block', async () => {
     assert.ok(!blocks[0][1].includes('Origin document:'), `${call.label} does not use the stale origin label inside review-context`)
   }
   return `${reviewCalls.length} reviewer prompts carry review-context slots`
+})
+
+S('S30 intent none: no researchers dispatched, skip log carries reason', async () => {
+  const { result, trace, error } = await run(makeDispatcher())
+  assert.ifError(error)
+  assert.equal(result.status, 'ready')
+  assert.ok(!trace.calls.some((c) => c.label === 'research-grounding'))
+  assert.ok(!trace.calls.some((c) => c.label === 'research-web'))
+  assert.ok(trace.logs.some((m) => /intent.*none|local patterns sufficient/.test(m)))
+  return 'intent none skips external researchers with an explicit reason'
+})
+
+S('S31 intent implementation-guidance: grounding dispatched, web absent', async () => {
+  const { result, trace, error } = await run(makeDispatcher({}, {
+    intake: { research: { intent: 'implementation-guidance', reason: 'thin local patterns for this approach' } },
+  }))
+  assert.ifError(error)
+  assert.equal(result.status, 'ready')
+  const grounding = trace.calls.find((c) => c.label === 'research-grounding')
+  assert.ok(grounding, 'grounding researcher dispatched')
+  assert.equal(grounding.agentType, 'external-grounding-researcher')
+  assert.ok(!trace.calls.some((c) => c.label === 'research-web'))
+  return 'implementation-guidance routes only to grounding'
+})
+
+S('S32 intent landscape: web dispatched, grounding absent', async () => {
+  const { result, trace, error } = await run(makeDispatcher({}, {
+    intake: { research: { intent: 'landscape', reason: 'prior art survey needed' } },
+  }))
+  assert.ifError(error)
+  assert.equal(result.status, 'ready')
+  assert.ok(trace.calls.some((c) => c.label === 'research-web'))
+  assert.ok(!trace.calls.some((c) => c.label === 'research-grounding'))
+  return 'landscape routes only to web research'
+})
+
+S('S33 intent mixed: web before grounding in roster order', async () => {
+  const { result, trace, error } = await run(makeDispatcher({}, {
+    intake: { research: { intent: 'mixed', reason: 'both needed' } },
+  }))
+  assert.ifError(error)
+  assert.equal(result.status, 'ready')
+  assert.ok(trace.calls.some((c) => c.label === 'research-web'))
+  assert.ok(trace.calls.some((c) => c.label === 'research-grounding'))
+  assert.ok(idx(trace, 'research-web') < idx(trace, 'research-grounding'))
+  return 'mixed routes web before grounding'
+})
+
+S('S34 constraints list rendered in confirmed-intent block', async () => {
+  const first = await run(makeDispatcher({}, {
+    intake: { confirmedIntent: { ...INTAKE().confirmedIntent, constraints: ['A', 'B'] } },
+  }))
+  assert.ifError(first.error)
+  assert.equal(first.result.status, 'ready')
+  const firstAuthor = first.trace.calls.find((c) => c.label === 'author-plan')
+  const firstReviewer = first.trace.calls.find((c) => /^review-r1-/.test(c.label))
+  assert.ok(firstAuthor.prompt.includes('Constraints:\n- A\n- B'))
+  assert.ok(firstReviewer.prompt.includes('Constraints:\n- A\n- B'))
+  assert.ok(firstAuthor.prompt.includes('must surface in the plan'))
+
+  const second = await run(makeDispatcher({}, {
+    intake: { confirmedIntent: { ...INTAKE().confirmedIntent, constraints: [] } },
+  }))
+  assert.ifError(second.error)
+  assert.equal(second.result.status, 'ready')
+  const secondAuthor = second.trace.calls.find((c) => c.label === 'author-plan')
+  const secondReviewer = second.trace.calls.find((c) => /^review-r1-/.test(c.label))
+  assert.ok(secondAuthor.prompt.includes('Constraints:\n- none stated'))
+  assert.ok(secondReviewer.prompt.includes('Constraints:\n- none stated'))
+  return 'constraints render as bullets and empty constraints render none stated'
+})
+
+S('S35 author prompt contains constraint-surfacing instruction', async () => {
+  const { result, trace, error } = await run(makeDispatcher())
+  assert.ifError(error)
+  assert.equal(result.status, 'ready')
+  const authorPrompt = trace.calls.find((c) => c.label === 'author-plan').prompt
+  assert.ok(authorPrompt.includes('must surface in the plan'))
+  return 'author prompt explicitly requires constraint coverage'
 })
 
 let pass = 0, fail = 0

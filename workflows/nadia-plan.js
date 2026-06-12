@@ -89,16 +89,23 @@ const INTAKE_SCHEMA = {
       properties: {
         outcome: { type: 'string' }, user: { type: 'string' }, whyNow: { type: 'string' },
         success: { type: 'string', description: 'observable success statement' },
-        constraint: { type: 'string' }, outOfScope: { type: 'array', items: { type: 'string' } },
+        constraints: { type: 'array', items: { type: 'string' } }, outOfScope: { type: 'array', items: { type: 'string' } },
       },
-      required: ['outcome', 'user', 'whyNow', 'success', 'constraint', 'outOfScope'],
+      required: ['outcome', 'user', 'whyNow', 'success', 'constraints', 'outOfScope'],
     },
     blockingUnknowns: { type: 'array', items: { type: 'object', properties: { question: { type: 'string' }, whyBlocking: { type: 'string' } }, required: ['question', 'whyBlocking'] } },
     decidableUnknowns: { type: 'array', items: { type: 'object', properties: { question: { type: 'string' }, hypothesis: { type: 'string' }, invalidatedWhen: { type: 'string', description: 'the observation that would invalidate the hypothesis' } }, required: ['question', 'hypothesis', 'invalidatedWhen'] } },
     split: { type: 'object', properties: { isMultiple: { type: 'boolean' }, primary: { type: 'string' }, excluded: { type: 'array', items: { type: 'string' } } }, required: ['isMultiple', 'primary', 'excluded'] },
     depthTier: { enum: ['lightweight', 'standard', 'deep'] },
     planType: { enum: ['feat', 'fix', 'refactor', 'chore', 'docs', 'perf', 'test'] },
-    research: { type: 'object', properties: { bestPractices: { type: 'boolean' }, web: { type: 'boolean' }, reason: { type: 'string' } }, required: ['bestPractices', 'web', 'reason'] },
+    research: {
+      type: 'object',
+      properties: {
+        intent: { type: 'string', enum: ['implementation-guidance', 'landscape', 'mixed', 'none'] },
+        reason: { type: 'string' },
+      },
+      required: ['intent', 'reason'],
+    },
     nonCodeDeliverable: { type: 'boolean', description: 'true when the request is not a code change (knowledge work)' },
   },
   required: ['confirmedIntent', 'blockingUnknowns', 'decidableUnknowns', 'split', 'depthTier', 'planType', 'research', 'nonCodeDeliverable'],
@@ -393,8 +400,10 @@ ${ORIGIN ? `Origin document: ${ORIGIN} (version: ${ORIGIN_VERSION}). Read it ful
 Depth tier: ${PINNED_DEPTH ? `depth tier is PINNED to "${PINNED_DEPTH}" — return it as depthTier unchanged.` : 'derive the tier: Lightweight 2–4 units / Standard 3–6 / Deep 4–8.'}
 
 Confirmed Intent — fill all six fields (outcome, user, whyNow, success as an
-observable statement, constraint, outOfScope) derived from the request and the
+observable statement, constraints, outOfScope) derived from the request and the
 origin doc ONLY; never invent facts the requester did not state or imply.
+constraints is a LIST of every hard constraint the requester stated or implied;
+return an empty array when none were stated or implied.
 
 Unknown classification: blocking = could materially change the outcome AND
 would likely upset the requester if guessed wrong; everything else: decide,
@@ -406,9 +415,10 @@ part ship and be tested alone; the 'what changed' test: would each part's diff
 make sense as its own PR — if genuinely N independent things, pick the primary
 and list the rest as excluded.
 
-External research gates: recommend bestPractices/web research only for
-implementation-guidance or landscape intent with risk or thin local patterns;
-give the reason either way.
+External research intent: recommend implementation-guidance for how-to-implement
+guidance when there is risk or thin local pattern coverage; recommend landscape
+for prior-art or ecosystem survey needs; recommend mixed when both apply; use
+none otherwise. The reason field is required for every intent.
 
 planType: classify the work as feat|fix|refactor|chore|docs|perf|test.
 nonCodeDeliverable: true when the request is not a code change (knowledge work).`,
@@ -452,7 +462,8 @@ Outcome: ${ci.outcome}
 User: ${ci.user}
 Why now: ${ci.whyNow}
 Success: ${ci.success}
-Constraint: ${ci.constraint}
+Constraints:
+${ci.constraints.map((s) => '- ' + s).join('\n') || '- none stated'}
 Out of scope:
 ${ci.outOfScope.map((s) => '- ' + s).join('\n') || '- none stated'}
 Depth tier: ${DEPTH}
@@ -491,29 +502,45 @@ digest of <=25 lines ("" when nothing material) plus the source paths.`,
 if (!EXTERNAL_RESEARCH) {
   log('External research skipped: args.externalResearch === false')
 } else {
-  if (intake.research.bestPractices) {
-    researchRoster.push({ key: 'bp', thunk: () => agent(
+  if (intake.research.intent === 'implementation-guidance') {
+    researchRoster.push({ key: 'grounding', thunk: () => agent(
       `${researchGrounding}
 
-Research current external best practices relevant to this request (intake gate
-reason: ${intake.research.reason}). Return a digest of <=25 lines of findings
+Research current external implementation guidance relevant to this request
+(intake research intent: implementation-guidance; reason:
+${intake.research.reason}). Return a digest of <=25 lines of findings
 that should change planning decisions ("" when nothing material) plus sources.`,
-      { label: 'research-best-practices', phase: 'Research', agentType: 'external-grounding-researcher', model: 'sonnet', schema: DIGEST_SCHEMA },
+      { label: 'research-grounding', phase: 'Research', agentType: 'external-grounding-researcher', model: 'sonnet', schema: DIGEST_SCHEMA },
     ) })
-  } else {
-    log('Best-practices research skipped: intake gates off (' + intake.research.reason + ')')
-  }
-  if (intake.research.web) {
+  } else if (intake.research.intent === 'landscape') {
     researchRoster.push({ key: 'web', thunk: () => agent(
       `${researchGrounding}
 
-Run web research on the landscape relevant to this request (intake gate
-reason: ${intake.research.reason}). Return a digest of <=25 lines of findings
+Run web research on the landscape relevant to this request (intake research
+intent: landscape; reason: ${intake.research.reason}). Return a digest of <=25 lines of findings
 that should change planning decisions ("" when nothing material) plus sources.`,
-      { label: 'research-web', phase: 'Research', agentType: 'web-researcher', model: 'sonnet', schema: DIGEST_SCHEMA },
+      { label: 'research-web', phase: 'Research', agentType: 'compound-engineering:ce-web-researcher', model: 'sonnet', schema: DIGEST_SCHEMA },
+    ) })
+  } else if (intake.research.intent === 'mixed') {
+    researchRoster.push({ key: 'web', thunk: () => agent(
+      `${researchGrounding}
+
+Run web research on the landscape relevant to this request (intake research
+intent: mixed, landscape slice; reason: ${intake.research.reason}). Return a digest of <=25 lines of findings
+that should change planning decisions ("" when nothing material) plus sources.`,
+      { label: 'research-web', phase: 'Research', agentType: 'compound-engineering:ce-web-researcher', model: 'sonnet', schema: DIGEST_SCHEMA },
+    ) })
+    researchRoster.push({ key: 'grounding', thunk: () => agent(
+      `${researchGrounding}
+
+Research current external implementation guidance relevant to this request
+(intake research intent: mixed, implementation-guidance slice; reason:
+${intake.research.reason}). Return a digest of <=25 lines of findings
+that should change planning decisions ("" when nothing material) plus sources.`,
+      { label: 'research-grounding', phase: 'Research', agentType: 'external-grounding-researcher', model: 'sonnet', schema: DIGEST_SCHEMA },
     ) })
   } else {
-    log('Web research skipped: intake gates off (' + intake.research.reason + ')')
+    log('External research skipped: intake.research.intent === none (' + intake.research.reason + ')')
   }
 }
 if (DEPTH !== 'lightweight') {
@@ -548,12 +575,12 @@ researchActive.forEach((r0, i) => { research[r0.key] = researchReturns[i] })
 
 const repo = research.repo || null
 const learnings = research.learnings || null
-const bp = research.bp || null
+const grounding = research.grounding || null
 const web = research.web || null
 const flow = research.flow || null
 if (!repo) log('repo research failed — personas and the author will ground themselves by reading the repo directly')
 if (!learnings) log('learnings research failed — institutional learnings unavailable in the context block')
-if (researchActive.some((r0) => r0.key === 'bp') && !bp) log('best-practices research failed — external best practices unavailable in the context block')
+if (researchActive.some((r0) => r0.key === 'grounding') && !grounding) log('grounding research failed: external implementation guidance unavailable in the context block')
 if (researchActive.some((r0) => r0.key === 'web') && !web) log('web research failed — web findings unavailable in the context block')
 if (researchActive.some((r0) => r0.key === 'flow') && !flow) log('spec-flow analysis failed — flow coverage unavailable in the context block')
 
@@ -580,8 +607,8 @@ Relevant files: ${repo ? repo.relevantFiles.join(', ') : '(unavailable)'}
 Domain glossary: ${repo && repo.contextMdPath ? repo.contextMdPath : 'none detected'}
 Institutional learnings:
 ${learnings && learnings.digest ? learnings.digest : '(none)'}
-External best practices:
-${bp && bp.digest ? bp.digest : '(not researched)'}
+External implementation guidance:
+${grounding && grounding.digest ? grounding.digest : '(not researched)'}
 Web research:
 ${web && web.digest ? web.digest : '(not researched)'}
 Flow analysis:
@@ -702,6 +729,9 @@ ${ORIGIN ? `\nOrigin document: ${ORIGIN} (version: ${ORIGIN_VERSION}) — read i
 Testable assumptions to write into ## Assumptions (every entry must name its
 invalidating observation):
 ${assumptionsBlock}
+Every constraint listed in the Confirmed Intent block must surface in the plan,
+in a Key Technical Decision rationale, an ## Assumptions entry, or a Scope
+Boundary.
 ${narrowedScope.length ? `\nExcluded request parts — route these verbatim into Scope Boundaries → "### Deferred to Follow-Up Work":\n${narrowedScope.map((s) => '- ' + s).join('\n')}\n` : ''}
 Depth tier: ${DEPTH} — unit budget: lightweight 2–4 / standard 3–6 / deep 4–8 units.
 Plan type: ${intake.planType}.
