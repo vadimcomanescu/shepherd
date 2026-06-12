@@ -80,6 +80,7 @@ const INTAKE = (o = {}) => ({
   depthTier: 'standard', planType: 'feat',
   research: { intent: 'none', reason: 'local patterns sufficient' },
   nonCodeDeliverable: false,
+  belowFloor: { verdict: false, reason: '', directPrompt: '' },
   ...o,
 })
 const REPO = (o = {}) => ({
@@ -1502,6 +1503,103 @@ S('S44 plan-editor verdict-correctness block byte-identical (R6/U4)', async () =
     'agents/plan-editor.md verdict-correctness block is byte-identical (R6/U4 pin)'
   )
   return 'plan-editor.md verdict-correctness block byte-identical with v1'
+})
+
+S('S45 below-floor halt: trivial request halts at S0 with a directPrompt, intake only', async () => {
+  const BRIEF = 'Edit src/config.js line 12 to bump the timeout from 30 to 60. Conventional commit chore: bump timeout. Stage src/config.js by name. Run node --test. Report the diff and the passing test output.'
+  const d = makeDispatcher({}, {
+    intake: { belowFloor: { verdict: true, reason: 'single-file one-line constant bump, no boundary or risk', directPrompt: BRIEF } },
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  assert.equal(result.status, 'halted')
+  assert.equal(result.haltStage, 'S0-below-floor')
+  assert.ok(result.directPrompt && result.directPrompt.length > 0, 'directPrompt rides the summary, non-empty')
+  assert.equal(result.directPrompt, BRIEF, 'directPrompt is the intake brief verbatim')
+  assert.equal(trace.calls.length, 1, 'exactly one agent dispatched (intake only)')
+  assert.equal(trace.calls[0].label, 'intake')
+  assert.ok(trace.logs.some((m) => m.startsWith('Below-floor:') && /pin args\.depth to force a plan/.test(m)), 'below-floor log fired')
+  return 'trivial request halts at S0-below-floor with a ready-to-use directPrompt; only intake dispatched'
+})
+
+S('S46 pinned depth (and origin) override the below-floor halt: the run proceeds to author', async () => {
+  const belowFloorIntake = { belowFloor: { verdict: true, reason: 'trivial', directPrompt: 'do the thing' } }
+  // (a) pinned depth forces a plan despite verdict:true
+  const a = await run(makeDispatcher({}, { intake: belowFloorIntake }), { args: { ...ARGS, depth: 'lightweight' } })
+  assert.ifError(a.error)
+  assert.notEqual(a.result.haltStage, 'S0-below-floor', 'pinned depth bypasses the floor')
+  assert.ok(idx(a.trace, 'author-plan') >= 0, 'author-plan dispatched — the run proceeds')
+  // (b) an origin doc also forces a plan (caller deliberately wants one)
+  const b = await run(makeDispatcher({}, { intake: belowFloorIntake }), { args: { ...ARGS, origin: 'docs/brainstorm.md', originVersion: 'ov-1' } })
+  assert.ifError(b.error)
+  assert.notEqual(b.result.haltStage, 'S0-below-floor', 'origin doc bypasses the floor')
+  assert.ok(idx(b.trace, 'author-plan') >= 0, 'author-plan dispatched with an origin doc')
+  return 'a pinned depth or an origin doc overrides the below-floor halt; the planning fleet proceeds'
+})
+
+S('S47 lightweight caps: refuter/KTD/persona caps drop to the lightweight tier values with logs', async () => {
+  // depthTier lightweight + a flood of gating findings, KTDs, and conditional personas.
+  const tenFindings = Array.from({ length: 10 }, (_, i) => FINDING({ title: `lw-finding-${String(i + 1).padStart(2, '0')}`, evidence: `evidence ${i + 1}` }))
+  const tenKtds = Array.from({ length: 10 }, (_, i) => `lightweight decision number ${i + 1}`)
+  const allPersonas = { productLens: true, designLens: true, securityLens: true, scopeGuardian: true, adversarial: true }
+  const d = makeDispatcher({
+    'review-r1-coherence': () => ({ findings: tenFindings }),
+  }, {
+    intake: { depthTier: 'lightweight' },
+    classify: { ktds: tenKtds, loadBearingAssumptions: [], personas: allPersonas, reasons: ['all conditional personas on'] },
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  // refuter cap drops from 16 to 6
+  assert.equal(count(trace, 'refute-r1-f'), 6, 'lightweight refuter cap at 6')
+  assert.ok(trace.logs.some((m) => /gating finding\(s\) beyond 6/.test(m) && /routed to documentation without verification/.test(m)), 'refuter-cap log fires at 6')
+  // KTD cap drops from 8 to 3
+  assert.equal(count(trace, 'ktd-refute-p1-'), 3, 'lightweight KTD cap at 3')
+  assert.ok(trace.logs.some((m) => /claim\(s\) beyond 3/.test(m) && /not refuted — listed in run summary openQuestions/.test(m)), 'KTD-cap log fires at 3')
+  // persona cap drops from 8 to 4 (roster of 7 conditional+base -> 4 dispatched, 3 dropped)
+  assert.equal(count(trace, 'review-r1-'), 4, 'lightweight persona cap at 4')
+  assert.ok(trace.logs.some((m) => /persona\(s\) beyond 4 dropped this round/.test(m)), 'persona-cap log fires at 4')
+  return 'lightweight tier: refuter cap 6, KTD cap 3, persona cap 4, each overflow logged'
+})
+
+S('S48 standard regression: default tier keeps the OLD cap and round behavior (no tier leakage)', async () => {
+  // 20 gating findings at the default (standard) tier -> exactly 16 refuters, as before.
+  const twenty = Array.from({ length: 20 }, (_, i) => FINDING({ title: `std-finding-${String(i + 1).padStart(2, '0')}`, evidence: `evidence ${i + 1}` }))
+  const a = await run(makeDispatcher({ 'review-r1-coherence': () => ({ findings: twenty }) }))
+  assert.ifError(a.error)
+  assert.equal(count(a.trace, 'refute-r1-f'), 16, 'standard refuter cap stays at 16')
+  assert.ok(a.trace.logs.some((m) => /beyond 16/.test(m)), 'standard refuter-cap log still says 16')
+  // 10 KTDs at standard -> 8 refuted (old KTD_CAP), overflow logged at 8
+  const b = await run(makeDispatcher({}, { classify: { ktds: Array.from({ length: 10 }, (_, i) => `std decision ${i + 1}`), loadBearingAssumptions: [] } }))
+  assert.ifError(b.error)
+  assert.equal(count(b.trace, 'ktd-refute-p1-'), 8, 'standard KTD cap stays at 8')
+  assert.ok(b.trace.logs.some((m) => /claim\(s\) beyond 8/.test(m)), 'standard KTD-cap log still says 8')
+  // reviewRounds default stays 2 at standard (personas active in round 2)
+  const mkSlow = () => makeDispatcher({ 'editor-r1': () => EDITOR_REVISED() })
+  const c = await run(mkSlow())
+  assert.ifError(c.error)
+  assert.equal(c.result.personaRoundsUsed, 2, 'standard reviewRounds default stays 2')
+  assert.ok(c.trace.calls.some((x) => x.label === 'review-r2-coherence'), 'personas active in round 2 at standard')
+  return 'standard tier unchanged: refuter cap 16, KTD cap 8, reviewRounds 2 — no leakage from the lightweight tier'
+})
+
+S('S49 args.tokenBudget drives the same graceful floor halts as budget.total', async () => {
+  // budgetTotal null, tokenBudget set -> the coordinator-side floor uses TOKEN_TARGET.
+  // Mirror S11: REVISED at round 1 keeps the loop alive so the floor trips at the round-2 head.
+  const a = await run(makeDispatcher({ 'editor-r1': () => EDITOR_REVISED() }), { args: { ...ARGS, tokenBudget: 140000 }, budgetTotal: null })
+  assert.ifError(a.error)
+  assert.equal(a.result.status, 'halted')
+  assert.equal(a.result.haltStage, 'S4-budget-floor', 'tokenBudget produces the S4 floor halt')
+  assert.ok(a.trace.logs.some((m) => /Budget floor reached before review round 2/.test(m)))
+  // strong plan exits round 1 -> floor trips entering S5
+  const b = await run(makeDispatcher(), { args: { ...ARGS, tokenBudget: 140000 }, budgetTotal: null })
+  assert.ifError(b.error)
+  assert.equal(b.result.haltStage, 'S5-budget-floor', 'tokenBudget produces the S5 floor halt')
+  // budget.total precedence: when both are set, budget.total wins and S11 semantics hold
+  const c = await run(makeDispatcher({ 'editor-r1': () => EDITOR_REVISED() }), { args: { ...ARGS, tokenBudget: 999999999 }, budgetTotal: 140000 })
+  assert.ifError(c.error)
+  assert.equal(c.result.haltStage, 'S4-budget-floor', 'budget.total takes precedence over args.tokenBudget')
+  return 'args.tokenBudget reproduces the S4/S5 graceful floor halts; budget.total keeps precedence'
 })
 
 let pass = 0, fail = 0

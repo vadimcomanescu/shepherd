@@ -1,7 +1,7 @@
 export const meta = {
   name: 'nadia-plan',
   description: 'Plan-production pipeline: lock a request or brainstorm into Confirmed Intent, research the repo, challenge the framing, author a ce-plan-format plan document, then run a bounded editor loop (persona doc-review, skeptical refutation, verified fix application, read-only spikes for design unknowns) and final gates (ce-work parse conformance, releasability checklist, origin coverage, cross-plan overlap), hygiene-check the workspace, optionally commit, and return a machine-readable run summary consumable by nadia-deliver.',
-  whenToUse: 'Producing a plan document for nadia-deliver from a request or an origin brainstorm/requirements doc, autonomously (no interactive questions; blocking unknowns become a structured halt). Passing commit: true IS the consent to commit the plan file. args: { request?: "<what to plan>", origin?: "<path to brainstorm/requirements doc>", originVersion?: "<hash-or-mtime — pass a NEW value after editing the origin doc so resume does not replay stale cached research>", depth?: "lightweight"|"standard"|"deep", date?: "YYYY-MM-DD", commit?: true|false, editorRounds?: <1..5, default 3>, reviewRounds?: <1..3, default 2>, spikes?: true|false, externalResearch?: true|false }',
+  whenToUse: 'Producing a plan document for nadia-deliver from a request or an origin brainstorm/requirements doc, autonomously (no interactive questions; blocking unknowns become a structured halt). Trivial requests halt at S0 with a ready-to-use directPrompt unless args.depth is pinned. Passing commit: true IS the consent to commit the plan file. args: { request?: "<what to plan>", origin?: "<path to brainstorm/requirements doc>", originVersion?: "<hash-or-mtime — pass a NEW value after editing the origin doc so resume does not replay stale cached research>", depth?: "lightweight"|"standard"|"deep", date?: "YYYY-MM-DD", commit?: true|false, editorRounds?: <1..5, default 3>, reviewRounds?: <1..3, default 2>, tokenBudget?: <output-token target; the run halts gracefully at phase boundaries when approached>, spikes?: true|false, externalResearch?: true|false }',
   phases: [
     { title: 'Intake', detail: 'Lock Confirmed Intent, classify unknowns, set depth tier' },
     { title: 'Research', detail: 'Repo + learnings + conditional external research, cross-plan scan' },
@@ -40,13 +40,19 @@ const ORIGIN_VERSION = args.originVersion || 'unversioned'
 const PINNED_DEPTH = args.depth || ''
 const PLAN_DATE = args.date || ''
 const COMMIT = args.commit === true                  // DEFAULT FALSE — commit: true IS the consent (global git-read-only rule)
-const EDITOR_ROUNDS = Math.max(1, Math.min(5, args.editorRounds || 3))   // the single outer loop counter
-const PERSONA_ROUNDS = Math.max(1, Math.min(3, args.reviewRounds || 2))  // persona stage active rounds 1..PERSONA_ROUNDS; NOT a second counter
+// Round counts: an EXPLICIT args value always wins; the bare default is computed
+// post-intake from the depth tier (lightweight lowers to editorRounds 2 /
+// reviewRounds 1; standard/deep keep 3/2). let-bound so the tier default can be
+// applied once DEPTH is known — every use-site identifier stays textually identical.
+const EDITOR_ROUNDS_EXPLICIT = Number.isFinite(args.editorRounds) && args.editorRounds > 0
+const PERSONA_ROUNDS_EXPLICIT = Number.isFinite(args.reviewRounds) && args.reviewRounds > 0
+let EDITOR_ROUNDS = Math.max(1, Math.min(5, args.editorRounds || 3))   // the single outer loop counter
+let PERSONA_ROUNDS = Math.max(1, Math.min(3, args.reviewRounds || 2))  // persona stage active rounds 1..PERSONA_ROUNDS; NOT a second counter
 const SPIKES_ENABLED = args.spikes !== false
 const EXTERNAL_RESEARCH = args.externalResearch !== false
 // Args echo — a launch whose args never arrived (observed live: a scriptPath
 // launch delivered no tool-level args) must die loudly AND legibly, never silently.
-log(`nadia-plan args resolved: request=${REQUEST ? `"${REQUEST.slice(0, 80)}${REQUEST.length > 80 ? '…' : ''}"` : '(none)'}, origin=${ORIGIN || '(none)'}, depth=${PINNED_DEPTH || '(auto)'}, date=${PLAN_DATE || '(derived)'}, commit=${COMMIT}, editorRounds=${EDITOR_ROUNDS}, reviewRounds=${PERSONA_ROUNDS}, spikes=${SPIKES_ENABLED}, externalResearch=${EXTERNAL_RESEARCH}, repo=${args.repo || '(session cwd)'}`)
+log(`nadia-plan args resolved: request=${REQUEST ? `"${REQUEST.slice(0, 80)}${REQUEST.length > 80 ? '…' : ''}"` : '(none)'}, origin=${ORIGIN || '(none)'}, depth=${PINNED_DEPTH || '(auto)'}, date=${PLAN_DATE || '(derived)'}, commit=${COMMIT}, editorRounds=${EDITOR_ROUNDS}, reviewRounds=${PERSONA_ROUNDS} (tier default may lower at lightweight), tokenBudget=${Number.isFinite(args.tokenBudget) ? args.tokenBudget : '(none)'}, spikes=${SPIKES_ENABLED}, externalResearch=${EXTERNAL_RESEARCH}, repo=${args.repo || '(session cwd)'}`)
 
 // ---- target-repo grounding (first-class repo arg) ----
 // Every agent runs with the session cwd, which is NOT necessarily the repo the
@@ -65,17 +71,27 @@ Exception: skills/ paths (doctrine skills) resolve from the session's starting d
 ${prompt}`, opts)
 }
 const BUDGET_FLOOR = 30000                            // sibling line-548 constant, unchanged
-const belowBudgetFloor = () => !!budget.total && budget.remaining() <= BUDGET_FLOOR
+// Token target: a runtime budget.total wins; otherwise an explicit args.tokenBudget
+// sets an output-token target the run halts gracefully at, at phase boundaries.
+// When budget.total is set the semantics are unchanged (budget.remaining() === total - spent()).
+// Budget checks live in the coordinator ONLY — never surface remaining-token counts
+// in agent prompts (premature-stopping anti-pattern per Anthropic Fable guidance).
+const TOKEN_TARGET = budget.total || (Number.isFinite(args.tokenBudget) ? args.tokenBudget : null)
+const belowBudgetFloor = () => !!TOKEN_TARGET && (TOKEN_TARGET - budget.spent()) <= BUDGET_FLOOR
 
-// Caps as named consts — every drop they cause is log()ged (M18).
-const FINDING_REFUTER_CAP = 16   // per round, severity-ordered (M7 class A)
-const HALT_CLASS_CAP = 3         // majority-of-3 procedures per run (M7)
-const KTD_CAP = 8                // KTD refuters, prioritized (M7 class B)
-const KTD_PASSES_CAP = 2         // initial pass + at most one primer-triggered re-refutation pass
-const KTD_HALT_CAP = 3           // majority-of-3 procedures for refuted-KTD findings (dedicated allowance)
-const SPIKE_CAP = 3              // read-only spikes, once per run (M10)
-const PERSONA_CAP = 8            // personas per round (roster is 7; cap asserted anyway)
-const RESEARCH_CAP = 6           // S1 fan-out ceiling (roster is at most 6 by construction)
+// Caps as named consts — every drop they cause is log()ged (M18). The M7 caps
+// are now TIERED so the machinery is proportional to task scale: standard and
+// deep are byte-identical to the previous flat values (FINDING_REFUTER_CAP=16,
+// HALT_CLASS_CAP=3, KTD_CAP=8, KTD_PASSES_CAP=2, KTD_HALT_CAP=3, SPIKE_CAP=3,
+// PERSONA_CAP=8, RESEARCH_CAP=6); ONLY lightweight gets lighter. The caps are
+// resolved into same-named bindings AFTER DEPTH is known (verified: no cap
+// identifier is referenced before DEPTH resolution), so every use-site and
+// every cap log() line stays textually identical — only the tiered value differs.
+const CAPS_BY_TIER = {
+  lightweight: { FINDING_REFUTER_CAP: 6, HALT_CLASS_CAP: 1, KTD_CAP: 3, KTD_PASSES_CAP: 1, KTD_HALT_CAP: 1, SPIKE_CAP: 1, PERSONA_CAP: 4, RESEARCH_CAP: 3 },
+  standard:    { FINDING_REFUTER_CAP: 16, HALT_CLASS_CAP: 3, KTD_CAP: 8, KTD_PASSES_CAP: 2, KTD_HALT_CAP: 3, SPIKE_CAP: 3, PERSONA_CAP: 8, RESEARCH_CAP: 6 },
+  deep:        { FINDING_REFUTER_CAP: 16, HALT_CLASS_CAP: 3, KTD_CAP: 8, KTD_PASSES_CAP: 2, KTD_HALT_CAP: 3, SPIKE_CAP: 3, PERSONA_CAP: 8, RESEARCH_CAP: 6 },
+}
 
 // ============================================================
 // Schemas (M-X1: every agent returns opts.schema-validated JSON; every
@@ -107,8 +123,9 @@ const INTAKE_SCHEMA = {
       required: ['intent', 'reason'],
     },
     nonCodeDeliverable: { type: 'boolean', description: 'true when the request is not a code change (knowledge work)' },
+    belowFloor: { type: 'object', properties: { verdict: { type: 'boolean' }, reason: { type: 'string' }, directPrompt: { type: 'string', description: 'self-contained single-executor brief when verdict is true; "" otherwise' } }, required: ['verdict', 'reason', 'directPrompt'] },
   },
-  required: ['confirmedIntent', 'blockingUnknowns', 'decidableUnknowns', 'split', 'depthTier', 'planType', 'research', 'nonCodeDeliverable'],
+  required: ['confirmedIntent', 'blockingUnknowns', 'decidableUnknowns', 'split', 'depthTier', 'planType', 'research', 'nonCodeDeliverable', 'belowFloor'],
 }
 
 const REPO_RESEARCH_SCHEMA = {
@@ -380,7 +397,7 @@ const summary = (status, extra) => {
   residualFindings.push(...pendingFyi.map((f) => ({ title: f.title, section: f.section, class: 'fyi', reason: 'anchor-50 advisory' })))
   return { status, planPath, planVersion, depthTier, unitCount, requirementCount,
     roundsUsed, personaRoundsUsed, residualFindings, narrowedScope, openQuestions, committed, hygieneClean,
-    haltStage: null, haltReason: null, nextStep: '', ...extra }
+    haltStage: null, haltReason: null, nextStep: '', directPrompt: '', ...extra }
 }
 
 // ============================================================
@@ -424,7 +441,19 @@ version-pinned library or framework and requires version-matched documentation
 otherwise. The reason field is required for every intent.
 
 planType: classify the work as feat|fix|refactor|chore|docs|perf|test.
-nonCodeDeliverable: true when the request is not a code change (knowledge work).`,
+nonCodeDeliverable: true when the request is not a code change (knowledge work).
+
+BELOW-FLOOR JUDGMENT (proportional machinery — do not over-plan a trivial change):
+set belowFloor.verdict=true ONLY when ALL of these hold: the estimated change
+touches at most 2 files; it introduces no new module or interface boundary; it
+carries no data, auth, migration, or concurrency risk; it needs no cross-component
+coordination; and its verification is a single obvious command or observation.
+When verdict=true, belowFloor.directPrompt MUST be a complete, self-contained
+executor brief a single executor can run without further planning: name the exact
+files and the edits intended, state the repo conventions (use a conventional
+commit message, stage the touched files by name, run the repo's test command),
+and say what evidence to report back. When verdict=false: belowFloor.reason is one
+line explaining what pushes it above the floor, and belowFloor.directPrompt is "".`,
   { label: 'intake', phase: 'Intake', schema: INTAKE_SCHEMA },
 )
 
@@ -451,8 +480,35 @@ if (intake.blockingUnknowns.length > 0) {
   })
 }
 
+// Below-floor off-ramp: a trivial change does not warrant the full planning
+// fleet. Halt with a ready-to-use direct-execution brief. Override semantics:
+// a PINNED depth (args.depth) or an origin doc means the caller deliberately
+// wants a plan — never below-floor-halt then.
+if (intake.belowFloor && intake.belowFloor.verdict === true && !PINNED_DEPTH && !ORIGIN) {
+  log(`Below-floor: ${intake.belowFloor.reason} — halting with a direct-execution brief; pin args.depth to force a plan`)
+  return summary('halted', {
+    haltStage: 'S0-below-floor',
+    haltReason: intake.belowFloor.reason,
+    nextStep: 'Execute directly using the directPrompt in this summary (single executor, conventional commit), or re-invoke nadia-plan with args.depth pinned to force a plan',
+    directPrompt: intake.belowFloor.directPrompt,
+  })
+}
+
 const DEPTH = PINNED_DEPTH || intake.depthTier
 depthTier = DEPTH
+
+// Resolve the tiered M7 caps into the original same-named bindings now that DEPTH
+// is known. standard/deep are byte-identical to the previous flat values; only
+// lightweight is lighter. Every use-site and every cap log() line is unchanged.
+const { FINDING_REFUTER_CAP, HALT_CLASS_CAP, KTD_CAP, KTD_PASSES_CAP, KTD_HALT_CAP, SPIKE_CAP, PERSONA_CAP, RESEARCH_CAP } = CAPS_BY_TIER[DEPTH] || CAPS_BY_TIER.standard
+// Round defaults are tier-scaled too: an explicit args value already won above;
+// only a bare (non-explicit) default lowers at lightweight (editorRounds 2 /
+// reviewRounds 1). standard and deep keep the pre-tier defaults (3 / 2).
+if (DEPTH === 'lightweight') {
+  if (!EDITOR_ROUNDS_EXPLICIT) EDITOR_ROUNDS = 2
+  if (!PERSONA_ROUNDS_EXPLICIT) PERSONA_ROUNDS = 1
+}
+log(`Tier "${DEPTH}" resolved: editorRounds=${EDITOR_ROUNDS}, reviewRounds=${PERSONA_ROUNDS}, caps {refuter:${FINDING_REFUTER_CAP}, haltClass:${HALT_CLASS_CAP}, ktd:${KTD_CAP}, ktdPasses:${KTD_PASSES_CAP}, ktdHalt:${KTD_HALT_CAP}, spike:${SPIKE_CAP}, persona:${PERSONA_CAP}, research:${RESEARCH_CAP}}`)
 narrowedScope = intake.split.isMultiple ? intake.split.excluded : []
 if (narrowedScope.length) {
   log('One-thing split: narrowed to "' + intake.split.primary + '" — excluded: ' + narrowedScope.join('; ') + ' (routed to Deferred to Follow-Up Work; re-invoke per item)')
