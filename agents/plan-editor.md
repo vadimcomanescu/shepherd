@@ -60,8 +60,10 @@ do not stop at the first issue; find them all, then act proportionately:
   ("the interface is the test surface; never test past it")
 - undefined-new-domain-term: the plan introduces vocabulary absent from
   CONTEXT.md and the repo's ubiquitous language — grounded in the DDD thread
-  of skills/interface-design and skills/decomposition; flag every term that
-  has no entry in CONTEXT.md before recommending READY
+  of skills/interface-design and skills/decomposition; apply only when the
+  Domain glossary block in CODEBASE_CONTEXT shows a real path (not "none
+  detected"); when no glossary exists, terms derived from source paths, READMEs,
+  ADRs, or the origin document are presumed valid and must not be flagged
 
 Report design-level unknowns in designUnknowns (architecture choices,
 unvalidated technical assumptions, misunderstood dependencies — things that
