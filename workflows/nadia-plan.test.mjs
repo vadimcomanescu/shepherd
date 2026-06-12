@@ -585,7 +585,10 @@ S('S15 spike branch', async () => {
   const sp0 = a.trace.calls.find((c) => c.label === 'spike-0')
   assert.equal(sp0.model, 'sonnet')
   assert.ok(sp0.prompt.includes('cache layer choice') && sp0.prompt.includes('U2'))
-  assert.ok(/READING code and docs only/.test(sp0.prompt) && /may NOT run tests/.test(sp0.prompt))
+  // read-only/runtime-blocked mechanism pins (mechanism, not exact prose)
+  assert.ok(sp0.prompt.includes('Read code and docs only') || sp0.prompt.includes('READING code and docs only'), 'spikePrompt: read-only rule present')
+  assert.ok(sp0.prompt.includes('runtime-blocked'), 'spikePrompt: runtime-blocked resolution path present')
+  assert.ok(sp0.schema && sp0.schema.properties && sp0.schema.properties.resolution && sp0.schema.properties.resolution.enum.includes('runtime-blocked'), 'spikePrompt: SPIKE_SCHEMA with runtime-blocked enum bound')
   assert.ok(idx(a.trace, 'revise-spike') > idx(a.trace, 'spike-1'))
   assert.ok(idx(a.trace, 'check-spike') > idx(a.trace, 'revise-spike'))
   // (b) runtime-blocked spike -> Open Questions in both doc and summary
@@ -1222,6 +1225,74 @@ S('S36 verbatim-surface pins: ktdRefutePrompt, ktdArbitrationPrompt, ANCHOR_RUBR
   assert.ok(capD.result.residualFindings.some((r) => r.class === 'dropped-cap' && r.reason.includes('KTD halt-majority allowance (') && r.reason.includes('/run) exhausted')), 'KTD halt-majority allowance residual reason: invariant text present')
 
   return 'all verbatim surfaces pinned: ktdRefutePrompt, ktdArbitrationPrompt, ANCHOR_RUBRIC, editorPrompt READY/REVISED, cap logs'
+})
+
+S('S37 verbatim-surface pins: fixerPrompt, refixUidPrompt, reviseSpikePrompt, spike-cap log', async () => {
+  // ---- fixerPrompt: PROTECTED SURFACES block ----
+  // trigger: reviewer returns a finding so the fixer fires
+  const fixerRun = await run(makeDispatcher({
+    'review-r1-coherence': () => ({ findings: [FINDING()] }),
+  }))
+  assert.ifError(fixerRun.error)
+  const fixerCall = fixerRun.trace.calls.find((c) => c.label === 'fix-round-1')
+  assert.ok(fixerCall, 'fix-round-1 dispatched')
+  // Protected-surfaces block (byte-identical)
+  assert.ok(fixerCall.prompt.includes(
+    `PROTECTED SURFACES: any\nchange to the Requirements set, Scope Boundaries, or unit uid/Dependencies\nstructure requires refutationSurvived=true — otherwise return it unapplied. A\nfix may NEVER widen scope; return scope-widening proposals unapplied with\nreason starting 'scope-widening:'.`
+  ), 'fixerPrompt: PROTECTED SURFACES block byte-identical')
+  // Identity sentence in fixerPrompt
+  assert.ok(fixerCall.prompt.includes(
+    `U-IDs and R-IDs may be ADDED (next free\nnumber, gaps fine) or deleted, NEVER renumbered or reassigned.`
+  ), 'fixerPrompt: U-ID/R-ID identity sentence byte-identical')
+
+  // ---- refixUidPrompt: identity-restore header + rules block ----
+  // trigger: checker returns a renamed UID
+  const RENAMED = UID_PAIRS.map((p) => (p.uid === 'U2' ? { uid: 'U2', name: 'TWO-renamed' } : p))
+  const refixRun = await run(makeDispatcher({
+    'review-r1-coherence': () => ({ findings: [FINDING()] }),
+    'check-r1': () => CHECKER({ fixesVerified: [{ title: 'missing dep', landed: true, matchesIntent: true, note: '' }], uidNamePairs: RENAMED }),
+  }))
+  assert.ifError(refixRun.error)
+  const refixCall = refixRun.trace.calls.find((c) => c.label === 'refix-uid-r1')
+  assert.ok(refixCall, 'refix-uid-r1 dispatched')
+  // Identity-restore header (byte-identical)
+  assert.ok(refixCall.prompt.includes(
+    `Restore these\nidentities — never renumber; re-add as the same uid:`
+  ), 'refixUidPrompt: identity-restore header byte-identical')
+  // Rules block (byte-identical)
+  assert.ok(refixCall.prompt.includes(
+    `Rules: U-IDs and R-IDs may be ADDED (next free number, gaps fine) or deleted\nwith justification, NEVER renumbered or reassigned; uid-to-name identity pairs\nmust not swap. Edit the protected surfaces (Requirements set, Scope\nBoundaries, uid/Dependencies structure) ONLY as far as needed to restore the\nlisted identities — no further. NEVER widen scope.`
+  ), 'refixUidPrompt: rules block byte-identical')
+
+  // ---- reviseSpikePrompt: protected-surfaces OFF-LIMITS + uid/R-ID identity sentence ----
+  // trigger: editor returns designUnknowns so the spike branch fires
+  const spikeReviseRun = await run(makeDispatcher({
+    'editor-r1': () => EDITOR_REVISED({ designUnknowns: [{ unknown: 'cache layer choice', affectedUids: ['U1'], whyDesignLevel: 'architecture-level' }] }),
+  }))
+  assert.ifError(spikeReviseRun.error)
+  const reviseCall = spikeReviseRun.trace.calls.find((c) => c.label === 'revise-spike')
+  assert.ok(reviseCall, 'revise-spike dispatched')
+  // OFF-LIMITS block (byte-identical)
+  assert.ok(reviseCall.prompt.includes(
+    `Protected surfaces (Requirements set, Scope Boundaries,\nuid/Dependencies structure) are OFF-LIMITS entirely — no spike result carries\nrefutation-survived authority.`
+  ), 'reviseSpikePrompt: OFF-LIMITS block byte-identical')
+  // uid/R-ID identity sentence (byte-identical)
+  assert.ok(reviseCall.prompt.includes(
+    `Same uid/R-ID rules as a fix round: U-IDs and\nR-IDs may be ADDED (next free number, gaps fine) or deleted, NEVER renumbered\nor reassigned.`
+  ), 'reviseSpikePrompt: uid/R-ID identity sentence byte-identical')
+
+  // ---- Spike-cap log(): invariant text around the interpolated count ----
+  // trigger: 5 design unknowns -> SPIKE_CAP=3 -> overflow log fires
+  const fiveUnknowns = Array.from({ length: 5 }, (_, i) => ({ unknown: `unknown ${i + 1}`, affectedUids: ['U1'], whyDesignLevel: 'architecture-level' }))
+  const capRun = await run(makeDispatcher({
+    'editor-r1': () => EDITOR_REVISED({ designUnknowns: fiveUnknowns }),
+  }))
+  assert.ifError(capRun.error)
+  assert.ok(capRun.trace.logs.some((m) =>
+    m.startsWith('Spike cap: ') && m.includes(' design unknown(s) beyond ') && m.includes(' routed to Open Questions')
+  ), 'Spike cap log: invariant prefix, middle, and suffix present')
+
+  return 'fixerPrompt PROTECTED-SURFACES + identity, refixUidPrompt header + rules, reviseSpikePrompt OFF-LIMITS + uid identity, spike-cap log format all byte-identical'
 })
 
 let pass = 0, fail = 0
