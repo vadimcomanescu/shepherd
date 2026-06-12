@@ -1353,7 +1353,7 @@ S('S38 verbatim-surface pins: GATE_AUTHORITY (both dispatches), research-cap log
 
   // ---- R13 list-item granularity instruction in originCoveragePrompt ----
   // Must reach both 'origin-coverage' and 'origin-coverage-retry' dispatches (same factory).
-  const R13_TEXT = `When an origin section contains a list (principles, lessons, rules, examples), each list item is an individual coverage unit — do not judge the whole section "addressed" if member items were not individually traced to the plan. A section marked "addressed" while specific list items are unaddressed is an omission.`
+  const R13_TEXT = `When an origin section contains a normative list (principles, lessons, rules, requirements, decisions), each list item is an individual coverage unit — do not judge the whole section "addressed" if member items were not individually traced to the plan. A section marked "addressed" while specific normative list items are unaddressed is an omission. Exception: illustrative lists (alternative options, candidate approaches, background examples where only some items are intended as requirements) are NOT individual coverage units — if the plan deliberately selects a subset of such a list, the unselected items are intentional non-requirements, not omissions.`
   const originArgs = { ...ARGS, origin: 'docs/brainstorm.md', originVersion: 'ov-r13' }
 
   // (a) 'origin-coverage' dispatch carries R13

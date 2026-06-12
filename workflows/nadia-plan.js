@@ -60,7 +60,7 @@ You are working on the repository at ${REPO}, NOT your current working directory
 Resolve every relative path in this brief (docs/plans/..., lib/..., test and git
 commands) against ${REPO}: cd into it first in any shell command, search and
 read only there, and write files only under ${REPO}.
-Exception: skills/ paths (doctrine skills) resolve from the session's starting directory, NOT ${REPO}.
+Exception: skills/ paths (doctrine skills) resolve from the session's starting directory, NOT ${REPO}. For skill reads, do NOT cd into ${REPO} — open skills/ paths directly from wherever the session started (e.g. Read skills/decomposition/SKILL.md without any cd, or prefix with the session start directory).
 
 ${prompt}`, opts)
 }
@@ -101,7 +101,7 @@ const INTAKE_SCHEMA = {
     research: {
       type: 'object',
       properties: {
-        intent: { type: 'string', enum: ['implementation-guidance', 'landscape', 'mixed', 'none'] },
+        intent: { type: 'string', enum: ['implementation-guidance', 'landscape', 'mixed', 'version-specific framework', 'none'] },
         reason: { type: 'string' },
       },
       required: ['intent', 'reason'],
@@ -417,8 +417,11 @@ and list the rest as excluded.
 
 External research intent: recommend implementation-guidance for how-to-implement
 guidance when there is risk or thin local pattern coverage; recommend landscape
-for prior-art or ecosystem survey needs; recommend mixed when both apply; use
-none otherwise. The reason field is required for every intent.
+for prior-art or ecosystem survey needs; recommend mixed when both apply;
+recommend version-specific framework when the request targets a specific
+version-pinned library or framework and requires version-matched documentation
+(e.g. "use Next.js 16 cache components", "upgrade to Rails 8.1"); use none
+otherwise. The reason field is required for every intent.
 
 planType: classify the work as feat|fix|refactor|chore|docs|perf|test.
 nonCodeDeliverable: true when the request is not a code change (knowledge work).`,
@@ -525,6 +528,8 @@ if (!EXTERNAL_RESEARCH) {
   researchRoster.push(groundingResearcher('implementation-guidance'))
 } else if (intake.research.intent === 'landscape') {
   researchRoster.push(webResearcher('landscape'))
+} else if (intake.research.intent === 'version-specific framework') {
+  researchRoster.push(groundingResearcher('version-specific framework'))
 } else if (intake.research.intent === 'mixed') {
   // web before grounding — roster order is asserted (S33)
   researchRoster.push(webResearcher('mixed, landscape slice'))
@@ -1809,7 +1814,7 @@ requirement/decision/boundary is addressed or explicitly deferred in the plan
 at ${planPath}; do NOT take the plan's word — check the plan text. Your
 sections[] walk is the evidence of work: return one entry per origin section.
 You have not seen the plan author's claims and must not assume coverage.
-When an origin section contains a list (principles, lessons, rules, examples), each list item is an individual coverage unit — do not judge the whole section "addressed" if member items were not individually traced to the plan. A section marked "addressed" while specific list items are unaddressed is an omission.`
+When an origin section contains a normative list (principles, lessons, rules, requirements, decisions), each list item is an individual coverage unit — do not judge the whole section "addressed" if member items were not individually traced to the plan. A section marked "addressed" while specific normative list items are unaddressed is an omission. Exception: illustrative lists (alternative options, candidate approaches, background examples where only some items are intended as requirements) are NOT individual coverage units — if the plan deliberately selects a subset of such a list, the unselected items are intentional non-requirements, not omissions.`
 let originOmissions = []
 if (!ORIGIN) {
   log('Origin coverage skipped: no origin doc')
