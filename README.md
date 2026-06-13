@@ -25,8 +25,9 @@ Both coordinators are invoked by name (their `meta.name`) with an `args` object.
 
       args: { request: "add a dark-mode toggle to settings", commit: true }
 
-   It runs the 7-phase pipeline and writes a plan to docs/plans/, then returns
-   { planPath, planVersion, nextStep }.  (commit: true is the consent to commit the file.)
+   It runs the 7-phase pipeline and writes a plan to docs/plans/, then returns a run
+   summary { planPath, planVersion, nextStep } (or a directPrompt to run directly if it
+   halts early on a trivial request).  (commit: true is the consent to commit the file.)
 
 2. Deliver.  Hand that plan to shepherd-deliver:
 
@@ -80,8 +81,8 @@ Each clause below is one phase from the coordinator's `meta.phases`. The deep di
 | Path | What it is |
 |------|------------|
 | [`workflows/`](workflows/) | The two coordinator scripts ([`shepherd-plan.js`](workflows/shepherd-plan.js), [`shepherd-deliver.js`](workflows/shepherd-deliver.js)) and their tests. This is the practice, expressed as dynamic workflows. |
-| [`agents/`](agents/) | The 22-persona fleet (`agents/<name>.md` files dispatched by `agentType`): 14 plan-side personas (5 researchers, flow-analyzer, 2 authors, 7 review lenses) and 8 deliver-and-shared personas. Catalog: [`docs/practice/fleet.md`](docs/practice/fleet.md). Symlinked into `.claude/agents`. |
-| [`skills/`](skills/) | The 6 doctrine skills the personas read before acting: `decomposition`, `interface-design`, `scoping`, `test-strategy`, `validating-agent-improvements`, `zero-context-planning`. Symlinked into `.claude/skills`. |
+| [`agents/`](agents/) | The 22-persona fleet (`agents/<name>.md` files dispatched by `agentType`): 14 plan-side personas (5 researchers including `flow-analyzer`, 2 authors, 7 review lenses) and 8 deliver-and-shared personas. Catalog: [`docs/practice/fleet.md`](docs/practice/fleet.md). Symlinked into `.claude/agents`. |
+| [`skills/`](skills/) | The 6 doctrine skills (the plan author and editor read five of them before acting): `decomposition`, `interface-design`, `scoping`, `test-strategy`, `validating-agent-improvements`, `zero-context-planning`. Symlinked into `.claude/skills`. |
 | [`docs/practice/`](docs/practice/) | The practice docs: the [hub](docs/practice/README.md) plus deep dives on both pipelines, the [fleet](docs/practice/fleet.md), [routing](docs/practice/routing.md), and the [verification doctrine](docs/practice/verification.md). |
 | [`docs/workflows/`](docs/workflows/) | The dynamic-workflow substrate: the authoring rules every coordinator here is written against, never from memory. |
 | [`CONTEXT.md`](CONTEXT.md) | Domain glossary: the vocabulary for the practice and the substrate. |

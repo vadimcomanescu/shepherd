@@ -15,7 +15,7 @@ Two consequences follow, and both are load-bearing:
 - **Fail if uncertain.** When the verifier cannot settle the question, the default is to act as though the claim is false. The exact meaning of "false" differs by side (see below), but the principle is constant: uncertainty is never silently resolved in the claim's favor.
 - **Nothing is dropped quietly.** Every coverage loss, unverified drop, unaudited claim, capped finding, and confirmed-but-unfixed defect is recorded durably (in the run summary, the logs, or the PR body). Silent truncation is a defect, not a tidiness.
 
-The governing rule is CLAUDE.md principle 4, mirrored as principle 5 in [`../workflows/README.md`](../workflows/README.md):
+The governing rule is principle 5 in both CLAUDE.md and [`../workflows/README.md`](../workflows/README.md):
 
 > Verify adversarially; default to "fail if uncertain". For findings that must be trusted, spawn independent verifier agents prompted to REFUTE. Require a majority. If uncertain, fail, do not silently pass. One carved-out exception: code-review findings are graded by the recall-biased finding-verifier persona (uncertain lands on PLAUSIBLE, never REFUTED) because dropping a real defect costs more than keeping an uncertain one; the mitigation is verdict-conditional fixing.
 

@@ -61,7 +61,7 @@ A note on the dogfood evidence: Codex never beat the cheapest correct Claude tie
 |--------|------|---------------|
 | `default` | Trivial work with no behavioral change (config tweak, rename, typo, docs). | No `-c model_reasoning_effort` flag is set. |
 | `medium` | Small or mid-size, well-scoped behavioral changes. | The workhorse Codex effort. |
-| `xhigh` | Genuinely cross-cutting multi-file work (refactors spanning a subsystem). | Expect ~4x Claude wall time; worth it only when waves run wide and wall-clock is not the constraint. |
+| `xhigh` | Genuinely cross-cutting multi-file work (refactors spanning a subsystem). | Expect ~4-5x Claude wall time; worth it only when waves run wide and wall-clock is not the constraint. |
 
 **`high` is in the schema enum but inert.** `ROUTE_SCHEMA.effort` permits `default | medium | high | xhigh`, but the executor-router never emits `high`, and the dogfood measured that **high effort never beat medium** (f3 vs f1/f2; see the ledger). Treat the live effort tiers as `default` / `medium` / `xhigh`; `high` is schema-permitted-but-unused.
 
