@@ -1,7 +1,7 @@
 export const meta = {
   name: 'nadia-plan',
   description: 'Plan-production pipeline: lock a request or brainstorm into Confirmed Intent, research the repo, challenge the framing, author a ce-plan-format plan document, then run a bounded editor loop (persona doc-review, skeptical refutation, verified fix application, read-only spikes for design unknowns) and final gates (ce-work parse conformance, releasability checklist, origin coverage, cross-plan overlap), hygiene-check the workspace, optionally commit, and return a machine-readable run summary consumable by nadia-deliver.',
-  whenToUse: 'Producing a plan document for nadia-deliver from a request or an origin brainstorm/requirements doc, autonomously (no interactive questions; blocking unknowns become a structured halt). Passing commit: true IS the consent to commit the plan file. args: { request?: "<what to plan>", origin?: "<path to brainstorm/requirements doc>", originVersion?: "<hash-or-mtime — pass a NEW value after editing the origin doc so resume does not replay stale cached research>", depth?: "lightweight"|"standard"|"deep", date?: "YYYY-MM-DD", commit?: true|false, editorRounds?: <1..5, default 3>, reviewRounds?: <1..3, default 2>, spikes?: true|false, externalResearch?: true|false }',
+  whenToUse: 'Producing a plan document for nadia-deliver from a request or an origin brainstorm/requirements doc, autonomously (no interactive questions; blocking unknowns become a structured halt). Trivial requests halt at S0 with a ready-to-use directPrompt unless args.depth is pinned. Passing commit: true IS the consent to commit the plan file. args: { request?: "<what to plan>", origin?: "<path to brainstorm/requirements doc>", originVersion?: "<hash-or-mtime — pass a NEW value after editing the origin doc so resume does not replay stale cached research>", depth?: "lightweight"|"standard"|"deep", date?: "YYYY-MM-DD", commit?: true|false, editorRounds?: <1..5, default 3>, reviewRounds?: <1..3, default 2>, tokenBudget?: <output-token target; the run halts gracefully at phase boundaries when approached>, spikes?: true|false, externalResearch?: true|false }',
   phases: [
     { title: 'Intake', detail: 'Lock Confirmed Intent, classify unknowns, set depth tier' },
     { title: 'Research', detail: 'Repo + learnings + conditional external research, cross-plan scan' },
@@ -40,13 +40,19 @@ const ORIGIN_VERSION = args.originVersion || 'unversioned'
 const PINNED_DEPTH = args.depth || ''
 const PLAN_DATE = args.date || ''
 const COMMIT = args.commit === true                  // DEFAULT FALSE — commit: true IS the consent (global git-read-only rule)
-const EDITOR_ROUNDS = Math.max(1, Math.min(5, args.editorRounds || 3))   // the single outer loop counter
-const PERSONA_ROUNDS = Math.max(1, Math.min(3, args.reviewRounds || 2))  // persona stage active rounds 1..PERSONA_ROUNDS; NOT a second counter
+// Round counts: an EXPLICIT args value always wins; the bare default is computed
+// post-intake from the depth tier (lightweight lowers to editorRounds 2 /
+// reviewRounds 1; standard/deep keep 3/2). let-bound so the tier default can be
+// applied once DEPTH is known — every use-site identifier stays textually identical.
+const EDITOR_ROUNDS_EXPLICIT = Number.isFinite(args.editorRounds) && args.editorRounds > 0
+const PERSONA_ROUNDS_EXPLICIT = Number.isFinite(args.reviewRounds) && args.reviewRounds > 0
+let EDITOR_ROUNDS = Math.max(1, Math.min(5, args.editorRounds || 3))   // the single outer loop counter
+let PERSONA_ROUNDS = Math.max(1, Math.min(3, args.reviewRounds || 2))  // persona stage active rounds 1..PERSONA_ROUNDS; NOT a second counter
 const SPIKES_ENABLED = args.spikes !== false
 const EXTERNAL_RESEARCH = args.externalResearch !== false
 // Args echo — a launch whose args never arrived (observed live: a scriptPath
 // launch delivered no tool-level args) must die loudly AND legibly, never silently.
-log(`nadia-plan args resolved: request=${REQUEST ? `"${REQUEST.slice(0, 80)}${REQUEST.length > 80 ? '…' : ''}"` : '(none)'}, origin=${ORIGIN || '(none)'}, depth=${PINNED_DEPTH || '(auto)'}, date=${PLAN_DATE || '(derived)'}, commit=${COMMIT}, editorRounds=${EDITOR_ROUNDS}, reviewRounds=${PERSONA_ROUNDS}, spikes=${SPIKES_ENABLED}, externalResearch=${EXTERNAL_RESEARCH}, repo=${args.repo || '(session cwd)'}`)
+log(`nadia-plan args resolved: request=${REQUEST ? `"${REQUEST.slice(0, 80)}${REQUEST.length > 80 ? '…' : ''}"` : '(none)'}, origin=${ORIGIN || '(none)'}, depth=${PINNED_DEPTH || '(auto)'}, date=${PLAN_DATE || '(derived)'}, commit=${COMMIT}, editorRounds=${EDITOR_ROUNDS}, reviewRounds=${PERSONA_ROUNDS} (tier default may lower at lightweight), tokenBudget=${Number.isFinite(args.tokenBudget) ? args.tokenBudget : '(none)'}, spikes=${SPIKES_ENABLED}, externalResearch=${EXTERNAL_RESEARCH}, repo=${args.repo || '(session cwd)'}`)
 
 // ---- target-repo grounding (first-class repo arg) ----
 // Every agent runs with the session cwd, which is NOT necessarily the repo the
@@ -60,21 +66,32 @@ You are working on the repository at ${REPO}, NOT your current working directory
 Resolve every relative path in this brief (docs/plans/..., lib/..., test and git
 commands) against ${REPO}: cd into it first in any shell command, search and
 read only there, and write files only under ${REPO}.
+Exception: skills/ paths (doctrine skills) resolve from the session's starting directory, NOT ${REPO}. For skill reads, do NOT cd into ${REPO} — open skills/ paths directly from wherever the session started (e.g. Read skills/decomposition/SKILL.md without any cd, or prefix with the session start directory).
 
 ${prompt}`, opts)
 }
 const BUDGET_FLOOR = 30000                            // sibling line-548 constant, unchanged
-const belowBudgetFloor = () => !!budget.total && budget.remaining() <= BUDGET_FLOOR
+// Token target: a runtime budget.total wins; otherwise an explicit args.tokenBudget
+// sets an output-token target the run halts gracefully at, at phase boundaries.
+// When budget.total is set the semantics are unchanged (budget.remaining() === total - spent()).
+// Budget checks live in the coordinator ONLY — never surface remaining-token counts
+// in agent prompts (premature-stopping anti-pattern per Anthropic Fable guidance).
+const TOKEN_TARGET = budget.total || (Number.isFinite(args.tokenBudget) ? args.tokenBudget : null)
+const belowBudgetFloor = () => !!TOKEN_TARGET && (TOKEN_TARGET - budget.spent()) <= BUDGET_FLOOR
 
-// Caps as named consts — every drop they cause is log()ged (M18).
-const FINDING_REFUTER_CAP = 16   // per round, severity-ordered (M7 class A)
-const HALT_CLASS_CAP = 3         // majority-of-3 procedures per run (M7)
-const KTD_CAP = 8                // KTD refuters, prioritized (M7 class B)
-const KTD_PASSES_CAP = 2         // initial pass + at most one primer-triggered re-refutation pass
-const KTD_HALT_CAP = 3           // majority-of-3 procedures for refuted-KTD findings (dedicated allowance)
-const SPIKE_CAP = 3              // read-only spikes, once per run (M10)
-const PERSONA_CAP = 8            // personas per round (roster is 7; cap asserted anyway)
-const RESEARCH_CAP = 6           // S1 fan-out ceiling (roster is at most 6 by construction)
+// Caps as named consts — every drop they cause is log()ged (M18). The M7 caps
+// are now TIERED so the machinery is proportional to task scale: standard and
+// deep are byte-identical to the previous flat values (FINDING_REFUTER_CAP=16,
+// HALT_CLASS_CAP=3, KTD_CAP=8, KTD_PASSES_CAP=2, KTD_HALT_CAP=3, SPIKE_CAP=3,
+// PERSONA_CAP=8, RESEARCH_CAP=6); ONLY lightweight gets lighter. The caps are
+// resolved into same-named bindings AFTER DEPTH is known (verified: no cap
+// identifier is referenced before DEPTH resolution), so every use-site and
+// every cap log() line stays textually identical — only the tiered value differs.
+const CAPS_BY_TIER = {
+  lightweight: { FINDING_REFUTER_CAP: 6, HALT_CLASS_CAP: 1, KTD_CAP: 3, KTD_PASSES_CAP: 1, KTD_HALT_CAP: 1, SPIKE_CAP: 1, PERSONA_CAP: 4, RESEARCH_CAP: 3 },
+  standard:    { FINDING_REFUTER_CAP: 16, HALT_CLASS_CAP: 3, KTD_CAP: 8, KTD_PASSES_CAP: 2, KTD_HALT_CAP: 3, SPIKE_CAP: 3, PERSONA_CAP: 8, RESEARCH_CAP: 6 },
+  deep:        { FINDING_REFUTER_CAP: 16, HALT_CLASS_CAP: 3, KTD_CAP: 8, KTD_PASSES_CAP: 2, KTD_HALT_CAP: 3, SPIKE_CAP: 3, PERSONA_CAP: 8, RESEARCH_CAP: 6 },
+}
 
 // ============================================================
 // Schemas (M-X1: every agent returns opts.schema-validated JSON; every
@@ -88,19 +105,27 @@ const INTAKE_SCHEMA = {
       properties: {
         outcome: { type: 'string' }, user: { type: 'string' }, whyNow: { type: 'string' },
         success: { type: 'string', description: 'observable success statement' },
-        constraint: { type: 'string' }, outOfScope: { type: 'array', items: { type: 'string' } },
+        constraints: { type: 'array', items: { type: 'string' } }, outOfScope: { type: 'array', items: { type: 'string' } },
       },
-      required: ['outcome', 'user', 'whyNow', 'success', 'constraint', 'outOfScope'],
+      required: ['outcome', 'user', 'whyNow', 'success', 'constraints', 'outOfScope'],
     },
     blockingUnknowns: { type: 'array', items: { type: 'object', properties: { question: { type: 'string' }, whyBlocking: { type: 'string' } }, required: ['question', 'whyBlocking'] } },
     decidableUnknowns: { type: 'array', items: { type: 'object', properties: { question: { type: 'string' }, hypothesis: { type: 'string' }, invalidatedWhen: { type: 'string', description: 'the observation that would invalidate the hypothesis' } }, required: ['question', 'hypothesis', 'invalidatedWhen'] } },
     split: { type: 'object', properties: { isMultiple: { type: 'boolean' }, primary: { type: 'string' }, excluded: { type: 'array', items: { type: 'string' } } }, required: ['isMultiple', 'primary', 'excluded'] },
     depthTier: { enum: ['lightweight', 'standard', 'deep'] },
     planType: { enum: ['feat', 'fix', 'refactor', 'chore', 'docs', 'perf', 'test'] },
-    research: { type: 'object', properties: { bestPractices: { type: 'boolean' }, web: { type: 'boolean' }, reason: { type: 'string' } }, required: ['bestPractices', 'web', 'reason'] },
+    research: {
+      type: 'object',
+      properties: {
+        intent: { type: 'string', enum: ['implementation-guidance', 'landscape', 'mixed', 'version-specific framework', 'none'] },
+        reason: { type: 'string' },
+      },
+      required: ['intent', 'reason'],
+    },
     nonCodeDeliverable: { type: 'boolean', description: 'true when the request is not a code change (knowledge work)' },
+    belowFloor: { type: 'object', properties: { verdict: { type: 'boolean' }, reason: { type: 'string' }, directPrompt: { type: 'string', description: 'self-contained single-executor brief when verdict is true; "" otherwise' } }, required: ['verdict', 'reason', 'directPrompt'] },
   },
-  required: ['confirmedIntent', 'blockingUnknowns', 'decidableUnknowns', 'split', 'depthTier', 'planType', 'research', 'nonCodeDeliverable'],
+  required: ['confirmedIntent', 'blockingUnknowns', 'decidableUnknowns', 'split', 'depthTier', 'planType', 'research', 'nonCodeDeliverable', 'belowFloor'],
 }
 
 const REPO_RESEARCH_SCHEMA = {
@@ -372,7 +397,7 @@ const summary = (status, extra) => {
   residualFindings.push(...pendingFyi.map((f) => ({ title: f.title, section: f.section, class: 'fyi', reason: 'anchor-50 advisory' })))
   return { status, planPath, planVersion, depthTier, unitCount, requirementCount,
     roundsUsed, personaRoundsUsed, residualFindings, narrowedScope, openQuestions, committed, hygieneClean,
-    haltStage: null, haltReason: null, nextStep: '', ...extra }
+    haltStage: null, haltReason: null, nextStep: '', directPrompt: '', ...extra }
 }
 
 // ============================================================
@@ -392,8 +417,10 @@ ${ORIGIN ? `Origin document: ${ORIGIN} (version: ${ORIGIN_VERSION}). Read it ful
 Depth tier: ${PINNED_DEPTH ? `depth tier is PINNED to "${PINNED_DEPTH}" — return it as depthTier unchanged.` : 'derive the tier: Lightweight 2–4 units / Standard 3–6 / Deep 4–8.'}
 
 Confirmed Intent — fill all six fields (outcome, user, whyNow, success as an
-observable statement, constraint, outOfScope) derived from the request and the
+observable statement, constraints, outOfScope) derived from the request and the
 origin doc ONLY; never invent facts the requester did not state or imply.
+constraints is a LIST of every hard constraint the requester stated or implied;
+return an empty array when none were stated or implied.
 
 Unknown classification: blocking = could materially change the outcome AND
 would likely upset the requester if guessed wrong; everything else: decide,
@@ -405,12 +432,28 @@ part ship and be tested alone; the 'what changed' test: would each part's diff
 make sense as its own PR — if genuinely N independent things, pick the primary
 and list the rest as excluded.
 
-External research gates: recommend bestPractices/web research only for
-implementation-guidance or landscape intent with risk or thin local patterns;
-give the reason either way.
+External research intent: recommend implementation-guidance for how-to-implement
+guidance when there is risk or thin local pattern coverage; recommend landscape
+for prior-art or ecosystem survey needs; recommend mixed when both apply;
+recommend version-specific framework when the request targets a specific
+version-pinned library or framework and requires version-matched documentation
+(e.g. "use Next.js 16 cache components", "upgrade to Rails 8.1"); use none
+otherwise. The reason field is required for every intent.
 
 planType: classify the work as feat|fix|refactor|chore|docs|perf|test.
-nonCodeDeliverable: true when the request is not a code change (knowledge work).`,
+nonCodeDeliverable: true when the request is not a code change (knowledge work).
+
+BELOW-FLOOR JUDGMENT (proportional machinery — do not over-plan a trivial change):
+set belowFloor.verdict=true ONLY when ALL of these hold: the estimated change
+touches at most 2 files; it introduces no new module or interface boundary; it
+carries no data, auth, migration, or concurrency risk; it needs no cross-component
+coordination; and its verification is a single obvious command or observation.
+When verdict=true, belowFloor.directPrompt MUST be a complete, self-contained
+executor brief a single executor can run without further planning: name the exact
+files and the edits intended, state the repo conventions (use a conventional
+commit message, stage the touched files by name, run the repo's test command),
+and say what evidence to report back. When verdict=false: belowFloor.reason is one
+line explaining what pushes it above the floor, and belowFloor.directPrompt is "".`,
   { label: 'intake', phase: 'Intake', schema: INTAKE_SCHEMA },
 )
 
@@ -437,8 +480,39 @@ if (intake.blockingUnknowns.length > 0) {
   })
 }
 
+// Below-floor off-ramp: a trivial change does not warrant the full planning
+// fleet. Halt with a ready-to-use direct-execution brief. Override semantics:
+// a PINNED depth (args.depth) or an origin doc means the caller deliberately
+// wants a plan — never below-floor-halt then.
+if (intake.belowFloor && intake.belowFloor.verdict === true && !PINNED_DEPTH && !ORIGIN) {
+  // The schema requires reason but cannot require it non-empty (observed live:
+  // an intake put everything in directPrompt and left reason '') — the halt
+  // trace must never carry an empty reason.
+  const floorReason = intake.belowFloor.reason || 'request judged below the planning floor (single-executor scale; see directPrompt)'
+  log(`Below-floor: ${floorReason} — halting with a direct-execution brief; pin args.depth to force a plan`)
+  return summary('halted', {
+    haltStage: 'S0-below-floor',
+    haltReason: floorReason,
+    nextStep: 'Execute directly using the directPrompt in this summary (single executor, conventional commit), or re-invoke nadia-plan with args.depth pinned to force a plan',
+    directPrompt: intake.belowFloor.directPrompt,
+  })
+}
+
 const DEPTH = PINNED_DEPTH || intake.depthTier
 depthTier = DEPTH
+
+// Resolve the tiered M7 caps into the original same-named bindings now that DEPTH
+// is known. standard/deep are byte-identical to the previous flat values; only
+// lightweight is lighter. Every use-site and every cap log() line is unchanged.
+const { FINDING_REFUTER_CAP, HALT_CLASS_CAP, KTD_CAP, KTD_PASSES_CAP, KTD_HALT_CAP, SPIKE_CAP, PERSONA_CAP, RESEARCH_CAP } = CAPS_BY_TIER[DEPTH] || CAPS_BY_TIER.standard
+// Round defaults are tier-scaled too: an explicit args value already won above;
+// only a bare (non-explicit) default lowers at lightweight (editorRounds 2 /
+// reviewRounds 1). standard and deep keep the pre-tier defaults (3 / 2).
+if (DEPTH === 'lightweight') {
+  if (!EDITOR_ROUNDS_EXPLICIT) EDITOR_ROUNDS = 2
+  if (!PERSONA_ROUNDS_EXPLICIT) PERSONA_ROUNDS = 1
+}
+log(`Tier "${DEPTH}" resolved: editorRounds=${EDITOR_ROUNDS}, reviewRounds=${PERSONA_ROUNDS}, caps {refuter:${FINDING_REFUTER_CAP}, haltClass:${HALT_CLASS_CAP}, ktd:${KTD_CAP}, ktdPasses:${KTD_PASSES_CAP}, ktdHalt:${KTD_HALT_CAP}, spike:${SPIKE_CAP}, persona:${PERSONA_CAP}, research:${RESEARCH_CAP}}`)
 narrowedScope = intake.split.isMultiple ? intake.split.excluded : []
 if (narrowedScope.length) {
   log('One-thing split: narrowed to "' + intake.split.primary + '" — excluded: ' + narrowedScope.join('; ') + ' (routed to Deferred to Follow-Up Work; re-invoke per item)')
@@ -451,7 +525,8 @@ Outcome: ${ci.outcome}
 User: ${ci.user}
 Why now: ${ci.whyNow}
 Success: ${ci.success}
-Constraint: ${ci.constraint}
+Constraints:
+${ci.constraints.map((s) => '- ' + s).join('\n') || '- none stated'}
 Out of scope:
 ${ci.outOfScope.map((s) => '- ' + s).join('\n') || '- none stated'}
 Depth tier: ${DEPTH}
@@ -463,10 +538,6 @@ ${narrowedScope.length ? 'Narrowed from a multi-part request. Primary: ' + intak
 // assembly need the FULL prior result set together.
 // ============================================================
 phase('Research')
-
-// Unconditional no-silent-cap log (decisions Q8): one researcher in the ce-plan
-// roster has no verified agentType in this runtime's registry.
-log('ce-framework-docs-researcher is not in the verified agent registry — skipped; framework-docs coverage rides best-practices/web research')
 
 const researchGrounding = `${CONFIRMED_INTENT}
 
@@ -481,7 +552,7 @@ relevant to the request, conventions distilled from AGENTS.md/CLAUDE.md, and
 the files a planner must know about. Extended scope: include the test harness
 inventory, the project's test/lint commands, testing conventions, and whether a
 CONTEXT.md domain glossary exists at the repo root — report its path (or "").`,
-  { label: 'research-repo', phase: 'Research', agentType: 'compound-engineering:ce-repo-research-analyst', model: 'sonnet', schema: REPO_RESEARCH_SCHEMA }, // extraction of stack/conventions/paths is mechanical digest work
+  { label: 'research-repo', phase: 'Research', agentType: 'repo-researcher', model: 'sonnet', schema: REPO_RESEARCH_SCHEMA }, // extraction of stack/conventions/paths is mechanical digest work
 ) })
 researchRoster.push({ key: 'learnings', thunk: () => agent(
   `${researchGrounding}
@@ -489,35 +560,42 @@ researchRoster.push({ key: 'learnings', thunk: () => agent(
 Search this repo's institutional learnings (docs/solutions/ and similar) for
 anything that should change planning decisions for this request. Return a
 digest of <=25 lines ("" when nothing material) plus the source paths.`,
-  { label: 'research-learnings', phase: 'Research', agentType: 'compound-engineering:ce-learnings-researcher', model: 'sonnet', schema: DIGEST_SCHEMA },
+  { label: 'research-learnings', phase: 'Research', agentType: 'learnings-researcher', model: 'sonnet', schema: DIGEST_SCHEMA },
+) })
+// Web/landscape and implementation-guidance researchers — one builder each,
+// keyed by an intent descriptor so the standalone and mixed-slice prompts stay
+// byte-identical apart from that descriptor.
+const webResearcher = (intentDescriptor) => ({ key: 'web', thunk: () => agent(
+  `${researchGrounding}
+
+Run web research on the landscape relevant to this request (intake research
+intent: ${intentDescriptor}; reason: ${intake.research.reason}). Return a digest of <=25 lines of findings
+that should change planning decisions ("" when nothing material) plus sources.`,
+  { label: 'research-web', phase: 'Research', agentType: 'web-researcher', model: 'sonnet', schema: DIGEST_SCHEMA },
+) })
+const groundingResearcher = (intentDescriptor) => ({ key: 'grounding', thunk: () => agent(
+  `${researchGrounding}
+
+Research current external implementation guidance relevant to this request
+(intake research intent: ${intentDescriptor}; reason:
+${intake.research.reason}). Return a digest of <=25 lines of findings
+that should change planning decisions ("" when nothing material) plus sources.`,
+  { label: 'research-grounding', phase: 'Research', agentType: 'external-grounding-researcher', model: 'sonnet', schema: DIGEST_SCHEMA },
 ) })
 if (!EXTERNAL_RESEARCH) {
   log('External research skipped: args.externalResearch === false')
+} else if (intake.research.intent === 'implementation-guidance') {
+  researchRoster.push(groundingResearcher('implementation-guidance'))
+} else if (intake.research.intent === 'landscape') {
+  researchRoster.push(webResearcher('landscape'))
+} else if (intake.research.intent === 'version-specific framework') {
+  researchRoster.push(groundingResearcher('version-specific framework'))
+} else if (intake.research.intent === 'mixed') {
+  // web before grounding — roster order is asserted (S33)
+  researchRoster.push(webResearcher('mixed, landscape slice'))
+  researchRoster.push(groundingResearcher('mixed, implementation-guidance slice'))
 } else {
-  if (intake.research.bestPractices) {
-    researchRoster.push({ key: 'bp', thunk: () => agent(
-      `${researchGrounding}
-
-Research current external best practices relevant to this request (intake gate
-reason: ${intake.research.reason}). Return a digest of <=25 lines of findings
-that should change planning decisions ("" when nothing material) plus sources.`,
-      { label: 'research-best-practices', phase: 'Research', agentType: 'compound-engineering:ce-best-practices-researcher', model: 'sonnet', schema: DIGEST_SCHEMA },
-    ) })
-  } else {
-    log('Best-practices research skipped: intake gates off (' + intake.research.reason + ')')
-  }
-  if (intake.research.web) {
-    researchRoster.push({ key: 'web', thunk: () => agent(
-      `${researchGrounding}
-
-Run web research on the landscape relevant to this request (intake gate
-reason: ${intake.research.reason}). Return a digest of <=25 lines of findings
-that should change planning decisions ("" when nothing material) plus sources.`,
-      { label: 'research-web', phase: 'Research', agentType: 'compound-engineering:ce-web-researcher', model: 'sonnet', schema: DIGEST_SCHEMA },
-    ) })
-  } else {
-    log('Web research skipped: intake gates off (' + intake.research.reason + ')')
-  }
+  log('External research skipped: intake.research.intent === none (' + intake.research.reason + ')')
 }
 if (DEPTH !== 'lightweight') {
   researchRoster.push({ key: 'flow', thunk: () => agent(
@@ -526,7 +604,7 @@ if (DEPTH !== 'lightweight') {
 Analyze the user/data/control flows this request touches in this repository.
 Return a digest of the flow picture a planner needs plus the edge cases the
 plan must not miss.`,
-    { label: 'research-flow', phase: 'Research', model: 'sonnet', agentType: 'compound-engineering:ce-spec-flow-analyzer', schema: FLOW_SCHEMA }, // flow/edge-case digest is extraction work, like the rest of the research roster
+    { label: 'research-flow', phase: 'Research', model: 'sonnet', agentType: 'flow-analyzer', schema: FLOW_SCHEMA }, // flow/edge-case digest is extraction work, like the rest of the research roster
   ) })
 } else {
   log('Spec-flow analysis skipped: lightweight tier')
@@ -551,12 +629,12 @@ researchActive.forEach((r0, i) => { research[r0.key] = researchReturns[i] })
 
 const repo = research.repo || null
 const learnings = research.learnings || null
-const bp = research.bp || null
+const grounding = research.grounding || null
 const web = research.web || null
 const flow = research.flow || null
 if (!repo) log('repo research failed — personas and the author will ground themselves by reading the repo directly')
 if (!learnings) log('learnings research failed — institutional learnings unavailable in the context block')
-if (researchActive.some((r0) => r0.key === 'bp') && !bp) log('best-practices research failed — external best practices unavailable in the context block')
+if (researchActive.some((r0) => r0.key === 'grounding') && !grounding) log('grounding research failed: external implementation guidance unavailable in the context block')
 if (researchActive.some((r0) => r0.key === 'web') && !web) log('web research failed — web findings unavailable in the context block')
 if (researchActive.some((r0) => r0.key === 'flow') && !flow) log('spec-flow analysis failed — flow coverage unavailable in the context block')
 
@@ -583,8 +661,8 @@ Relevant files: ${repo ? repo.relevantFiles.join(', ') : '(unavailable)'}
 Domain glossary: ${repo && repo.contextMdPath ? repo.contextMdPath : 'none detected'}
 Institutional learnings:
 ${learnings && learnings.digest ? learnings.digest : '(none)'}
-External best practices:
-${bp && bp.digest ? bp.digest : '(not researched)'}
+External implementation guidance:
+${grounding && grounding.digest ? grounding.digest : '(not researched)'}
 Web research:
 ${web && web.digest ? web.digest : '(not researched)'}
 Flow analysis:
@@ -705,6 +783,9 @@ ${ORIGIN ? `\nOrigin document: ${ORIGIN} (version: ${ORIGIN_VERSION}) — read i
 Testable assumptions to write into ## Assumptions (every entry must name its
 invalidating observation):
 ${assumptionsBlock}
+Every constraint listed in the Confirmed Intent block must surface in the plan,
+in a Key Technical Decision rationale, an ## Assumptions entry, or a Scope
+Boundary.
 ${narrowedScope.length ? `\nExcluded request parts — route these verbatim into Scope Boundaries → "### Deferred to Follow-Up Work":\n${narrowedScope.map((s) => '- ' + s).join('\n')}\n` : ''}
 Depth tier: ${DEPTH} — unit budget: lightweight 2–4 / standard 3–6 / deep 4–8 units.
 Plan type: ${intake.planType}.
@@ -804,7 +885,7 @@ const primerBlock = () => (primer.length
   ? `<decision-primer>\n${primer.map((e) => `- round ${e.round} ${e.decision}: [${e.section}] ${e.title} (reviewer: ${e.reviewer}, confidence ${e.confidence}) — evidence: ${e.evidence}`).join('\n')}\n</decision-primer>`
   : '<decision-primer>none — first round</decision-primer>')
 
-// Confidence-anchor rubric — ce-doc-review's behavioral anchors, condensed.
+// Confidence-anchor rubric: behavioral anchors, condensed.
 const ANCHOR_RUBRIC = `Confidence is a discrete anchor — exactly one of 0/25/50/75/100, never a value
 between anchors. Pick the anchor whose behavioral criterion you can honestly
 self-apply:
@@ -821,7 +902,10 @@ Anchor and severity are independent axes.`
 // document_content, but this coordinator cannot read files (runtime-forced
 // deviation) — every reviewer reads the document itself.
 const reviewPrompt = (p, r) => `Review the ${documentType} document at ${planPath} — read the document yourself, fully.
-Document type: ${documentType}. Origin document: ${ORIGIN || 'none'}.
+<review-context>
+Document type: ${documentType}
+Origin: ${ORIGIN || 'none'}
+</review-context>
 
 ${CONFIRMED_INTENT}
 
@@ -910,8 +994,7 @@ two fixes that contradict each other, or a premise challenge that moots
 others. Return conflicting findings UNAPPLIED with the conflict named in
 reason.
 
-You may apply safe_auto@confidence-100 fixes and refutation-survived fixes —
-every entry in your fix-now list is one or the other. PROTECTED SURFACES: any
+You may apply safe_auto@confidence-100 fixes and refutation-survived fixes. PROTECTED SURFACES: any
 change to the Requirements set, Scope Boundaries, or unit uid/Dependencies
 structure requires refutationSurvived=true — otherwise return it unapplied. A
 fix may NEVER widen scope; return scope-widening proposals unapplied with
@@ -970,11 +1053,7 @@ Plan document: ${planPath}
 
 ${CODEBASE_CONTEXT}
 
-Investigate by READING code and docs only. You may NOT run tests, build the
-app, execute the code, or probe runtime behavior — a question answerable only
-at runtime returns resolution 'runtime-blocked'. Return the unknown, the
-resolution (resolved | documented-trade-off | runtime-blocked), the evidence
-you found, and a recommendation.`
+Read code and docs only — no tests, no execution. A question answerable only at runtime returns 'runtime-blocked'. Return: unknown, resolution (resolved | documented-trade-off | runtime-blocked), evidence, recommendation.`
 
 const reviseSpikePrompt = (spikeResults) => `Plan document to edit: ${planPath} (edit ONLY this file).
 
@@ -1159,13 +1238,13 @@ for (let r = 1; r <= EDITOR_ROUNDS; r++) {
   if (r <= PERSONA_ROUNDS) {
     personaRoundsUsed = r
     const personaRosterAll = [
-      { key: 'coherence', type: 'compound-engineering:ce-coherence-reviewer' },
-      { key: 'feasibility', type: 'compound-engineering:ce-feasibility-reviewer' },
-      ...(personaSel.productLens ? [{ key: 'product', type: 'compound-engineering:ce-product-lens-reviewer' }] : []),
-      ...(personaSel.designLens ? [{ key: 'design', type: 'compound-engineering:ce-design-lens-reviewer' }] : []),
-      ...(personaSel.securityLens ? [{ key: 'security', type: 'compound-engineering:ce-security-lens-reviewer' }] : []),
-      ...(personaSel.scopeGuardian ? [{ key: 'scope', type: 'compound-engineering:ce-scope-guardian-reviewer' }] : []),
-      ...(personaSel.adversarial ? [{ key: 'adversarial', type: 'compound-engineering:ce-adversarial-document-reviewer' }] : []),
+      { key: 'coherence', type: 'coherence-lens' },
+      { key: 'feasibility', type: 'feasibility-lens' },
+      ...(personaSel.productLens ? [{ key: 'product', type: 'product-lens' }] : []),
+      ...(personaSel.designLens ? [{ key: 'design', type: 'design-lens' }] : []),
+      ...(personaSel.securityLens ? [{ key: 'security', type: 'security-lens' }] : []),
+      ...(personaSel.scopeGuardian ? [{ key: 'scope', type: 'scope-lens' }] : []),
+      ...(personaSel.adversarial ? [{ key: 'adversarial', type: 'adversarial-lens' }] : []),
     ]
     const personaRoster = personaRosterAll.slice(0, PERSONA_CAP)
     if (personaRosterAll.length > personaRoster.length) log(`Persona cap: ${personaRosterAll.length - personaRoster.length} persona(s) beyond ${PERSONA_CAP} dropped this round`)
@@ -1794,7 +1873,8 @@ Walk the origin document section by section; confirm each
 requirement/decision/boundary is addressed or explicitly deferred in the plan
 at ${planPath}; do NOT take the plan's word — check the plan text. Your
 sections[] walk is the evidence of work: return one entry per origin section.
-You have not seen the plan author's claims and must not assume coverage.`
+You have not seen the plan author's claims and must not assume coverage.
+When an origin section contains a normative list (principles, lessons, rules, requirements, decisions), each list item is an individual coverage unit — do not judge the whole section "addressed" if member items were not individually traced to the plan. A section marked "addressed" while specific normative list items are unaddressed is an omission. Exception: illustrative lists (alternative options, candidate approaches, background examples where only some items are intended as requirements) are NOT individual coverage units — if the plan deliberately selects a subset of such a list, the unselected items are intentional non-requirements, not omissions.`
 let originOmissions = []
 if (!ORIGIN) {
   log('Origin coverage skipped: no origin doc')

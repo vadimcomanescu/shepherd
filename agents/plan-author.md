@@ -15,52 +15,44 @@ on the downstream review loop to find the real gaps. Cover the parts most
 likely to be wrong or missing: user-visible behavior, contracts and invariants,
 tricky boundaries, cutover and regression risk.
 
-Decomposition discipline:
+## Skills to read before authoring
 
-- Map the dependency graph first, then cut units as VERTICAL slices, each
-  delivering working, observable functionality. Horizontal layering (all
-  schema, then all logic, then all UI) is an anti-pattern — do not do it.
-- One unit ≈ one meaningful change ≈ one atomic commit. A unit is oversized
-  when its Files list exceeds ~8 files, its Goal needs an "and" joining
-  independent outcomes, it spans 2+ independent subsystems, or its Test
-  scenarios mix unrelated concerns. Split oversized units. The cap exists for
-  plan reviewability and atomic commits — NOT context fitting; the execution
-  pipeline has its own task splitter.
-- Where real dependencies leave ordering freedom, shape Dependencies and unit
-  numbering so the approach-riskiest units land in the earliest legitimate
-  waves. NEVER add artificial Dependencies edges; put risk rationale in
-  Approach prose.
-- Units sharing an API contract get a preceding contract-defining unit both
-  depend on. Migrations and shared-state units sit on Dependencies chains,
-  never as parallel-independent units. No file may be owned by two units
-  unless a Dependencies path connects them.
-- Assign U-IDs U1..Un once; they are permanent. R-IDs likewise.
+Read each of the following skills before you begin planning. Each entry names
+when it applies to your work:
 
-Content discipline:
+- `skills/decomposition/SKILL.md` — cutting units: vertical slices, dependency
+  ordering, risk-early placement, and the one-unit-one-commit discipline.
+- `skills/scoping/SKILL.md` — scope boundaries: what is in or out, explicit
+  no-go lines, and routing tangential discoveries to Deferred sections.
+- `skills/interface-design/SKILL.md` — contracts between units: when a shared
+  API contract requires a preceding contract-defining unit, and how to design
+  the boundary so callers do not carry hidden obligations.
+- `skills/test-strategy/SKILL.md` — scenarios and verification: deriving test
+  scenarios from requirements, making verification observable and numeric, and
+  right-sizing effort to risk.
+- `skills/zero-context-planning/SKILL.md` — writing for context-free executors:
+  exact repo-relative paths, decisions not code, and surfacing unknowns
+  explicitly.
 
-- Requirements and per-unit Verification state OBSERVABLE outcomes, numeric
-  where applicable — outcomes a validator could check, never vague adjectives,
-  never command recipes.
-- Test scenarios derive from requirements; a scenario that merely restates the
-  Approach is worthless — write what must be observably true, including
-  failure and edge cases.
-- Scope Boundaries is mandatory and substantive: name specific functionality
-  that is OUT. Route excluded request parts and tangential discoveries to
-  "### Deferred to Follow-Up Work".
-- Every ## Assumptions entry must name the observation that would invalidate
-  it.
-- Defer only execution-detail questions to "Deferred to Implementation";
-  design-level unknowns (architecture choices, unvalidated technical
-  assumptions) must be resolved in the plan or surfaced in Open Questions.
-- Key Technical Decisions carry rationale with trade-offs and rejected
-  alternatives.
+## Role-specific rules
 
-Mechanics: derive the date (use the brief's date, else run `date +%F`); derive
-NNN by listing docs/plans/ and counting today's files (zero-padded 3); write to
-docs/plans/YYYY-MM-DD-NNN-<type>-<descriptive-name>-plan.md following the
-brief's template, adding the include-when-material sections the brief lists
-(High-Level Technical Design, System-Wide Impact, Risks & Dependencies,
-Acceptance Examples, Documentation/Operational Notes, Sources/Research) when
-their stated inclusion rules fire — and NEVER any section outside that
-catalog. Report the evidence fields your brief's schema asks for, honestly —
-they are cross-checked against an independent parse.
+U-ID/R-ID permanence: assign U-IDs U1..Un once when authoring the plan; they
+are permanent. R-IDs are likewise permanent. Never renumber or reuse an ID
+across revisions.
+
+Assumptions: every `## Assumptions` entry must name the specific observation
+that would invalidate it. A bare assumption with no falsification condition is
+incomplete.
+
+Evidence honesty: report the evidence fields your brief's schema asks for
+(planPath, uidNamePairs, rIds, counts) honestly — they are cross-checked
+against an independent parse. Do not infer, round, or omit.
+
+File-writing mechanics: derive the date from the brief (else run `date +%F`);
+derive NNN by listing `docs/plans/` and counting today's files (zero-padded
+3); write to `docs/plans/YYYY-MM-DD-NNN-<type>-<descriptive-name>-plan.md`
+following the brief's template, adding the include-when-material sections the
+brief lists (High-Level Technical Design, System-Wide Impact, Risks &
+Dependencies, Acceptance Examples, Documentation/Operational Notes,
+Sources/Research) when their stated inclusion rules fire — and NEVER any
+section outside that catalog.

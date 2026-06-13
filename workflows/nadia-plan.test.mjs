@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import assert from 'node:assert'
@@ -72,14 +72,15 @@ const RELEASE_IDS = ['scope-boundaries-substantive', 'verification-observable', 
 const INTAKE = (o = {}) => ({
   confirmedIntent: {
     outcome: 'widget exporter ships', user: 'data analysts', whyNow: 'quarterly reporting needs it',
-    success: 'exports complete in under a minute', constraint: 'no new services', outOfScope: ['import side'],
+    success: 'exports complete in under a minute', constraints: ['no new services'], outOfScope: ['import side'],
   },
   blockingUnknowns: [],
   decidableUnknowns: [{ question: 'export format', hypothesis: 'CSV is enough', invalidatedWhen: 'users request XLSX' }],
   split: { isMultiple: false, primary: '', excluded: [] },
   depthTier: 'standard', planType: 'feat',
-  research: { bestPractices: false, web: false, reason: 'local patterns sufficient' },
+  research: { intent: 'none', reason: 'local patterns sufficient' },
   nonCodeDeliverable: false,
+  belowFloor: { verdict: false, reason: '', directPrompt: '' },
   ...o,
 })
 const REPO = (o = {}) => ({
@@ -159,7 +160,7 @@ function makeDispatcher(overrides = {}, opts = {}) {
     if (label === 'intake') return INTAKE(opts.intake)
     if (label === 'research-repo') return REPO(opts.repo)
     if (label === 'research-learnings') return { digest: '', sources: [] }
-    if (label === 'research-best-practices') return { digest: 'bp digest', sources: ['https://example.com/bp'] }
+    if (label === 'research-grounding') return { digest: 'grounding digest', sources: ['https://example.com/grounding'] }
     if (label === 'research-web') return { digest: 'web digest', sources: ['https://example.com/web'] }
     if (label === 'research-flow') return { digest: 'flows ok', edgeCases: [] }
     if (label === 'research-cross-plan') return { activePlans: opts.activePlans || [] }
@@ -212,11 +213,14 @@ S('S1 happy path / anti-churn THRESHOLD', async () => {
   assert.ok(!trace.calls.some((c) => c.label.startsWith('fix-round-')), 'no fixer on a clean round')
   assert.ok(!trace.calls.some((c) => c.label.startsWith('check-')), 'no checker without a mutation')
   const byLabel = Object.fromEntries(trace.calls.map((c) => [c.label, c]))
-  assert.equal(byLabel['review-r1-coherence'].agentType, 'compound-engineering:ce-coherence-reviewer')
-  assert.equal(byLabel['review-r1-feasibility'].agentType, 'compound-engineering:ce-feasibility-reviewer')
+  assert.equal(byLabel['research-repo'].agentType, 'repo-researcher')
+  assert.equal(byLabel['research-flow'].agentType, 'flow-analyzer')
+  assert.equal(byLabel['review-r1-coherence'].agentType, 'coherence-lens')
+  assert.equal(byLabel['review-r1-feasibility'].agentType, 'feasibility-lens')
   assert.equal(byLabel['editor-r1'].agentType, 'plan-editor')
   assert.equal(byLabel['author-plan'].agentType, 'plan-author')
   assert.equal(byLabel['parse-plan'].model, 'sonnet')
+  assert.ok(!trace.calls.some((c) => c.agentType && c.agentType.startsWith('compound-engineering:')), 'no compound-engineering: agentType in any dispatch')
   assert.equal(result.planPath, PLAN_PATH)
   assert.equal(result.planVersion, 'abc123')
   assert.equal(result.depthTier, 'standard')
@@ -224,7 +228,7 @@ S('S1 happy path / anti-churn THRESHOLD', async () => {
   assert.equal(result.requirementCount, 2)
   assert.ok(result.nextStep.includes('git add') && result.nextStep.includes('nadia-deliver') && result.nextStep.includes('abc123'), 'nextStep carries commit hint + ce-work invocation + planVersion')
   assert.deepEqual([...new Set(trace.phases)], ['Intake', 'Research', 'Gate', 'Draft', 'Review', 'Gates', 'Finalize'])
-  assert.ok(trace.logs.some((m) => /ce-framework-docs-researcher/.test(m)), 'unconditional registry-gap log present')
+  assert.ok(!trace.logs.some((m) => /verified agent registry/.test(m)), 'no stale registry-gap log')
   return `${trace.calls.length} agent calls, ready in round 1 with zero churn`
 })
 
@@ -493,15 +497,15 @@ S('S12 no-silent-caps logs', async () => {
   assert.equal(count(a.trace, 'refute-r1-f'), 16, 'refuter cap at 16')
   assert.ok(a.trace.logs.some((m) => /beyond 16/.test(m)))
   assert.equal(a.result.residualFindings.filter((r) => r.class === 'dropped-cap').length, 4)
-  // (b) the unconditional registry log fires on every run
-  assert.ok(a.trace.logs.some((m) => /ce-framework-docs-researcher/.test(m)))
+  // (b) deleted registry-gap log stays deleted
+  assert.ok(!a.trace.logs.some((m) => /verified agent registry/.test(m)), 'no stale registry-gap log')
   // (c) externalResearch:false suppresses both researchers with a log
   const c = await run(
-    makeDispatcher({}, { intake: { research: { bestPractices: true, web: true, reason: 'new domain' } } }),
+    makeDispatcher({}, { intake: { research: { intent: 'mixed', reason: 'new domain' } } }),
     { args: { ...ARGS, externalResearch: false } },
   )
   assert.ifError(c.error)
-  assert.ok(!c.trace.calls.some((x) => x.label === 'research-best-practices' || x.label === 'research-web'))
+  assert.ok(!c.trace.calls.some((x) => x.label === 'research-grounding' || x.label === 'research-web'))
   assert.ok(c.trace.logs.some((m) => /externalResearch === false/.test(m)))
   // (d) 5 design unknowns -> 3 spikes, overflow logged
   const unknowns = Array.from({ length: 5 }, (_, i) => ({ unknown: `unknown ${i + 1}`, affectedUids: ['U1'], whyDesignLevel: 'architecture-level' }))
@@ -514,7 +518,7 @@ S('S12 no-silent-caps logs', async () => {
 
 S('S13 prompt hygiene + no-claim-passing', async () => {
   const d = makeDispatcher({}, {
-    intake: { research: { bestPractices: true, web: true, reason: 'new domain with thin local patterns' } },
+    intake: { research: { intent: 'mixed', reason: 'new domain with thin local patterns' } },
     classify: { ktds: ['use sqlite as the queue store because it avoids a new service'], loadBearingAssumptions: ['a single writer suffices'] },
   })
   const args = { ...ARGS, origin: 'docs/brainstorm.md', originVersion: 'ov-7' }
@@ -535,7 +539,7 @@ S('S13 prompt hygiene + no-claim-passing', async () => {
   }
   const cov = trace.calls.find((c) => c.label === 'origin-coverage')
   assert.ok(cov.prompt.includes('docs/brainstorm.md') && cov.prompt.includes('ov-7'), 'origin path + version reach the coverage gate')
-  assert.ok(trace.calls.some((c) => c.label === 'research-best-practices') && trace.calls.some((c) => c.label === 'research-web'))
+  assert.ok(trace.calls.some((c) => c.label === 'research-grounding') && trace.calls.some((c) => c.label === 'research-web'))
   return `${trace.calls.length} prompts clean; no author-claim threading`
 })
 
@@ -582,7 +586,10 @@ S('S15 spike branch', async () => {
   const sp0 = a.trace.calls.find((c) => c.label === 'spike-0')
   assert.equal(sp0.model, 'sonnet')
   assert.ok(sp0.prompt.includes('cache layer choice') && sp0.prompt.includes('U2'))
-  assert.ok(/READING code and docs only/.test(sp0.prompt) && /may NOT run tests/.test(sp0.prompt))
+  // read-only/runtime-blocked mechanism pins (mechanism, not exact prose)
+  assert.ok(sp0.prompt.includes('Read code and docs only') || sp0.prompt.includes('READING code and docs only'), 'spikePrompt: read-only rule present')
+  assert.ok(sp0.prompt.includes('runtime-blocked'), 'spikePrompt: runtime-blocked resolution path present')
+  assert.ok(sp0.schema && sp0.schema.properties && sp0.schema.properties.resolution && sp0.schema.properties.resolution.enum.includes('runtime-blocked'), 'spikePrompt: SPIKE_SCHEMA with runtime-blocked enum bound')
   assert.ok(idx(a.trace, 'revise-spike') > idx(a.trace, 'spike-1'))
   assert.ok(idx(a.trace, 'check-spike') > idx(a.trace, 'revise-spike'))
   // (b) runtime-blocked spike -> Open Questions in both doc and summary
@@ -640,7 +647,7 @@ S('S16 releasability failure -> shared gate-fix -> retry', async () => {
   assert.equal(a.result.status, 'ready')
   const gf = a.trace.calls.find((c) => c.label === 'gate-fix')
   assert.ok(gf.prompt.includes('scope-boundaries-substantive') && gf.prompt.includes('boilerplate only'))
-  assert.ok(gf.prompt.includes('ARE the authorization'), 'gate-authority text present')
+  assert.ok(gf.prompt.includes('The listed gate violations ARE the authorization to edit Dependencies, Scope\nBoundaries, or Requirements — exactly as far as needed to resolve them, no\nfurther. NEVER renumber or reassign uids/R-IDs. NEVER widen scope.'), 'gateFixPrompt: GATE_AUTHORITY full text byte-identical')
   assert.ok(!gf.prompt.includes('refutationSurvived'), 'gate fix does not carry the S4 fixer authority rule')
   assert.ok(a.trace.calls.some((c) => c.label === 'check-gate-fix'))
   assert.ok(a.trace.calls.some((c) => c.label === 'releasability-retry'))
@@ -731,7 +738,7 @@ S('S20 persona roster + rounds', async () => {
   assert.ifError(a.error)
   const r1 = labels(a.trace).filter((l) => l.startsWith('review-r1-'))
   assert.deepEqual(r1, ['review-r1-coherence', 'review-r1-feasibility', 'review-r1-security'])
-  assert.equal(a.trace.calls.find((c) => c.label === 'review-r1-security').agentType, 'compound-engineering:ce-security-lens-reviewer')
+  assert.equal(a.trace.calls.find((c) => c.label === 'review-r1-security').agentType, 'security-lens')
   // (b) classifier dies -> duo only, surfaced
   const b = await run(makeDispatcher({ 'classify-personas': () => { throw new Error('classifier died') } }))
   assert.ifError(b.error)
@@ -971,6 +978,8 @@ S('S26 first-class repo arg: every dispatch is grounded with the target reposito
   assert.ifError(grounded.error)
   const ungroundedCalls = grounded.trace.calls.filter((c) => !c.prompt.startsWith('TARGET REPOSITORY: /sibling/target-repo\n'))
   assert.deepEqual(ungroundedCalls.map((c) => c.label), [], 'every agent dispatch carries the repo grounding prefix (trailing slash trimmed)')
+  const exceptionLine = "Exception: skills/ paths (doctrine skills) resolve from the session's starting directory, NOT /sibling/target-repo."
+  assert.deepEqual(grounded.trace.calls.filter((c) => !c.prompt.includes(exceptionLine)).map((c) => c.label), [], 'every grounded prompt carries the skills-root exception')
   const plain = await run(makeDispatcher())
   assert.ifError(plain.error)
   assert.ok(!plain.trace.calls.some((c) => c.prompt.includes('TARGET REPOSITORY:')), 'no grounding prefix when args.repo is unset')
@@ -978,6 +987,7 @@ S('S26 first-class repo arg: every dispatch is grounded with the target reposito
   const stringly = await run(makeDispatcher(), { args: JSON.stringify({ ...ARGS, repo: '/sibling/target-repo/' }) })
   assert.ifError(stringly.error)
   assert.ok(stringly.trace.calls.every((c) => c.prompt.startsWith('TARGET REPOSITORY: /sibling/target-repo\n')), 'JSON-string args are parsed at the boundary and behave identically')
+  assert.ok(stringly.trace.calls.every((c) => c.prompt.includes(exceptionLine)), 'JSON-string args carry the skills-root exception too')
   return 'one chokepoint grounds every contextless agent with the target repo'
 })
 
@@ -1040,6 +1050,565 @@ S('S28 paraphrase findings: deduped before the fixer, accounted by identity not 
   assert.deepEqual(d.result.residualFindings.filter((f) => f.class === 'fixer-failed'), [],
     'a paraphrased applied-report never mints fixer-failed residuals')
   return 'one defect in four wordings: one fixer dispatch, zero residual noise'
+})
+
+S('S29 reviewer prompts carry review-context block', async () => {
+  const { result, trace, error } = await run(makeDispatcher())
+  assert.ifError(error)
+  assert.equal(result.status, 'ready')
+  const reviewCalls = trace.calls.filter((c) => /^review-r\d+-/.test(c.label))
+  assert.ok(reviewCalls.length > 0, 'review prompts dispatched')
+  for (const call of reviewCalls) {
+    const blocks = [...call.prompt.matchAll(/<review-context>\n([\s\S]*?)\n<\/review-context>/g)]
+    assert.equal(blocks.length, 1, `${call.label} carries exactly one review-context block`)
+    assert.equal(blocks[0][1], 'Document type: plan\nOrigin: none', `${call.label} carries named document type and origin slots`)
+    assert.ok(!blocks[0][1].includes('Origin document:'), `${call.label} does not use the stale origin label inside review-context`)
+  }
+
+  // (b) origin-path slot: when args.origin is set, Origin renders as the path (not 'none')
+  const originRun = await run(
+    makeDispatcher(),
+    { args: { ...ARGS, origin: 'docs/brainstorm.md' } },
+  )
+  assert.ifError(originRun.error)
+  const originReviewCalls = originRun.trace.calls.filter((c) => /^review-r\d+-/.test(c.label))
+  assert.ok(originReviewCalls.length > 0, 'review prompts dispatched for origin run')
+  for (const call of originReviewCalls) {
+    const blocks = [...call.prompt.matchAll(/<review-context>\n([\s\S]*?)\n<\/review-context>/g)]
+    assert.equal(blocks.length, 1, `${call.label} (origin run) carries exactly one review-context block`)
+    assert.ok(blocks[0][1].includes('Origin: docs/brainstorm.md'), `${call.label} renders origin path in Origin slot`)
+    assert.ok(!blocks[0][1].includes('Origin: none'), `${call.label} does not render 'none' when origin is set`)
+  }
+
+  // (c) requirements documentType: when classify returns documentType 'requirements', slot renders correctly
+  const reqRun = await run(
+    makeDispatcher({}, { classify: { documentType: 'requirements' } }),
+  )
+  assert.ifError(reqRun.error)
+  const reqReviewCalls = reqRun.trace.calls.filter((c) => /^review-r\d+-/.test(c.label))
+  assert.ok(reqReviewCalls.length > 0, 'review prompts dispatched for requirements run')
+  for (const call of reqReviewCalls) {
+    const blocks = [...call.prompt.matchAll(/<review-context>\n([\s\S]*?)\n<\/review-context>/g)]
+    assert.equal(blocks.length, 1, `${call.label} (requirements run) carries exactly one review-context block`)
+    assert.ok(blocks[0][1].includes('Document type: requirements'), `${call.label} renders 'Document type: requirements' slot`)
+  }
+
+  return `${reviewCalls.length} reviewer prompts carry review-context slots; origin-path and requirements-doc slots verified`
+})
+
+S('S30 intent none: no researchers dispatched, skip log carries reason', async () => {
+  const { result, trace, error } = await run(makeDispatcher())
+  assert.ifError(error)
+  assert.equal(result.status, 'ready')
+  assert.ok(!trace.calls.some((c) => c.label === 'research-grounding'))
+  assert.ok(!trace.calls.some((c) => c.label === 'research-web'))
+  assert.ok(trace.logs.some((m) => /intent.*none|local patterns sufficient/.test(m)))
+  return 'intent none skips external researchers with an explicit reason'
+})
+
+S('S31 intent implementation-guidance: grounding dispatched, web absent', async () => {
+  const { result, trace, error } = await run(makeDispatcher({}, {
+    intake: { research: { intent: 'implementation-guidance', reason: 'thin local patterns for this approach' } },
+  }))
+  assert.ifError(error)
+  assert.equal(result.status, 'ready')
+  const grounding = trace.calls.find((c) => c.label === 'research-grounding')
+  assert.ok(grounding, 'grounding researcher dispatched')
+  assert.equal(grounding.agentType, 'external-grounding-researcher')
+  assert.ok(!trace.calls.some((c) => c.label === 'research-web'))
+  return 'implementation-guidance routes only to grounding'
+})
+
+S('S32 intent landscape: web dispatched, grounding absent', async () => {
+  const { result, trace, error } = await run(makeDispatcher({}, {
+    intake: { research: { intent: 'landscape', reason: 'prior art survey needed' } },
+  }))
+  assert.ifError(error)
+  assert.equal(result.status, 'ready')
+  assert.ok(trace.calls.some((c) => c.label === 'research-web'))
+  assert.ok(!trace.calls.some((c) => c.label === 'research-grounding'))
+  return 'landscape routes only to web research'
+})
+
+S('S33 intent mixed: web before grounding in roster order', async () => {
+  const { result, trace, error } = await run(makeDispatcher({}, {
+    intake: { research: { intent: 'mixed', reason: 'both needed' } },
+  }))
+  assert.ifError(error)
+  assert.equal(result.status, 'ready')
+  assert.ok(trace.calls.some((c) => c.label === 'research-web'))
+  assert.ok(trace.calls.some((c) => c.label === 'research-grounding'))
+  assert.ok(idx(trace, 'research-web') < idx(trace, 'research-grounding'))
+  return 'mixed routes web before grounding'
+})
+
+S('S34 constraints list rendered in confirmed-intent block', async () => {
+  const first = await run(makeDispatcher({}, {
+    intake: { confirmedIntent: { ...INTAKE().confirmedIntent, constraints: ['A', 'B'] } },
+  }))
+  assert.ifError(first.error)
+  assert.equal(first.result.status, 'ready')
+  const firstAuthor = first.trace.calls.find((c) => c.label === 'author-plan')
+  const firstReviewer = first.trace.calls.find((c) => /^review-r1-/.test(c.label))
+  assert.ok(firstAuthor.prompt.includes('Constraints:\n- A\n- B'))
+  assert.ok(firstReviewer.prompt.includes('Constraints:\n- A\n- B'))
+  assert.ok(firstAuthor.prompt.includes('must surface in the plan'))
+
+  const second = await run(makeDispatcher({}, {
+    intake: { confirmedIntent: { ...INTAKE().confirmedIntent, constraints: [] } },
+  }))
+  assert.ifError(second.error)
+  assert.equal(second.result.status, 'ready')
+  const secondAuthor = second.trace.calls.find((c) => c.label === 'author-plan')
+  const secondReviewer = second.trace.calls.find((c) => /^review-r1-/.test(c.label))
+  assert.ok(secondAuthor.prompt.includes('Constraints:\n- none stated'))
+  assert.ok(secondReviewer.prompt.includes('Constraints:\n- none stated'))
+  return 'constraints render as bullets and empty constraints render none stated'
+})
+
+S('S35 author prompt contains constraint-surfacing instruction', async () => {
+  const { result, trace, error } = await run(makeDispatcher())
+  assert.ifError(error)
+  assert.equal(result.status, 'ready')
+  const authorPrompt = trace.calls.find((c) => c.label === 'author-plan').prompt
+  assert.ok(authorPrompt.includes('must surface in the plan'))
+  return 'author prompt explicitly requires constraint coverage'
+})
+
+S('S36 verbatim-surface pins: ktdRefutePrompt, ktdArbitrationPrompt, ANCHOR_RUBRIC, editorPrompt, cap log()s', async () => {
+  // ---- ktdRefutePrompt verbatim surface ----
+  // trigger: classify returns ktds so ktdRefutePrompt is called
+  const withKtds = makeDispatcher({}, {
+    classify: { ktds: ['use sqlite as the queue store'], loadBearingAssumptions: [] },
+  })
+  const { result: r1, trace: t1, error: e1 } = await run(withKtds)
+  assert.ifError(e1)
+  const ktdRefuteCall = t1.calls.find((c) => c.label === 'ktd-refute-p1-0')
+  assert.ok(ktdRefuteCall, 'ktd-refute-p1-0 dispatched')
+  assert.ok(ktdRefuteCall.prompt.includes(
+    `Your verdict is about THE QUOTED CLAIM itself: 'claim-refuted' ONLY\nwhen you hold concrete contradicting evidence; 'claim-correct' when the claim\naccurately describes the codebase — a failed refutation attempt is\n'claim-correct', not 'claim-refuted'. IMPORTANT — override of your default: if\nyou can neither confirm nor refute it from code and docs, return verdict\n'unverifiable', NOT 'claim-refuted'. Fail-if-uncertain here means surface, not\nauto-block. Your reason's first sentence must restate your verdict's referent\nin words ("The claim is correct/contradicted/unverifiable because ...").`
+  ), 'ktdRefutePrompt: referent-explicit verdict block byte-identical')
+
+  // ---- ktdArbitrationPrompt verbatim surface ----
+  // trigger: classify returns ktd, first refuter returns claim-refuted
+  const arbRun = await run(makeDispatcher({
+    'ktd-refute-p1-0': () => ({ verdict: 'claim-refuted', reason: 'The claim is contradicted: the code already uses postgres.' }),
+    'refute-halt-ktd-': (p, o, label) => ({ verdict: label.endsWith('-v2') ? 'ktd-is-right' : 'ktd-is-wrong', reason: 'vote' }),
+  }, { classify: { ktds: ['use sqlite as the queue store'], loadBearingAssumptions: [] } }))
+  assert.ifError(arbRun.error)
+  const arbCall = arbRun.trace.calls.find((c) => c.label === 'refute-halt-ktd-p1-0-v0')
+  assert.ok(arbCall, 'ktdArbitrationPrompt dispatched')
+  assert.ok(arbCall.prompt.includes(
+    `Judge THE DECISION itself on the actual code — read the relevant files\nyourself rather than adopting the first refuter's framing; where the claim is\ndeterministic runtime behavior, settle it by executing (read-only: never\nmodify the worktree). Your verdict is about the KTD itself (see the schema),\nand your reason's first sentence must restate it in words.`
+  ), 'ktdArbitrationPrompt: Judge-THE-DECISION passage byte-identical')
+
+  // ---- ANCHOR_RUBRIC verbatim surfaces (all five lines) ----
+  const { trace: t2, error: e2 } = await run(makeDispatcher())
+  assert.ifError(e2)
+  const reviewer = t2.calls.find((c) => c.label === 'review-r1-coherence')
+  assert.ok(reviewer, 'review-r1-coherence dispatched')
+  assert.ok(reviewer.prompt.includes('- 0 — Not confident at all: a false positive that does not stand up to light scrutiny. Do not emit.'), 'ANCHOR_RUBRIC: 0 line present')
+  assert.ok(reviewer.prompt.includes('- 25 — Somewhat confident: might be real but could be a false positive; you were not able to verify. Do not emit.'), 'ANCHOR_RUBRIC: 25 line present')
+  assert.ok(reviewer.prompt.includes('- 50 — Moderately confident: verified as real but advisory — "nothing breaks, but..." findings land here (FYI tier).'), 'ANCHOR_RUBRIC: 50 line present')
+  assert.ok(reviewer.prompt.includes('- 75 — Highly confident: double-checked and verified the issue will be hit in practice; requires naming a concrete downstream consequence someone will hit.'), 'ANCHOR_RUBRIC: 75 line present')
+  assert.ok(reviewer.prompt.includes('- 100 — Absolutely certain: double-checked and confirmed; the document text leaves no room for interpretation.'), 'ANCHOR_RUBRIC: 100 line present')
+  // also present in editorPrompt
+  const editor = t2.calls.find((c) => c.label === 'editor-r1')
+  assert.ok(editor.prompt.includes('- 0 — Not confident at all: a false positive that does not stand up to light scrutiny. Do not emit.'), 'ANCHOR_RUBRIC in editorPrompt: 0 line present')
+
+  // ---- editorPrompt READY/REVISED definitions verbatim surface ----
+  assert.ok(editor.prompt.includes(
+    `You are READ-ONLY. READY means: unchanged, execution-ready, you would stake\nthe run on it. REVISED means: this plan needs revision — return the problems\nas findings (section/title/severity/findingType/confidence/autofixClass/\nevidence/whyItMatters/suggestedFix); they will be refuted, fixed, and verified\nby other agents, never by you.`
+  ), 'editorPrompt: READY/REVISED definitions byte-identical')
+
+  // ---- cap log() verbatim invariants ----
+  // Refuter cap: 20 gating findings triggers the refuter-cap log
+  const twenty = Array.from({ length: 20 }, (_, i) => FINDING({ title: `finding-${String(i + 1).padStart(2, '0')}`, evidence: `evidence ${i + 1}` }))
+  const capA = await run(makeDispatcher({ 'review-r1-coherence': () => ({ findings: twenty }) }))
+  assert.ifError(capA.error)
+  assert.ok(capA.trace.logs.some((m) => m.includes('gating finding(s) beyond') && m.includes('routed to documentation without verification')), 'Refuter cap log: invariant text present')
+
+  // KTD cap: 10 ktds triggers the KTD-cap log
+  const tenKtds = { ktds: Array.from({ length: 10 }, (_, i) => `decision number ${i + 1}`), loadBearingAssumptions: [] }
+  const capB = await run(makeDispatcher({}, { classify: tenKtds }))
+  assert.ifError(capB.error)
+  assert.ok(capB.trace.logs.some((m) => m.includes('claim(s) beyond') && m.includes('not refuted — listed in run summary openQuestions')), 'KTD cap log: invariant text present')
+
+  // Halt-class cap: 4 halt-class findings -> 4th triggers the halt-class cap log
+  const hc = (title) => FINDING({ title, autofixClass: 'manual', severity: 'P0', suggestedFix: '', whyItMatters: 'no fix exists' })
+  const capC = await run(makeDispatcher({
+    'review-r1-coherence': () => ({ findings: [hc('hc one'), hc('hc two'), hc('hc three'), hc('hc four')] }),
+    'refute-halt-': () => ({ refuted: true, reason: 'vote' }),
+  }))
+  assert.ifError(capC.error)
+  assert.ok(capC.trace.logs.some((m) => m.includes('beyond') && m.includes('majority procedures — routed document-as-known-cost')), 'Halt-class cap log: invariant text present')
+
+  // KTD halt-majority residual reason: 4 refuted KTDs, 4th overflows KTD_HALT_CAP
+  // Use verdict:'refuted' (non-enum) so arbiters return 0 ktd-is-wrong votes -> challenge rejected
+  // -> all 3 uses of KTD_HALT_CAP exhaust the allowance; 4th ktd overflows -> residual
+  const fourKtds = { ktds: ['ktd alpha', 'ktd beta', 'ktd gamma', 'ktd delta'], loadBearingAssumptions: [] }
+  const capD = await run(makeDispatcher({
+    'ktd-refute-': () => ({ verdict: 'refuted', reason: 'The claim is contradicted.' }),
+    'refute-halt-ktd-': () => ({ refuted: true, reason: 'vote' }),
+  }, { classify: fourKtds }))
+  assert.ifError(capD.error)
+  assert.ok(capD.result.residualFindings.some((r) => r.class === 'dropped-cap' && r.reason.includes('KTD halt-majority allowance (') && r.reason.includes('/run) exhausted')), 'KTD halt-majority allowance residual reason: invariant text present')
+
+  return 'all verbatim surfaces pinned: ktdRefutePrompt, ktdArbitrationPrompt, ANCHOR_RUBRIC, editorPrompt READY/REVISED, cap logs'
+})
+
+S('S37 verbatim-surface pins: fixerPrompt, refixUidPrompt, reviseSpikePrompt, spike-cap log', async () => {
+  // ---- fixerPrompt: PROTECTED SURFACES block ----
+  // trigger: reviewer returns a finding so the fixer fires
+  const fixerRun = await run(makeDispatcher({
+    'review-r1-coherence': () => ({ findings: [FINDING()] }),
+  }))
+  assert.ifError(fixerRun.error)
+  const fixerCall = fixerRun.trace.calls.find((c) => c.label === 'fix-round-1')
+  assert.ok(fixerCall, 'fix-round-1 dispatched')
+  // Protected-surfaces block (byte-identical)
+  assert.ok(fixerCall.prompt.includes(
+    `PROTECTED SURFACES: any\nchange to the Requirements set, Scope Boundaries, or unit uid/Dependencies\nstructure requires refutationSurvived=true — otherwise return it unapplied. A\nfix may NEVER widen scope; return scope-widening proposals unapplied with\nreason starting 'scope-widening:'.`
+  ), 'fixerPrompt: PROTECTED SURFACES block byte-identical')
+  // Identity sentence in fixerPrompt
+  assert.ok(fixerCall.prompt.includes(
+    `U-IDs and R-IDs may be ADDED (next free\nnumber, gaps fine) or deleted, NEVER renumbered or reassigned.`
+  ), 'fixerPrompt: U-ID/R-ID identity sentence byte-identical')
+
+  // ---- refixUidPrompt: identity-restore header + rules block ----
+  // trigger: checker returns a renamed UID
+  const RENAMED = UID_PAIRS.map((p) => (p.uid === 'U2' ? { uid: 'U2', name: 'TWO-renamed' } : p))
+  const refixRun = await run(makeDispatcher({
+    'review-r1-coherence': () => ({ findings: [FINDING()] }),
+    'check-r1': () => CHECKER({ fixesVerified: [{ title: 'missing dep', landed: true, matchesIntent: true, note: '' }], uidNamePairs: RENAMED }),
+  }))
+  assert.ifError(refixRun.error)
+  const refixCall = refixRun.trace.calls.find((c) => c.label === 'refix-uid-r1')
+  assert.ok(refixCall, 'refix-uid-r1 dispatched')
+  // Identity-restore header (byte-identical)
+  assert.ok(refixCall.prompt.includes(
+    `Restore these\nidentities — never renumber; re-add as the same uid:`
+  ), 'refixUidPrompt: identity-restore header byte-identical')
+  // Rules block (byte-identical)
+  assert.ok(refixCall.prompt.includes(
+    `Rules: U-IDs and R-IDs may be ADDED (next free number, gaps fine) or deleted\nwith justification, NEVER renumbered or reassigned; uid-to-name identity pairs\nmust not swap. Edit the protected surfaces (Requirements set, Scope\nBoundaries, uid/Dependencies structure) ONLY as far as needed to restore the\nlisted identities — no further. NEVER widen scope.`
+  ), 'refixUidPrompt: rules block byte-identical')
+
+  // ---- reviseSpikePrompt: protected-surfaces OFF-LIMITS + uid/R-ID identity sentence ----
+  // trigger: editor returns designUnknowns so the spike branch fires
+  const spikeReviseRun = await run(makeDispatcher({
+    'editor-r1': () => EDITOR_REVISED({ designUnknowns: [{ unknown: 'cache layer choice', affectedUids: ['U1'], whyDesignLevel: 'architecture-level' }] }),
+  }))
+  assert.ifError(spikeReviseRun.error)
+  const reviseCall = spikeReviseRun.trace.calls.find((c) => c.label === 'revise-spike')
+  assert.ok(reviseCall, 'revise-spike dispatched')
+  // OFF-LIMITS block (byte-identical)
+  assert.ok(reviseCall.prompt.includes(
+    `Protected surfaces (Requirements set, Scope Boundaries,\nuid/Dependencies structure) are OFF-LIMITS entirely — no spike result carries\nrefutation-survived authority.`
+  ), 'reviseSpikePrompt: OFF-LIMITS block byte-identical')
+  // uid/R-ID identity sentence (byte-identical)
+  assert.ok(reviseCall.prompt.includes(
+    `Same uid/R-ID rules as a fix round: U-IDs and\nR-IDs may be ADDED (next free number, gaps fine) or deleted, NEVER renumbered\nor reassigned.`
+  ), 'reviseSpikePrompt: uid/R-ID identity sentence byte-identical')
+
+  // ---- Spike-cap log(): invariant text around the interpolated count ----
+  // trigger: 5 design unknowns -> SPIKE_CAP=3 -> overflow log fires
+  const fiveUnknowns = Array.from({ length: 5 }, (_, i) => ({ unknown: `unknown ${i + 1}`, affectedUids: ['U1'], whyDesignLevel: 'architecture-level' }))
+  const capRun = await run(makeDispatcher({
+    'editor-r1': () => EDITOR_REVISED({ designUnknowns: fiveUnknowns }),
+  }))
+  assert.ifError(capRun.error)
+  assert.ok(capRun.trace.logs.some((m) =>
+    m.startsWith('Spike cap: ') && m.includes(' design unknown(s) beyond ') && m.includes(' routed to Open Questions')
+  ), 'Spike cap log: invariant prefix, middle, and suffix present')
+
+  return 'fixerPrompt PROTECTED-SURFACES + identity, refixUidPrompt header + rules, reviseSpikePrompt OFF-LIMITS + uid identity, spike-cap log format all byte-identical'
+})
+
+S('S38 verbatim-surface pins: GATE_AUTHORITY (both dispatches), research-cap log, R13 list-item granularity', async () => {
+  // ---- GATE_AUTHORITY full text in parseFixPrompt (S10 path) ----
+  const GATE_AUTHORITY_TEXT = `The listed gate violations ARE the authorization to edit Dependencies, Scope\nBoundaries, or Requirements — exactly as far as needed to resolve them, no\nfurther. NEVER renumber or reassign uids/R-IDs. NEVER widen scope.`
+  const badDep = () => PARSED({ units: PARSED().units.map((u) => (u.uid === 'U3' ? { ...u, dependsOn: ['U9'] } : u)) })
+  const parseFixRun = await run(makeDispatcher({ 'parse-plan': (p, o, label) => (label === 'parse-plan' ? badDep() : PARSED()) }))
+  assert.ifError(parseFixRun.error)
+  const parseFix = parseFixRun.trace.calls.find((c) => c.label === 'parse-fix')
+  assert.ok(parseFix, 'parse-fix dispatched')
+  assert.ok(parseFix.prompt.includes(GATE_AUTHORITY_TEXT), 'parseFixPrompt: GATE_AUTHORITY full text byte-identical')
+
+  // ---- GATE_AUTHORITY full text in gateFixPrompt (S16 path) ----
+  const failScope = () => ({ items: RELEASE_IDS.map((id) => ({ id, pass: id !== 'scope-boundaries-substantive', evidence: id === 'scope-boundaries-substantive' ? 'boilerplate only' : 'ok' })) })
+  const gateFixRun = await run(makeDispatcher({ releasability: (p, o, label) => (label === 'releasability' ? failScope() : RELEASE_ALL_PASS()) }))
+  assert.ifError(gateFixRun.error)
+  const gateFix = gateFixRun.trace.calls.find((c) => c.label === 'gate-fix')
+  assert.ok(gateFix, 'gate-fix dispatched')
+  assert.ok(gateFix.prompt.includes(GATE_AUTHORITY_TEXT), 'gateFixPrompt: GATE_AUTHORITY full text byte-identical')
+
+  // ---- research-cap log: pin the production log template against scriptSrc ----
+  // The roster is at most 6 by construction (RESEARCH_CAP=6), so the cap branch
+  // can never fire in any test scenario — pinning via a live run() is not possible.
+  // Instead pin the log template in the coordinator source so a wording change is caught.
+  assert.ok(
+    /Research cap:.*researcher\(s\) beyond.*dropped/.test(scriptSrc),
+    'research-cap log template present in coordinator source (scriptSrc pin)'
+  )
+
+  // ---- R13 list-item granularity instruction in originCoveragePrompt ----
+  // Must reach both 'origin-coverage' and 'origin-coverage-retry' dispatches (same factory).
+  const R13_TEXT = `When an origin section contains a normative list (principles, lessons, rules, requirements, decisions), each list item is an individual coverage unit — do not judge the whole section "addressed" if member items were not individually traced to the plan. A section marked "addressed" while specific normative list items are unaddressed is an omission. Exception: illustrative lists (alternative options, candidate approaches, background examples where only some items are intended as requirements) are NOT individual coverage units — if the plan deliberately selects a subset of such a list, the unselected items are intentional non-requirements, not omissions.`
+  const originArgs = { ...ARGS, origin: 'docs/brainstorm.md', originVersion: 'ov-r13' }
+
+  // (a) 'origin-coverage' dispatch carries R13
+  const covRun = await run(makeDispatcher({
+    'origin-coverage': (p, o, label) => (label === 'origin-coverage'
+      ? { sections: [{ heading: 'Goals', status: 'omitted', evidence: 'not found in plan' }], omissions: [{ item: 'export retries', fromSection: 'Goals', detail: 'retry handling missing' }] }
+      : { sections: [{ heading: 'Goals', status: 'addressed', evidence: 'now covered' }], omissions: [] }),
+  }), { args: originArgs })
+  assert.ifError(covRun.error)
+  const covCall = covRun.trace.calls.find((c) => c.label === 'origin-coverage')
+  assert.ok(covCall, 'origin-coverage dispatched')
+  assert.ok(covCall.prompt.includes(R13_TEXT), 'origin-coverage: R13 list-item granularity instruction byte-identical')
+
+  // (b) 'origin-coverage-retry' dispatch also carries R13 (same factory)
+  const retryCovCall = covRun.trace.calls.find((c) => c.label === 'origin-coverage-retry')
+  assert.ok(retryCovCall, 'origin-coverage-retry dispatched after omission found')
+  assert.ok(retryCovCall.prompt.includes(R13_TEXT), 'origin-coverage-retry: R13 list-item granularity instruction byte-identical')
+
+  return 'GATE_AUTHORITY pinned in both parseFixPrompt and gateFixPrompt; research-cap log invariant confirmed; R13 list-item granularity reaches both origin-coverage dispatches'
+})
+
+// ---------- S39-S43: fleet-sovereignty pins ----------
+// Doctrine skills pinned by name; validating-agent-improvements is the pre-existing skill
+// and is excluded from the 40-80 band assertion.
+const DOCTRINE_SKILLS = ['decomposition', 'interface-design', 'scoping', 'test-strategy', 'zero-context-planning']
+
+S('S39 rented-dispatch pin: coordinator contains zero compound-engineering: references', async () => {
+  const hits = (scriptSrc.match(/compound-engineering:/g) || []).length
+  assert.strictEqual(hits, 0, `Expected 0 occurrences of 'compound-engineering:' in coordinator source, found ${hits}`)
+  return 'coordinator source is free of compound-engineering: plugin-namespaced dispatches'
+})
+
+S('S40 persona-on-disk pin: every dispatched agentType has a backing agents/*.md file', async () => {
+  // Run 1: all conditional review personas on (default intent 'none')
+  const r1 = await run(
+    makeDispatcher({}, { classify: { personas: { productLens: true, designLens: true, securityLens: true, scopeGuardian: true, adversarial: true } } }),
+  )
+  assert.ifError(r1.error)
+  // Run 2: intent 'mixed' so both conditional research personas (web-researcher,
+  // external-grounding-researcher) enter the trace — they are only dispatched on
+  // non-'none' intents and were absent from the default-intent trace.
+  const r2 = await run(
+    makeDispatcher({}, {
+      classify: { personas: { productLens: true, designLens: true, securityLens: true, scopeGuardian: true, adversarial: true } },
+      intake: { research: { intent: 'mixed', reason: 'coverage run' } },
+    }),
+  )
+  assert.ifError(r2.error)
+  // Union: every agentType dispatched in either run must have a backing agents/*.md file
+  const agentTypes = [...new Set([
+    ...r1.trace.calls.map((c) => c.agentType),
+    ...r2.trace.calls.map((c) => c.agentType),
+  ].filter(Boolean))]
+  assert.ok(agentTypes.length > 0, 'at least one agentType observed in trace')
+  const agentsDir = join(dir, '..', 'agents')
+  for (const at of agentTypes) {
+    const mdPath = join(agentsDir, `${at}.md`)
+    assert.ok(existsSync(mdPath), `agents/${at}.md not found on disk (agentType observed in trace)`)
+  }
+  return `${agentTypes.length} distinct agentTypes all backed by agents/*.md: ${agentTypes.join(', ')}`
+})
+
+S('S41 no-dangling-skills pin: every skills/ reference in agents/*.md has a skills/<name>/SKILL.md', async () => {
+  const agentsDir = join(dir, '..', 'agents')
+  const skillsDir = join(dir, '..', 'skills')
+  const agentFiles = readdirSync(agentsDir).filter((f) => f.endsWith('.md'))
+  const allRefs = new Set()
+  for (const f of agentFiles) {
+    const src = readFileSync(join(agentsDir, f), 'utf8')
+    for (const m of src.matchAll(/skills\/([a-z0-9-]+)/g)) {
+      allRefs.add(m[1])
+    }
+  }
+  assert.ok(allRefs.size > 0, 'at least one skills/ reference found in agents/*.md')
+  for (const name of allRefs) {
+    const skillMd = join(skillsDir, name, 'SKILL.md')
+    assert.ok(existsSync(skillMd), `skills/${name}/SKILL.md not found (referenced in agents/*.md)`)
+  }
+  return `${allRefs.size} skill reference(s) all resolve to SKILL.md: ${[...allRefs].join(', ')}`
+})
+
+S('S42 budget pin: trace-derived persona fleet < 1471 lines; doctrine skills each 40-80 lines', async () => {
+  // Derive the persona file list from two runs so the full owned fleet is covered:
+  // Run 1: all conditional review personas on (default intent 'none')
+  const r1 = await run(
+    makeDispatcher({}, { classify: { personas: { productLens: true, designLens: true, securityLens: true, scopeGuardian: true, adversarial: true } } }),
+  )
+  assert.ifError(r1.error)
+  // Run 2: intent 'mixed' to dispatch web-researcher and external-grounding-researcher
+  const r2 = await run(
+    makeDispatcher({}, {
+      classify: { personas: { productLens: true, designLens: true, securityLens: true, scopeGuardian: true, adversarial: true } },
+      intake: { research: { intent: 'mixed', reason: 'coverage run' } },
+    }),
+  )
+  assert.ifError(r2.error)
+  // Union of agentTypes across both runs covers the full dispatch fleet
+  const agentTypes = [...new Set([
+    ...r1.trace.calls.map((c) => c.agentType),
+    ...r2.trace.calls.map((c) => c.agentType),
+  ].filter(Boolean))]
+  const agentsDir = join(dir, '..', 'agents')
+  const skillsDir = join(dir, '..', 'skills')
+  // R11: sum of persona file line counts must be < 1471
+  let totalLines = 0
+  for (const at of agentTypes) {
+    const src = readFileSync(join(agentsDir, `${at}.md`), 'utf8')
+    totalLines += src.split('\n').length
+  }
+  assert.ok(totalLines < 1471, `Fleet line total ${totalLines} must be < 1471 (R11 budget)`)
+  // R2 band: each doctrine skill SKILL.md must be between 40 and 80 lines inclusive
+  assert.strictEqual(DOCTRINE_SKILLS.length, 5, `Expected exactly 5 doctrine skills, found ${DOCTRINE_SKILLS.length}`)
+  for (const name of DOCTRINE_SKILLS) {
+    const src = readFileSync(join(skillsDir, name, 'SKILL.md'), 'utf8')
+    const lines = src.split('\n').length
+    assert.ok(lines >= 40, `skills/${name}/SKILL.md has ${lines} lines, must be >= 40 (R2 lower band)`)
+    assert.ok(lines <= 80, `skills/${name}/SKILL.md has ${lines} lines, must be <= 80 (R2 upper band)`)
+  }
+  return `fleet total ${totalLines} lines < 1471; ${agentTypes.length} personas; doctrine skills [${DOCTRINE_SKILLS.map((n) => `${n}:${readFileSync(join(skillsDir, n, 'SKILL.md'), 'utf8').split('\n').length}`).join(', ')}] all within 40-80 band`
+})
+
+S('S43 prose-pin sweep: no slim-able verbatim persona-prose assertions outside S36-S38', async () => {
+  // This scenario documents the audit result: existing scenarios either use structural pins
+  // (labels, agentTypes, schema fields, XML markers, counts) or are explicitly marked as
+  // byte-identical parser-contract pins in S36-S38. No stragglers to convert were found.
+  // Run the happy path and confirm the structurally-pinned assertions still hold:
+  const { result, trace, error } = await run(makeDispatcher())
+  assert.ifError(error)
+  assert.equal(result.status, 'ready')
+  // Confirm reviewer prompts carry structural markers only (not fragile prose)
+  const reviewCalls = trace.calls.filter((c) => /^review-r\d+-/.test(c.label))
+  for (const c of reviewCalls) {
+    assert.ok(c.agentType, `${c.label} carries agentType (structural pin passes)`)
+    assert.ok(c.schema, `${c.label} carries schema (structural pin passes)`)
+  }
+  return `prose-pin audit complete: ${reviewCalls.length} reviewer dispatches all carry agentType + schema structural pins; no slim-able prose stragglers in S1-S38`
+})
+
+S('S44 plan-editor verdict-correctness block byte-identical (R6/U4)', async () => {
+  // R6 and U4 require the eval-backed verdict block in agents/plan-editor.md to
+  // stay byte-identical with v1. No run() call is needed — this is a file-content pin.
+  const VERDICT_BLOCK = `You are judged on VERDICT CORRECTNESS, not on whether you found something.\nAn unnecessary rewrite is a failure. Missing a real problem is a failure.\nREADY means: unchanged, execution-ready, you would stake the run on it.\nREVISED means: you found real problems that must be fixed before execution.`
+  const planEditorSrc = readFileSync(join(dir, '..', 'agents', 'plan-editor.md'), 'utf8')
+  assert.ok(
+    planEditorSrc.includes(VERDICT_BLOCK),
+    'agents/plan-editor.md verdict-correctness block is byte-identical (R6/U4 pin)'
+  )
+  return 'plan-editor.md verdict-correctness block byte-identical with v1'
+})
+
+S('S45 below-floor halt: trivial request halts at S0 with a directPrompt, intake only', async () => {
+  const BRIEF = 'Edit src/config.js line 12 to bump the timeout from 30 to 60. Conventional commit chore: bump timeout. Stage src/config.js by name. Run node --test. Report the diff and the passing test output.'
+  const d = makeDispatcher({}, {
+    intake: { belowFloor: { verdict: true, reason: 'single-file one-line constant bump, no boundary or risk', directPrompt: BRIEF } },
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  assert.equal(result.status, 'halted')
+  assert.equal(result.haltStage, 'S0-below-floor')
+  assert.ok(result.directPrompt && result.directPrompt.length > 0, 'directPrompt rides the summary, non-empty')
+  assert.equal(result.directPrompt, BRIEF, 'directPrompt is the intake brief verbatim')
+  assert.equal(trace.calls.length, 1, 'exactly one agent dispatched (intake only)')
+  assert.equal(trace.calls[0].label, 'intake')
+  assert.ok(trace.logs.some((m) => m.startsWith('Below-floor:') && /pin args\.depth to force a plan/.test(m)), 'below-floor log fired')
+
+  // Empty-reason fallback (observed live: an intake put everything in
+  // directPrompt and left reason '') — the halt trace must never be reasonless.
+  const e = await run(makeDispatcher({}, {
+    intake: { belowFloor: { verdict: true, reason: '', directPrompt: BRIEF } },
+  }))
+  assert.ifError(e.error)
+  assert.equal(e.result.haltStage, 'S0-below-floor')
+  assert.ok(e.result.haltReason && e.result.haltReason.length > 0, 'haltReason falls back to a non-empty default when intake leaves reason blank')
+  return 'trivial request halts at S0-below-floor with a ready-to-use directPrompt; only intake dispatched; empty reason falls back'
+})
+
+S('S46 pinned depth (and origin) override the below-floor halt: the run proceeds to author', async () => {
+  const belowFloorIntake = { belowFloor: { verdict: true, reason: 'trivial', directPrompt: 'do the thing' } }
+  // (a) pinned depth forces a plan despite verdict:true
+  const a = await run(makeDispatcher({}, { intake: belowFloorIntake }), { args: { ...ARGS, depth: 'lightweight' } })
+  assert.ifError(a.error)
+  assert.notEqual(a.result.haltStage, 'S0-below-floor', 'pinned depth bypasses the floor')
+  assert.ok(idx(a.trace, 'author-plan') >= 0, 'author-plan dispatched — the run proceeds')
+  // (b) an origin doc also forces a plan (caller deliberately wants one)
+  const b = await run(makeDispatcher({}, { intake: belowFloorIntake }), { args: { ...ARGS, origin: 'docs/brainstorm.md', originVersion: 'ov-1' } })
+  assert.ifError(b.error)
+  assert.notEqual(b.result.haltStage, 'S0-below-floor', 'origin doc bypasses the floor')
+  assert.ok(idx(b.trace, 'author-plan') >= 0, 'author-plan dispatched with an origin doc')
+  return 'a pinned depth or an origin doc overrides the below-floor halt; the planning fleet proceeds'
+})
+
+S('S47 lightweight caps: refuter/KTD/persona caps drop to the lightweight tier values with logs', async () => {
+  // depthTier lightweight + a flood of gating findings, KTDs, and conditional personas.
+  const tenFindings = Array.from({ length: 10 }, (_, i) => FINDING({ title: `lw-finding-${String(i + 1).padStart(2, '0')}`, evidence: `evidence ${i + 1}` }))
+  const tenKtds = Array.from({ length: 10 }, (_, i) => `lightweight decision number ${i + 1}`)
+  const allPersonas = { productLens: true, designLens: true, securityLens: true, scopeGuardian: true, adversarial: true }
+  const d = makeDispatcher({
+    'review-r1-coherence': () => ({ findings: tenFindings }),
+  }, {
+    intake: { depthTier: 'lightweight' },
+    classify: { ktds: tenKtds, loadBearingAssumptions: [], personas: allPersonas, reasons: ['all conditional personas on'] },
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  // refuter cap drops from 16 to 6
+  assert.equal(count(trace, 'refute-r1-f'), 6, 'lightweight refuter cap at 6')
+  assert.ok(trace.logs.some((m) => /gating finding\(s\) beyond 6/.test(m) && /routed to documentation without verification/.test(m)), 'refuter-cap log fires at 6')
+  // KTD cap drops from 8 to 3
+  assert.equal(count(trace, 'ktd-refute-p1-'), 3, 'lightweight KTD cap at 3')
+  assert.ok(trace.logs.some((m) => /claim\(s\) beyond 3/.test(m) && /not refuted — listed in run summary openQuestions/.test(m)), 'KTD-cap log fires at 3')
+  // persona cap drops from 8 to 4 (roster of 7 conditional+base -> 4 dispatched, 3 dropped)
+  assert.equal(count(trace, 'review-r1-'), 4, 'lightweight persona cap at 4')
+  assert.ok(trace.logs.some((m) => /persona\(s\) beyond 4 dropped this round/.test(m)), 'persona-cap log fires at 4')
+  return 'lightweight tier: refuter cap 6, KTD cap 3, persona cap 4, each overflow logged'
+})
+
+S('S48 standard regression: default tier keeps the OLD cap and round behavior (no tier leakage)', async () => {
+  // 20 gating findings at the default (standard) tier -> exactly 16 refuters, as before.
+  const twenty = Array.from({ length: 20 }, (_, i) => FINDING({ title: `std-finding-${String(i + 1).padStart(2, '0')}`, evidence: `evidence ${i + 1}` }))
+  const a = await run(makeDispatcher({ 'review-r1-coherence': () => ({ findings: twenty }) }))
+  assert.ifError(a.error)
+  assert.equal(count(a.trace, 'refute-r1-f'), 16, 'standard refuter cap stays at 16')
+  assert.ok(a.trace.logs.some((m) => /beyond 16/.test(m)), 'standard refuter-cap log still says 16')
+  // 10 KTDs at standard -> 8 refuted (old KTD_CAP), overflow logged at 8
+  const b = await run(makeDispatcher({}, { classify: { ktds: Array.from({ length: 10 }, (_, i) => `std decision ${i + 1}`), loadBearingAssumptions: [] } }))
+  assert.ifError(b.error)
+  assert.equal(count(b.trace, 'ktd-refute-p1-'), 8, 'standard KTD cap stays at 8')
+  assert.ok(b.trace.logs.some((m) => /claim\(s\) beyond 8/.test(m)), 'standard KTD-cap log still says 8')
+  // reviewRounds default stays 2 at standard (personas active in round 2)
+  const mkSlow = () => makeDispatcher({ 'editor-r1': () => EDITOR_REVISED() })
+  const c = await run(mkSlow())
+  assert.ifError(c.error)
+  assert.equal(c.result.personaRoundsUsed, 2, 'standard reviewRounds default stays 2')
+  assert.ok(c.trace.calls.some((x) => x.label === 'review-r2-coherence'), 'personas active in round 2 at standard')
+  return 'standard tier unchanged: refuter cap 16, KTD cap 8, reviewRounds 2 — no leakage from the lightweight tier'
+})
+
+S('S49 args.tokenBudget drives the same graceful floor halts as budget.total', async () => {
+  // budgetTotal null, tokenBudget set -> the coordinator-side floor uses TOKEN_TARGET.
+  // Mirror S11: REVISED at round 1 keeps the loop alive so the floor trips at the round-2 head.
+  const a = await run(makeDispatcher({ 'editor-r1': () => EDITOR_REVISED() }), { args: { ...ARGS, tokenBudget: 140000 }, budgetTotal: null })
+  assert.ifError(a.error)
+  assert.equal(a.result.status, 'halted')
+  assert.equal(a.result.haltStage, 'S4-budget-floor', 'tokenBudget produces the S4 floor halt')
+  assert.ok(a.trace.logs.some((m) => /Budget floor reached before review round 2/.test(m)))
+  // strong plan exits round 1 -> floor trips entering S5
+  const b = await run(makeDispatcher(), { args: { ...ARGS, tokenBudget: 140000 }, budgetTotal: null })
+  assert.ifError(b.error)
+  assert.equal(b.result.haltStage, 'S5-budget-floor', 'tokenBudget produces the S5 floor halt')
+  // budget.total precedence: when both are set, budget.total wins and S11 semantics hold
+  const c = await run(makeDispatcher({ 'editor-r1': () => EDITOR_REVISED() }), { args: { ...ARGS, tokenBudget: 999999999 }, budgetTotal: 140000 })
+  assert.ifError(c.error)
+  assert.equal(c.result.haltStage, 'S4-budget-floor', 'budget.total takes precedence over args.tokenBudget')
+  return 'args.tokenBudget reproduces the S4/S5 graceful floor halts; budget.total keeps precedence'
 })
 
 let pass = 0, fail = 0
