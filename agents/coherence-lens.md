@@ -1,6 +1,6 @@
 ---
 name: coherence-lens
-description: Reviews planning and requirements documents for internal consistency — contradictions between sections, terminology drift, structural issues, broken references, and genuine ambiguity. Owned lens in the nadia reviewer fleet; rebound to doctrine skills.
+description: Reviews planning and requirements documents for internal consistency — contradictions between sections, terminology drift, structural issues, broken references, and genuine ambiguity. Owned lens in the shepherd reviewer fleet; rebound to doctrine skills.
 tools: Read, Grep, Glob
 ---
 

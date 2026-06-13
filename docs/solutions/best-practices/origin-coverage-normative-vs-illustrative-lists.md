@@ -2,7 +2,7 @@
 title: "Distinguish normative from illustrative lists in origin-coverage prompts"
 date: 2026-06-12
 category: best-practices
-module: nadia-plan
+module: shepherd-plan
 problem_type: best_practice
 component: documentation
 severity: medium
@@ -10,14 +10,14 @@ applies_when:
   - "Writing a completeness-checker agent that walks an origin document section by section"
   - "An origin doc contains lists of alternative approaches, example options, or candidate selections"
   - "The plan deliberately selects a subset of the list and omits the rest"
-tags: [origin-coverage, completeness-checker, agent-prompts, false-positives, nadia-plan]
+tags: [origin-coverage, completeness-checker, agent-prompts, false-positives, shepherd-plan]
 ---
 
 # Distinguish normative from illustrative lists in origin-coverage prompts
 
 ## Context
 
-The `nadia-plan` workflow runs an origin-coverage agent that walks each section
+The `shepherd-plan` workflow runs an origin-coverage agent that walks each section
 of the origin document and checks whether the generated plan addresses every
 coverage unit. When the origin section contains a list, the agent must decide
 whether each list item is an individual coverage unit or whether only the overall
@@ -47,7 +47,7 @@ examples where only some items are intended as requirements. A plan that
 deliberately selects a subset of such a list is satisfying the intent; unselected
 items are intentional non-requirements, not omissions.
 
-The production fix to `workflows/nadia-plan.js` (commit `7df2cb8`):
+The production fix to `workflows/shepherd-plan.js` (commit `7df2cb8`):
 
 ```
 Before:
@@ -121,5 +121,5 @@ After fix: agent still reports "adversarial verification" as an omission — nor
 
 ## Related
 
-- `workflows/nadia-plan.js` — origin-coverage prompt, `R13` rule
+- `workflows/shepherd-plan.js` — origin-coverage prompt, `R13` rule
 - `docs/solutions/architecture-patterns/pre-verification-dedup-capped-verifier-budget.md` — related pattern for completeness enforcement in the delivery pipeline

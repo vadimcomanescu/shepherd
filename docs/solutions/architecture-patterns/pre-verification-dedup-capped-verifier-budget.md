@@ -17,7 +17,7 @@ tags: [review-pipeline, dedup, verifier-budget, adversarial-verification, dynami
 
 ## Context
 
-The Quality phase of `workflows/nadia-deliver.js` fans findings from several reviewer agents (Claude personas, a Codex second-model reviewer, inline angle reviewers, a late sweep pass) into per-finding verifier agents. The original design deduped AFTER verification with an exact `file::line::title` fingerprint. That had three compounding costs: duplicate findings each consumed a verifier spawn before the merge, near-identical findings (same defect reported 2 lines apart, or paraphrased titles) never merged at all, and verifier spawns were unbounded — an inflated reviewer roster walked toward the 1000-agent lifetime cap.
+The Quality phase of `workflows/shepherd-deliver.js` fans findings from several reviewer agents (Claude personas, a Codex second-model reviewer, inline angle reviewers, a late sweep pass) into per-finding verifier agents. The original design deduped AFTER verification with an exact `file::line::title` fingerprint. That had three compounding costs: duplicate findings each consumed a verifier spawn before the merge, near-identical findings (same defect reported 2 lines apart, or paraphrased titles) never merged at all, and verifier spawns were unbounded — an inflated reviewer roster walked toward the 1000-agent lifetime cap.
 
 The replacement (commit `f9fa09a`, hardened by review-fix commits `db22c28` and `5a03092`) moves dedup BEFORE verification and caps spawns. Getting that correct took one TDD pass (9 red scenarios first) plus 12 adversarially-verified review findings — the hazards below are exactly what a first implementation gets wrong.
 
@@ -81,7 +81,7 @@ else {
 }
 ```
 
-Test scenarios covering the revival paths: S37–S39, S42, S44–S48 in `workflows/nadia-deliver.test.mjs` (48/48 passing on this branch).
+Test scenarios covering the revival paths: S37–S39, S42, S44–S48 in `workflows/shepherd-deliver.test.mjs` (48/48 passing on this branch).
 
 ## Related
 

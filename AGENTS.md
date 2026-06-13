@@ -47,7 +47,7 @@ Before authoring, editing, running, or reviewing **ANY** dynamic workflow in thi
 
 ### Issue tracker
 
-GitHub Issues on `vadimcomanescu/nadia`, via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+GitHub Issues on `vadimcomanescu/shepherd`, via the `gh` CLI. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

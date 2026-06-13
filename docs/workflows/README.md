@@ -1,6 +1,6 @@
 # Dynamic Workflows in this Repo — Index and Core Principles
 
-**Nadia is itself built as a dynamic workflow.** These principles are load-bearing, not background reading.
+**Shepherd is itself built as a dynamic workflow.** These principles are load-bearing, not background reading.
 
 ---
 

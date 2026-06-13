@@ -2,7 +2,7 @@
 title: "Adding an intake enum value requires a matching coordinator dispatch branch"
 date: 2026-06-12
 category: logic-errors
-module: nadia-plan
+module: shepherd-plan
 problem_type: logic_error
 component: development_workflow
 symptoms:
@@ -12,14 +12,14 @@ symptoms:
 root_cause: missing_workflow_step
 resolution_type: code_fix
 severity: high
-tags: [coordinator, intake-schema, dispatch-routing, dead-code, nadia-plan, enum]
+tags: [coordinator, intake-schema, dispatch-routing, dead-code, shepherd-plan, enum]
 ---
 
 # Adding an intake enum value requires a matching coordinator dispatch branch
 
 ## Problem
 
-The `nadia-plan` coordinator uses a JSON schema (`INTAKE_SCHEMA`) to classify
+The `shepherd-plan` coordinator uses a JSON schema (`INTAKE_SCHEMA`) to classify
 the incoming request, with a `research.intent` enum that controls which
 researcher agent is dispatched. When a new intent value (`version-specific
 framework`) was added to the merged `external-grounding-researcher` persona's
@@ -113,6 +113,6 @@ unreachable or the schema inconsistent.
 
 ## Related Issues
 
-- `workflows/nadia-plan.js` — INTAKE_SCHEMA enum and dispatch chain
+- `workflows/shepherd-plan.js` — INTAKE_SCHEMA enum and dispatch chain
 - `agents/external-grounding-researcher.md` — Path B doctrine (version-specific framework)
-- `workflows/nadia-plan.test.mjs` — S40/S42 persona-on-disk pins that exercise agent routing
+- `workflows/shepherd-plan.test.mjs` — S40/S42 persona-on-disk pins that exercise agent routing

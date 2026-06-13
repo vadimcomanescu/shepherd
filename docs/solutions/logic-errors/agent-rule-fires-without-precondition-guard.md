@@ -2,7 +2,7 @@
 title: "Guard agent persona rules that reference optional external resources"
 date: 2026-06-12
 category: logic-errors
-module: nadia-plan
+module: shepherd-plan
 problem_type: logic_error
 component: documentation
 symptoms:
@@ -12,7 +12,7 @@ symptoms:
 root_cause: missing_validation
 resolution_type: code_fix
 severity: medium
-tags: [agent-rules, plan-editor, domain-terms, glossary, nadia-plan, precondition-guard]
+tags: [agent-rules, plan-editor, domain-terms, glossary, shepherd-plan, precondition-guard]
 ---
 
 # Guard agent persona rules that reference optional external resources
@@ -96,4 +96,4 @@ When writing agent persona rules that reference optional files or resources:
 ## Related Issues
 
 - `agents/plan-editor.md` — the guarded rule
-- `workflows/nadia-plan.test.mjs` — S44 byte-pin verifies the verdict-correctness block (commit `c5e0b9f`)
+- `workflows/shepherd-plan.test.mjs` — S44 byte-pin verifies the verdict-correctness block (commit `c5e0b9f`)

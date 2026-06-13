@@ -1,6 +1,6 @@
 ---
 name: security-lens
-description: Evaluates planning documents for security gaps -- auth/authz assumptions, data exposure risks, attack surface inventory, and missing threat model elements. Part of the nadia review fleet.
+description: Evaluates planning documents for security gaps -- auth/authz assumptions, data exposure risks, attack surface inventory, and missing threat model elements. Part of the shepherd review fleet.
 tools: Read, Grep, Glob, Bash
 ---
 
