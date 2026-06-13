@@ -31,10 +31,11 @@ Both coordinators are invoked by name (their `meta.name`) with an `args` object.
 
 2. Deliver.  Hand that plan to shepherd-deliver:
 
-      args: { plan: "docs/plans/2026-06-13-001-feat-dark-mode-toggle-plan.md", ship: true }
+      args: { plan: "docs/plans/2026-06-13-001-feat-dark-mode-toggle-plan.md", planVersion: "<hash>", ship: true }
 
-   It runs the 12-phase pipeline (split, route, execute, review, validate, ship) and
-   opens the pull request.  (ship: true is the consent to push and open the PR.)
+   It runs the 12-phase pipeline (split, route, execute, review, validate, ship) and opens
+   the pull request.  Pass planVersion (from the plan summary) so a resumed run never replays
+   a stale parse of an edited plan; ship: true is the consent to push and open the PR.
 ```
 
 Nothing self-reported is trusted along the way: findings are verified by independent agents prompted to refute them, and anything unresolved is written into the PR as a durable residual rather than dropped. See [`docs/practice/verification.md`](docs/practice/verification.md).
