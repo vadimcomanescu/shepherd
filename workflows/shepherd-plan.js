@@ -1,7 +1,7 @@
 export const meta = {
-  name: 'nadia-plan',
-  description: 'Plan-production pipeline: lock a request or brainstorm into Confirmed Intent, research the repo, challenge the framing, author a ce-plan-format plan document, then run a bounded editor loop (persona doc-review, skeptical refutation, verified fix application, read-only spikes for design unknowns) and final gates (ce-work parse conformance, releasability checklist, origin coverage, cross-plan overlap), hygiene-check the workspace, optionally commit, and return a machine-readable run summary consumable by nadia-deliver.',
-  whenToUse: 'Producing a plan document for nadia-deliver from a request or an origin brainstorm/requirements doc, autonomously (no interactive questions; blocking unknowns become a structured halt). Trivial requests halt at S0 with a ready-to-use directPrompt unless args.depth is pinned. Passing commit: true IS the consent to commit the plan file. args: { request?: "<what to plan>", origin?: "<path to brainstorm/requirements doc>", originVersion?: "<hash-or-mtime — pass a NEW value after editing the origin doc so resume does not replay stale cached research>", depth?: "lightweight"|"standard"|"deep", date?: "YYYY-MM-DD", commit?: true|false, editorRounds?: <1..5, default 3>, reviewRounds?: <1..3, default 2>, tokenBudget?: <output-token target; the run halts gracefully at phase boundaries when approached>, spikes?: true|false, externalResearch?: true|false }',
+  name: 'shepherd-plan',
+  description: 'Plan-production pipeline: lock a request or brainstorm into Confirmed Intent, research the repo, challenge the framing, author a ce-plan-format plan document, then run a bounded editor loop (persona doc-review, skeptical refutation, verified fix application, read-only spikes for design unknowns) and final gates (ce-work parse conformance, releasability checklist, origin coverage, cross-plan overlap), hygiene-check the workspace, optionally commit, and return a machine-readable run summary consumable by shepherd-deliver.',
+  whenToUse: 'Producing a plan document for shepherd-deliver from a request or an origin brainstorm/requirements doc, autonomously (no interactive questions; blocking unknowns become a structured halt). Trivial requests halt at S0 with a ready-to-use directPrompt unless args.depth is pinned. Passing commit: true IS the consent to commit the plan file. args: { request?: "<what to plan>", origin?: "<path to brainstorm/requirements doc>", originVersion?: "<hash-or-mtime — pass a NEW value after editing the origin doc so resume does not replay stale cached research>", depth?: "lightweight"|"standard"|"deep", date?: "YYYY-MM-DD", commit?: true|false, editorRounds?: <1..5, default 3>, reviewRounds?: <1..3, default 2>, tokenBudget?: <output-token target; the run halts gracefully at phase boundaries when approached>, spikes?: true|false, externalResearch?: true|false }',
   phases: [
     { title: 'Intake', detail: 'Lock Confirmed Intent, classify unknowns, set depth tier' },
     { title: 'Research', detail: 'Repo + learnings + conditional external research, cross-plan scan' },
@@ -25,7 +25,7 @@ export const meta = {
 // args.request read undefined). Accept both forms at the boundary.
 if (typeof args === 'string') { try { args = JSON.parse(args) } catch { /* fall through — the contract check below dies legibly */ } }
 if (!args || ((!args.request || !String(args.request).trim()) && !args.origin)) {
-  throw new Error('nadia-plan requires args.request (text) or args.origin (path to a brainstorm/requirements doc)')
+  throw new Error('shepherd-plan requires args.request (text) or args.origin (path to a brainstorm/requirements doc)')
 }
 if (args.depth !== void 0 && !['lightweight', 'standard', 'deep'].includes(args.depth)) {
   throw new Error('args.depth must be one of lightweight|standard|deep')
@@ -52,7 +52,7 @@ const SPIKES_ENABLED = args.spikes !== false
 const EXTERNAL_RESEARCH = args.externalResearch !== false
 // Args echo — a launch whose args never arrived (observed live: a scriptPath
 // launch delivered no tool-level args) must die loudly AND legibly, never silently.
-log(`nadia-plan args resolved: request=${REQUEST ? `"${REQUEST.slice(0, 80)}${REQUEST.length > 80 ? '…' : ''}"` : '(none)'}, origin=${ORIGIN || '(none)'}, depth=${PINNED_DEPTH || '(auto)'}, date=${PLAN_DATE || '(derived)'}, commit=${COMMIT}, editorRounds=${EDITOR_ROUNDS}, reviewRounds=${PERSONA_ROUNDS} (tier default may lower at lightweight), tokenBudget=${Number.isFinite(args.tokenBudget) ? args.tokenBudget : '(none)'}, spikes=${SPIKES_ENABLED}, externalResearch=${EXTERNAL_RESEARCH}, repo=${args.repo || '(session cwd)'}`)
+log(`shepherd-plan args resolved: request=${REQUEST ? `"${REQUEST.slice(0, 80)}${REQUEST.length > 80 ? '…' : ''}"` : '(none)'}, origin=${ORIGIN || '(none)'}, depth=${PINNED_DEPTH || '(auto)'}, date=${PLAN_DATE || '(derived)'}, commit=${COMMIT}, editorRounds=${EDITOR_ROUNDS}, reviewRounds=${PERSONA_ROUNDS} (tier default may lower at lightweight), tokenBudget=${Number.isFinite(args.tokenBudget) ? args.tokenBudget : '(none)'}, spikes=${SPIKES_ENABLED}, externalResearch=${EXTERNAL_RESEARCH}, repo=${args.repo || '(session cwd)'}`)
 
 // ---- target-repo grounding (first-class repo arg) ----
 // Every agent runs with the session cwd, which is NOT necessarily the repo the
@@ -218,7 +218,7 @@ const PERSONA_FINDINGS_SCHEMA = {
   required: ['findings'],
 }
 
-// Copied verbatim from nadia-deliver.js — the refuter verdict contract.
+// Copied verbatim from shepherd-deliver.js — the refuter verdict contract.
 const VERDICT_SCHEMA = {
   type: 'object',
   properties: { refuted: { type: 'boolean' }, reason: { type: 'string' } },
@@ -299,7 +299,7 @@ const SPIKE_SCHEMA = {
   required: ['unknown', 'resolution', 'evidence', 'recommendation'],
 }
 
-// Copied VERBATIM from nadia-deliver.js (lines 39-70) — this byte-copy
+// Copied VERBATIM from shepherd-deliver.js (lines 39-70) — this byte-copy
 // IS the compatibility guarantee: ce-work's own parser is the release test.
 const UNITS_SCHEMA = {
   type: 'object',
@@ -461,14 +461,14 @@ if (!intake) {
   return summary('halted', {
     haltStage: 'S0-intake',
     haltReason: 'intake agent returned null',
-    nextStep: 'Re-invoke nadia-plan; if it recurs, file the request as an issue with the raw request text',
+    nextStep: 'Re-invoke shepherd-plan; if it recurs, file the request as an issue with the raw request text',
   })
 }
 if (intake.nonCodeDeliverable === true) {
   return summary('halted', {
     haltStage: 'S0-intake',
-    haltReason: 'request is a non-code deliverable — nadia-plan only produces implementation plans for nadia-deliver',
-    nextStep: 'Restate the request as a code change (or handle the knowledge work directly), then re-invoke nadia-plan',
+    haltReason: 'request is a non-code deliverable — shepherd-plan only produces implementation plans for shepherd-deliver',
+    nextStep: 'Restate the request as a code change (or handle the knowledge work directly), then re-invoke shepherd-plan',
   })
 }
 if (intake.blockingUnknowns.length > 0) {
@@ -476,7 +476,7 @@ if (intake.blockingUnknowns.length > 0) {
   return summary('halted', {
     haltStage: 'S0-blocking-unknowns',
     haltReason: `blocking unknowns: ${intake.blockingUnknowns.map((u) => `${u.question} (${u.whyBlocking})`).join('; ')}`,
-    nextStep: 'Answer the open questions (or fold answers into args.request / the origin doc), then re-invoke nadia-plan',
+    nextStep: 'Answer the open questions (or fold answers into args.request / the origin doc), then re-invoke shepherd-plan',
   })
 }
 
@@ -493,7 +493,7 @@ if (intake.belowFloor && intake.belowFloor.verdict === true && !PINNED_DEPTH && 
   return summary('halted', {
     haltStage: 'S0-below-floor',
     haltReason: floorReason,
-    nextStep: 'Execute directly using the directPrompt in this summary (single executor, conventional commit), or re-invoke nadia-plan with args.depth pinned to force a plan',
+    nextStep: 'Execute directly using the directPrompt in this summary (single executor, conventional commit), or re-invoke shepherd-plan with args.depth pinned to force a plan',
     directPrompt: intake.belowFloor.directPrompt,
   })
 }
@@ -703,7 +703,7 @@ if (!strategy) {
   return summary('halted', {
     haltStage: 'S2-strategy-gate',
     haltReason: strategy.haltReason || 'strategy gate halted without a stated reason',
-    nextStep: 'Resolve the framing question, then re-invoke nadia-plan',
+    nextStep: 'Resolve the framing question, then re-invoke shepherd-plan',
   })
 } else if (strategy.verdict === 'adjust') {
   assumptions.push(...strategy.loggedAssumptions.map((a) => ({ question: 'scope/framing', hypothesis: a.assumption, invalidatedWhen: a.invalidatedWhen })))
@@ -765,7 +765,7 @@ R2. …
 
 ## Assumptions
 - <hypothesis> — invalidated when: <the observation that would invalidate it>
-<!-- always present in nadia-plan output (headless mode); every entry MUST carry its invalidating observation -->
+<!-- always present in shepherd-plan output (headless mode); every entry MUST carry its invalidating observation -->
 
 ## Deferred to Implementation
 - <execution-detail questions ONLY — never design-level unknowns (releasability gate enforces)>
@@ -815,7 +815,7 @@ if (!author) {
   return summary('halted', {
     haltStage: 'S3-draft',
     haltReason: 'plan author returned null — no draft exists',
-    nextStep: 'Simplify or clarify the request if it recurs, then re-invoke nadia-plan',
+    nextStep: 'Simplify or clarify the request if it recurs, then re-invoke shepherd-plan',
   })
 }
 planPath = author.planPath
@@ -1186,11 +1186,11 @@ const postMutationChecks = async (checkerIn, ctx) => {
     await agent(refixUidPrompt(violations), { label: `refix-uid-${ctx.tag}`, phase: ctx.phase, model: 'sonnet', schema: FIX_SCHEMA }) // restoring exact uid/R-ID strings from a diff of violations is mechanical targeted repair
     const recheck = await agent(checkerPrompt([], []), { label: `check-refix-${ctx.tag}`, phase: ctx.phase, model: 'sonnet', schema: CHECKER_SCHEMA })
     if (!recheck) {
-      return { haltStage: 'S4-uid-stability', haltReason: `uid stability re-check failed after violation: ${violations.join('; ')}`, nextStep: `Restore the original U-ID/R-ID identities in ${planPath} by hand (draft preserved at ${planPath}), then re-invoke nadia-plan` }
+      return { haltStage: 'S4-uid-stability', haltReason: `uid stability re-check failed after violation: ${violations.join('; ')}`, nextStep: `Restore the original U-ID/R-ID identities in ${planPath} by hand (draft preserved at ${planPath}), then re-invoke shepherd-plan` }
     }
     violations = uidStabilityViolations(uidBaseline, recheck, ctx.rIdEditAuthorized)
     if (violations.length) {
-      return { haltStage: 'S4-uid-stability', haltReason: `uid/R-ID stability violated after re-fix: ${violations.join('; ')}`, nextStep: `Restore the original U-ID/R-ID identities in ${planPath} by hand (draft preserved at ${planPath}), then re-invoke nadia-plan` }
+      return { haltStage: 'S4-uid-stability', haltReason: `uid/R-ID stability violated after re-fix: ${violations.join('; ')}`, nextStep: `Restore the original U-ID/R-ID identities in ${planPath} by hand (draft preserved at ${planPath}), then re-invoke shepherd-plan` }
     }
     current = recheck
   }
@@ -1218,7 +1218,7 @@ const postMutationChecks = async (checkerIn, ctx) => {
 const CHECKER_HALT = (tag) => ({
   haltStage: 'S4-post-mutation-check',
   haltReason: `post-mutation checker failed twice (${tag}) — uid stability and fix fidelity unverifiable`,
-  nextStep: `Inspect the draft at ${planPath} for uid/R-ID corruption (draft preserved at ${planPath}), then re-invoke nadia-plan`,
+  nextStep: `Inspect the draft at ${planPath} for uid/R-ID corruption (draft preserved at ${planPath}), then re-invoke shepherd-plan`,
 })
 
 // ---- the ONE loop ----
@@ -1228,7 +1228,7 @@ for (let r = 1; r <= EDITOR_ROUNDS; r++) {
     return summary('halted', {
       haltStage: 'S4-budget-floor',
       haltReason: `token budget floor reached before review round ${r}`,
-      nextStep: `Raise the token budget or lower editorRounds (draft preserved at ${planPath}), then re-invoke nadia-plan`,
+      nextStep: `Raise the token budget or lower editorRounds (draft preserved at ${planPath}), then re-invoke shepherd-plan`,
     })
   }
   roundsUsed = r
@@ -1405,7 +1405,7 @@ for (let r = 1; r <= EDITOR_ROUNDS; r++) {
         return summary('halted', {
           haltStage: 'S4-halt-class-finding',
           haltReason: `2-of-3 refuters sustained: ${f.title}`,
-          nextStep: `Resolve the sustained blocking finding (draft preserved at ${planPath}), then re-invoke nadia-plan`,
+          nextStep: `Resolve the sustained blocking finding (draft preserved at ${planPath}), then re-invoke shepherd-plan`,
         })
       }
       log(`Halt-class finding "${f.title}" refuted by majority — dropped`)
@@ -1464,7 +1464,7 @@ for (let r = 1; r <= EDITOR_ROUNDS; r++) {
             return summary('halted', {
               haltStage: 'S4-halt-class-finding',
               haltReason: `2-of-3 arbiters judged the KTD wrong: KTD refuted: ${head80(k)}`,
-              nextStep: `Rework the refuted Key Technical Decision (draft preserved at ${planPath}), then re-invoke nadia-plan`,
+              nextStep: `Rework the refuted Key Technical Decision (draft preserved at ${planPath}), then re-invoke shepherd-plan`,
             })
           }
           log(`KTD challenge rejected by arbitration — "${kf.title}" dropped`)
@@ -1704,7 +1704,7 @@ if (!readyExit) {
   return summary('halted', {
     haltStage: 'S4-editor-cap',
     haltReason,
-    nextStep: `Review the draft at ${planPath}, resolve the listed concerns (or raise editorRounds), then re-invoke nadia-plan`,
+    nextStep: `Review the draft at ${planPath}, resolve the listed concerns (or raise editorRounds), then re-invoke shepherd-plan`,
   })
 }
 
@@ -1717,7 +1717,7 @@ if (belowBudgetFloor()) {
   return summary('halted', {
     haltStage: 'S5-budget-floor',
     haltReason: 'plan reviewed but unverified — parse/releasability gates did not run',
-    nextStep: `Raise the token budget (draft preserved at ${planPath}), then re-invoke nadia-plan`,
+    nextStep: `Raise the token budget (draft preserved at ${planPath}), then re-invoke shepherd-plan`,
   })
 }
 
@@ -1806,7 +1806,7 @@ if (!parsed) {
   return summary('halted', {
     haltStage: 'S5-parse-gate',
     haltReason: 'parse agent failed twice',
-    nextStep: `Verify ${planPath} parses as a ce-plan document (draft preserved at ${planPath}), then re-invoke nadia-plan`,
+    nextStep: `Verify ${planPath} parses as a ce-plan document (draft preserved at ${planPath}), then re-invoke shepherd-plan`,
   })
 }
 parsed = filterRiskSurfaces(parsed)
@@ -1826,7 +1826,7 @@ if (violations.length) {
     return summary('halted', {
       haltStage: 'S5-parse-gate',
       haltReason: `parse conformance violations after one fix round: ${violations.join('; ')}`,
-      nextStep: `Fix the listed parse violations in ${planPath} (draft preserved at ${planPath}), then re-invoke nadia-plan`,
+      nextStep: `Fix the listed parse violations in ${planPath} (draft preserved at ${planPath}), then re-invoke shepherd-plan`,
     })
   }
 }
@@ -1933,13 +1933,13 @@ sectionsTouched.`
       return summary('halted', {
         haltStage: 'S5-releasability',
         haltReason: `gate-fix agent failed; releasability item(s) failing: ${releaseFailures.map((it) => it.id).join(', ')}`,
-        nextStep: `Fix the failing releasability items in ${planPath} (draft preserved at ${planPath}), then re-invoke nadia-plan`,
+        nextStep: `Fix the failing releasability items in ${planPath} (draft preserved at ${planPath}), then re-invoke shepherd-plan`,
       })
     }
     return summary('halted', {
       haltStage: 'S5-origin-coverage',
       haltReason: `gate-fix agent failed; origin omissions outstanding: ${originOmissions.map((o) => o.item).join('; ')}`,
-      nextStep: `Address the listed origin omissions in ${planPath} (or defer them explicitly) (draft preserved at ${planPath}), then re-invoke nadia-plan`,
+      nextStep: `Address the listed origin omissions in ${planPath} (or defer them explicitly) (draft preserved at ${planPath}), then re-invoke shepherd-plan`,
     })
   }
   if (!gateFix) log('Gate-fix agent failed on an overlap-only batch — overlaps remain in openQuestions only')
@@ -1956,7 +1956,7 @@ sectionsTouched.`
         return summary('halted', {
           haltStage: 'S5-releasability',
           haltReason: `releasability item(s) still failing after the gate-fix round: ${stillFailing.map((it) => `${it.id} (${it.evidence})`).join('; ')}`,
-          nextStep: `Fix the failing releasability items in ${planPath} (draft preserved at ${planPath}), then re-invoke nadia-plan`,
+          nextStep: `Fix the failing releasability items in ${planPath} (draft preserved at ${planPath}), then re-invoke shepherd-plan`,
         })
       }
     }
@@ -1969,7 +1969,7 @@ sectionsTouched.`
         return summary('halted', {
           haltStage: 'S5-origin-coverage',
           haltReason: `origin omissions remain after the gate-fix round: ${covRetry.omissions.map((o) => o.item).join('; ')}`,
-          nextStep: `Address the listed origin omissions in ${planPath} (or defer them explicitly) (draft preserved at ${planPath}), then re-invoke nadia-plan`,
+          nextStep: `Address the listed origin omissions in ${planPath} (or defer them explicitly) (draft preserved at ${planPath}), then re-invoke shepherd-plan`,
         })
       }
     }
@@ -1982,7 +1982,7 @@ sectionsTouched.`
       return summary('halted', {
         haltStage: 'S5-parse-gate',
         haltReason: `final parse after the gate-fix round failed: ${finalViolations.join('; ')}`,
-        nextStep: `Fix the listed parse violations in ${planPath} (draft preserved at ${planPath}), then re-invoke nadia-plan`,
+        nextStep: `Fix the listed parse violations in ${planPath} (draft preserved at ${planPath}), then re-invoke shepherd-plan`,
       })
     }
     unitCount = parsed.units.length
@@ -2000,7 +2000,7 @@ if (belowBudgetFloor()) {
   log('Hygiene gate skipped: token budget floor reached')
   log('Commit skipped: token budget floor reached')
   return summary('ready', {
-    nextStep: `Token budget exhausted before finalize — the workspace is UNVERIFIED: run git status by hand, commit the plan (git add ${planPath} && git commit -m "docs(plans): add ${slug} plan"), re-derive planVersion with git hash-object ${planPath}, then run nadia-deliver with { plan: '${planPath}', planVersion: '<that hash>' }`,
+    nextStep: `Token budget exhausted before finalize — the workspace is UNVERIFIED: run git status by hand, commit the plan (git add ${planPath} && git commit -m "docs(plans): add ${slug} plan"), re-derive planVersion with git hash-object ${planPath}, then run shepherd-deliver with { plan: '${planPath}', planVersion: '<that hash>' }`,
   })
 }
 
@@ -2050,10 +2050,10 @@ if (commitDirty) hygieneClean = false
 
 const nextStep = committed
   ? (planVersion
-    ? `Run nadia-deliver with { plan: '${planPath}', planVersion: '${planVersion}' }`
-    : `Run nadia-deliver with { plan: '${planPath}' } — re-derive planVersion with git hash-object ${planPath} first (hygiene gate failed)`)
+    ? `Run shepherd-deliver with { plan: '${planPath}', planVersion: '${planVersion}' }`
+    : `Run shepherd-deliver with { plan: '${planPath}' } — re-derive planVersion with git hash-object ${planPath} first (hygiene gate failed)`)
   : planVersion
-    ? `Commit the plan file (git add ${planPath} && git commit -m "docs(plans): add ${slug} plan"), then run nadia-deliver with { plan: '${planPath}', planVersion: '${planVersion}' } — ce-work requires the plan committed`
-    : `Commit the plan file (git add ${planPath} && git commit -m "docs(plans): add ${slug} plan"), then run nadia-deliver with { plan: '${planPath}' } — re-derive planVersion with git hash-object after committing; ce-work requires the plan committed`
+    ? `Commit the plan file (git add ${planPath} && git commit -m "docs(plans): add ${slug} plan"), then run shepherd-deliver with { plan: '${planPath}', planVersion: '${planVersion}' } — ce-work requires the plan committed`
+    : `Commit the plan file (git add ${planPath} && git commit -m "docs(plans): add ${slug} plan"), then run shepherd-deliver with { plan: '${planPath}' } — re-derive planVersion with git hash-object after committing; ce-work requires the plan committed`
 
 return summary('ready', { nextStep })

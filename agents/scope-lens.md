@@ -1,6 +1,6 @@
 ---
 name: scope-lens
-description: Reviews planning and requirements documents for scope alignment and unjustified complexity — challenges unnecessary abstractions, premature frameworks, and scope that exceeds stated goals. Owned lens in the nadia reviewer fleet; rebound to doctrine skills.
+description: Reviews planning and requirements documents for scope alignment and unjustified complexity — challenges unnecessary abstractions, premature frameworks, and scope that exceeds stated goals. Owned lens in the shepherd reviewer fleet; rebound to doctrine skills.
 tools: Read, Grep, Glob, Bash
 ---
 

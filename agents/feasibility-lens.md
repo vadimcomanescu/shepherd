@@ -1,6 +1,6 @@
 ---
 name: feasibility-lens
-description: Evaluates whether proposed technical approaches in planning and requirements documents will survive contact with reality — architecture conflicts, shadow paths, dependency gaps, migration risks, and implementability. Owned lens in the nadia reviewer fleet; rebound to doctrine skills.
+description: Evaluates whether proposed technical approaches in planning and requirements documents will survive contact with reality — architecture conflicts, shadow paths, dependency gaps, migration risks, and implementability. Owned lens in the shepherd reviewer fleet; rebound to doctrine skills.
 tools: Read, Grep, Glob, Bash
 ---
 

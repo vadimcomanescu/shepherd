@@ -1,4 +1,4 @@
-# Nadia — Dynamic Workflows: Reference & Harness
+# Shepherd — Dynamic Workflows: Reference & Harness
 
 A reference for building **dynamic workflows** in Claude Code — JavaScript coordinator scripts that orchestrate many subagents at scale, in the background, while the main session stays responsive — and a working harness built on those rules: a deterministic pipeline that takes an approved plan and executes it end-to-end, through to a PR.
 
@@ -21,9 +21,9 @@ Read [`docs/workflows/README.md`](docs/workflows/README.md) first — it covers 
 | Path | What it is |
 |------|------------|
 | [`docs/workflows/`](docs/workflows/) | The canonical authoring rules above — every workflow here is written against these docs, never from memory |
-| [`workflows/`](workflows/) | Coordinator scripts and their tests. [`nadia-deliver.js`](workflows/nadia-deliver.js) is the repo's own workflow: parse a plan document, split it into context-window-sized tasks, route each task to Codex or Claude, execute TDD in isolated worktrees, merge in dependency waves, review with adversarially verified fixes, validate, ship a PR, and watch CI with a bounded fix loop |
+| [`workflows/`](workflows/) | Coordinator scripts and their tests. [`shepherd-deliver.js`](workflows/shepherd-deliver.js) is the repo's own workflow: parse a plan document, split it into context-window-sized tasks, route each task to Codex or Claude, execute TDD in isolated worktrees, merge in dependency waves, review with adversarially verified fixes, validate, ship a PR, and watch CI with a bounded fix loop |
 | [`agents/`](agents/) | Subagent persona definitions the workflows dispatch (`task-splitter`, `executor-router`, `unit-executor`, `codex-runner`, `codex-reviewer`, `skeptical-refuter`, `ci-watcher`), symlinked into `.claude/agents` |
-| [`CONTEXT.md`](CONTEXT.md) | Domain glossary: the vocabulary for dynamic workflows and the nadia-deliver pipeline |
+| [`CONTEXT.md`](CONTEXT.md) | Domain glossary: the vocabulary for dynamic workflows and the shepherd-deliver pipeline |
 | [`STRATEGY.md`](STRATEGY.md) | Product direction: target problem, approach, metrics, and tracks |
 | [`AGENTS.md`](AGENTS.md) | Agent-facing rules for working in this repo |
 | [`docs/agents/`](docs/agents/) | Conventions for agents: issue tracker, triage labels, and domain docs |

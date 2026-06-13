@@ -6,7 +6,7 @@ import assert from 'node:assert'
 // Build the coordinator from the actual workflow script: same injection contract
 // as the dynamic-workflow runtime (body runs in an async function scope).
 const dir = dirname(fileURLToPath(import.meta.url))
-const scriptSrc = readFileSync(join(dir, 'nadia-plan.js'), 'utf8').replace(/^export const meta = /, 'const meta = ')
+const scriptSrc = readFileSync(join(dir, 'shepherd-plan.js'), 'utf8').replace(/^export const meta = /, 'const meta = ')
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
 const body = new AsyncFunction('args', 'agent', 'parallel', 'pipeline', 'phase', 'log', 'budget', 'workflow', scriptSrc)
 const coordinator = ({ args, agent, parallel, pipeline, phase, log, budget, workflow }) => body(args, agent, parallel, pipeline, phase, log, budget, workflow)
@@ -226,7 +226,7 @@ S('S1 happy path / anti-churn THRESHOLD', async () => {
   assert.equal(result.depthTier, 'standard')
   assert.equal(result.unitCount, 4)
   assert.equal(result.requirementCount, 2)
-  assert.ok(result.nextStep.includes('git add') && result.nextStep.includes('nadia-deliver') && result.nextStep.includes('abc123'), 'nextStep carries commit hint + ce-work invocation + planVersion')
+  assert.ok(result.nextStep.includes('git add') && result.nextStep.includes('shepherd-deliver') && result.nextStep.includes('abc123'), 'nextStep carries commit hint + ce-work invocation + planVersion')
   assert.deepEqual([...new Set(trace.phases)], ['Intake', 'Research', 'Gate', 'Draft', 'Review', 'Gates', 'Finalize'])
   assert.ok(!trace.logs.some((m) => /verified agent registry/.test(m)), 'no stale registry-gap log')
   return `${trace.calls.length} agent calls, ready in round 1 with zero churn`
@@ -555,7 +555,7 @@ S('S14 commit:false vs commit:true vs hygiene violation', async () => {
   assert.ifError(b.error)
   assert.equal(b.result.committed, true)
   assert.ok(idx(b.trace, 'commit-plan') >= 0 && idx(b.trace, 'commit-plan') < idx(b.trace, 'hygiene'), 'commit dispatched before the hygiene gate')
-  assert.equal(b.result.nextStep, `Run nadia-deliver with { plan: '${PLAN_PATH}', planVersion: 'abc123' }`)
+  assert.equal(b.result.nextStep, `Run shepherd-deliver with { plan: '${PLAN_PATH}', planVersion: 'abc123' }`)
   // (c) hygiene violation degrades, never blocks ready
   const c = await run(makeDispatcher({
     hygiene: () => ({ onlyPlanChanged: false, changedFiles: ['src/oops.js'], planVersion: 'abc123', detail: '' }),

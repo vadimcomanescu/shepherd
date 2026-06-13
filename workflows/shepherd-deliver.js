@@ -1,5 +1,5 @@
 export const meta = {
-  name: 'nadia-deliver',
+  name: 'shepherd-deliver',
   description: 'Drives a committed ce-plan document to a pull request: it splits each plan unit into context-window-sized tasks, routes each to a Codex or Claude executor, builds them test-first in isolated git worktrees, and merges them in dependency order. It then reviews the integrated branch (simplification plus persona and second-model passes with independently verified fixes), validates against the plan\'s requirements, browser-proofs affected routes, records reusable learnings, opens the PR, and watches CI with a bounded auto-fix loop.',
   whenToUse: 'Executing a ce-plan plan document end-to-end with mixed codex/claude executors, through to a PR. Invoking with ship enabled IS the consent to push and open a PR. args: { plan: "<path>", planVersion?: "<hash-or-mtime — pass a NEW value after editing the plan so resume does not replay a stale cached parse>", base?: "<branch>", slug?: "<branch-slug>", codex?: true|false, sandbox?: "yolo"|"full-auto", effortFloor?: "<minimal|low|medium|high|xhigh>", proof?: true|false, ship?: true|false, compound?: true|false, ciRounds?: <max CI fix iterations, default 3>, startedAt?: <ms> }',
   phases: [
@@ -26,7 +26,7 @@ export const meta = {
 // args.plan read undefined). Accept both forms at the boundary.
 if (typeof args === 'string') { try { args = JSON.parse(args) } catch { /* fall through — the contract check below dies legibly */ } }
 if (!args || !args.plan) {
-  throw new Error('nadia-deliver requires args.plan = path to a ce-plan document')
+  throw new Error('shepherd-deliver requires args.plan = path to a ce-plan document')
 }
 const PLAN = args.plan
 const CODEX_ENABLED = args.codex !== false           // invoking with codex enabled is the consent act
@@ -38,7 +38,7 @@ const COMPOUND_ENABLED = args.compound !== false
 const CI_ROUNDS = Math.max(1, Math.min(10, args.ciRounds || 3)) // lfg default 3; hard-clamped 1..10 so a bad arg cannot unbound the loop
 // Args echo — a launch whose args never arrived (observed live: a scriptPath
 // launch delivered no tool-level args) must die loudly AND legibly, never silently.
-log(`nadia-deliver args resolved: plan=${PLAN}, base=${args.base || '(default)'}, slug=${args.slug || '(derived)'}, codex=${CODEX_ENABLED}, sandbox=${SANDBOX}, proof=${PROOF_ENABLED}, ship=${SHIP_ENABLED}, compound=${COMPOUND_ENABLED}, ciRounds=${CI_ROUNDS}, repo=${args.repo || '(session cwd)'}`)
+log(`shepherd-deliver args resolved: plan=${PLAN}, base=${args.base || '(default)'}, slug=${args.slug || '(derived)'}, codex=${CODEX_ENABLED}, sandbox=${SANDBOX}, proof=${PROOF_ENABLED}, ship=${SHIP_ENABLED}, compound=${COMPOUND_ENABLED}, ciRounds=${CI_ROUNDS}, repo=${args.repo || '(session cwd)'}`)
 
 // ---- target-repo grounding (first-class repo arg) ----
 // Every agent runs with the session cwd, which is NOT necessarily the repo the

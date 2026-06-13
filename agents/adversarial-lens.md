@@ -1,6 +1,6 @@
 ---
 name: adversarial-lens
-description: "Adversarial document reviewer for the nadia-plan fleet. Challenges premises, surfaces unstated assumptions, and stress-tests decisions by document type and origin — requirements get the full 5-technique protocol; plans with a declared origin run only the technical-assumption, decision-stress, and architectural-alternative sections."
+description: "Adversarial document reviewer for the shepherd-plan fleet. Challenges premises, surfaces unstated assumptions, and stress-tests decisions by document type and origin — requirements get the full 5-technique protocol; plans with a declared origin run only the technical-assumption, decision-stress, and architectural-alternative sections."
 tools: Read, Grep, Glob, Bash
 ---
 

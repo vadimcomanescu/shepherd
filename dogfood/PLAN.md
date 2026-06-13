@@ -61,13 +61,13 @@ so each executor tier gets exercised where the router would send it.
 
 ## End deliverable (the point of all this)
 
-Modify the routing layer of **nadia-deliver** so model choice is routed
+Modify the routing layer of **shepherd-deliver** so model choice is routed
 per task instead of inherited:
 
 1. `agents/executor-router.md` — when routing to CLAUDE, also pick the model tier
    (`sonnet` vs `opus`; Fable 5 never for execution — planning only), with rubric
    thresholds grounded in LEDGER.md evidence.
-2. `workflows/nadia-deliver.js` — add `model` to `ROUTE_SCHEMA`; pass
+2. `workflows/shepherd-deliver.js` — add `model` to `ROUTE_SCHEMA`; pass
    `model: t.route.model` in the Execute dispatch (~line 579, currently
    "claude executor inherits" — i.e. a Fable 5 session runs every unit-executor
    on Fable 5), and in the codex-fallback and finisher dispatches.

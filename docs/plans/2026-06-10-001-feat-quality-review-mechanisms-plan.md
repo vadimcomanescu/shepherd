@@ -9,13 +9,13 @@ date: 2026-06-10
 
 ## Summary
 
-Upgrade the Quality phase of `workflows/nadia-deliver.js` with five mechanisms from Claude Code's built-in workflow-backed `/code-review`: a 3-state recall-biased verdict ladder, two mechanistic finder angles, proximity-based dedup, a severity-aware verify budget with logged drops, and a gap-hunting sweep pass. The fix-and-residual loop, codex second-model reviewer, and risk-surface persona activation stay unchanged.
+Upgrade the Quality phase of `workflows/shepherd-deliver.js` with five mechanisms from Claude Code's built-in workflow-backed `/code-review`: a 3-state recall-biased verdict ladder, two mechanistic finder angles, proximity-based dedup, a severity-aware verify budget with logged drops, and a gap-hunting sweep pass. The fix-and-residual loop, codex second-model reviewer, and risk-surface persona activation stay unchanged.
 
 ---
 
 ## Problem Frame
 
-Nadia's Quality phase shares the built-in reviewer's spine (parallel reviewers → per-finding adversarial verification → dedup → fix) but is precision-biased where the built-in argues for recall: the `skeptical-refuter` defaults to *refuted when uncertain*, silently discarding the "mechanism real, trigger uncertain" class (races, rare-path nils, boundary off-by-ones) that ships bugs. Its dedup fingerprint (`file::line::title` exact match) fails to merge the same defect reported at ±2 lines or under a different title. Verifier spawns are unbounded, findings carry no concrete failure scenario, no pass hunts for what the first reviewers missed, and no roster procedure audits removed behavior or traces callers of changed functions. The built-in `/code-review` (extracted from the CLI binary, v2.1.170) solves each of these; this plan ports those mechanisms while keeping nadia's advantages the built-in lacks — closing the loop with fixers and residuals, and a second model family in the roster.
+Shepherd's Quality phase shares the built-in reviewer's spine (parallel reviewers → per-finding adversarial verification → dedup → fix) but is precision-biased where the built-in argues for recall: the `skeptical-refuter` defaults to *refuted when uncertain*, silently discarding the "mechanism real, trigger uncertain" class (races, rare-path nils, boundary off-by-ones) that ships bugs. Its dedup fingerprint (`file::line::title` exact match) fails to merge the same defect reported at ±2 lines or under a different title. Verifier spawns are unbounded, findings carry no concrete failure scenario, no pass hunts for what the first reviewers missed, and no roster procedure audits removed behavior or traces callers of changed functions. The built-in `/code-review` (extracted from the CLI binary, v2.1.170) solves each of these; this plan ports those mechanisms while keeping shepherd's advantages the built-in lacks — closing the loop with fixers and residuals, and a second model family in the roster.
 
 ---
 
@@ -53,7 +53,7 @@ Nadia's Quality phase shares the built-in reviewer's spine (parallel reviewers �
 - **Angle finders are inline roster entries, not persona files.** The removed-behavior auditor and cross-file tracer are review lenses (single-prompt procedures), not multi-step protocols, so the "extractable protocols live in `agents/`" rule does not apply. They run always-on: both are cheap and their value does not depend on risk surfaces.
 - **Verify budget `MAX_VERIFY = 25`, severity-aware.** Blocking-severity findings are exempt from the cap — spawn count stays bounded because the roster is fixed and each finding spawns at most one verifier; the cap bounds suggested-severity verification, which otherwise consumes slots in completion order and could starve a late-arriving blocking finding. Budget state accumulates across the streaming pipeline (reviewers finish at different times) and is shared by the sweep round. Every dropped finding is logged with its identity (file:line — title), not just a count. The constant is borrowed from the built-in; retune it from the first real run's `reviewStats.candidates`.
 - **Dedup: per-file proximity merge.** A candidate merges into an already-seen finding when same file and |line difference| ≤ 2; when either line is absent or 0 (the codex convention for "no specific line"), fall back to file + normalized title prefix (lowercase, first 40 chars). The built-in's 5-line rounding bucket (`Math.round(line / 5) * 5`) splits pairs straddling a multiple-of-2.5 boundary (101 vs 103 → buckets 100 and 105), which would fail this plan's own merge examples — the proximity rule delivers the ±2 merge the Problem Frame promises at identical coordinator cost.
-- **Sweep gated on `changedLines >= 50`,** reusing the threshold the adversarial reviewer already keys on. The built-in gates sweep by effort level, which nadia does not have; diff size is the closest honest proxy the workflow already computes.
+- **Sweep gated on `changedLines >= 50`,** reusing the threshold the adversarial reviewer already keys on. The built-in gates sweep by effort level, which shepherd does not have; diff size is the closest honest proxy the workflow already computes.
 - **Severity and verdict stay orthogonal.** Severity (blocking/suggested/nit) is the reviewer's claim about impact; the verdict is the verifier's claim about reality. Nit findings are filtered before verification (unchanged); the verdict is carried on the finding from verification onward.
 
 ---
@@ -88,7 +88,7 @@ The dedup-then-verify sequence runs inside the existing `pipeline()` stage as ea
 - **Goal:** Replace the binary refute verdict with CONFIRMED / PLAUSIBLE / REFUTED under the recall-biased rubric.
 - **Requirements:** R1, R2, R11
 - **Dependencies:** none
-- **Files:** `agents/finding-verifier.md` (new), `workflows/nadia-deliver.js`, `workflows/nadia-deliver.test.mjs`
+- **Files:** `agents/finding-verifier.md` (new), `workflows/shepherd-deliver.js`, `workflows/shepherd-deliver.test.mjs`
 - **Approach:** Author `agents/finding-verifier.md` modeled on `agents/skeptical-refuter.md` (frontmatter: name, description, read-only tools). Its body carries the verdict ladder and recall rubric from the Sources section verbatim-in-spirit: CONFIRMED requires naming the triggering inputs/state and quoting the line; PLAUSIBLE is the default for realistic-but-unproven runtime states; REFUTED only when constructible from the code (quote the disproving line, show the invariant, or cite the guard). Change `VERDICT_SCHEMA` to `{ verdict: enum ['CONFIRMED','PLAUSIBLE','REFUTED'], evidence: string }`. In the Quality verify stage, switch `agentType` to `finding-verifier`, keep findings whose verdict is not REFUTED, and carry `verdict` on the finding object. Write the verifier prompt to tolerate a missing `failure_scenario` so U1 is independently landable (U2 fills it in). Rewrite the fix prompt with the verdict-conditional policy from Key Technical Decisions: each finding line carries its verdict, CONFIRMED is fixed unless provably wrong, PLAUSIBLE is fixed only when the fix is local and behavior-preserving and skipped otherwise with the verifier's confirmation note. Propagate `verdict` into every residual object (the skip, fixer-failed, and unaccounted push sites) and into the PR-body residual lines.
 - **Patterns to follow:** `agents/skeptical-refuter.md` for persona shape; the existing `verify-` call site for label/phase/model conventions (verification stays `model: 'sonnet'`).
 - **Test scenarios:**
@@ -97,14 +97,14 @@ The dedup-then-verify sequence runs inside the existing `pipeline()` stage as ea
   - A REFUTED finding never appears in residuals or the fix set.
   - A skipped PLAUSIBLE finding produces a residual entry carrying `verdict: 'PLAUSIBLE'`.
   - `verify-` calls carry `agentType: 'finding-verifier'`.
-- **Verification:** `node --test workflows/nadia-deliver.test.mjs` green; grep shows no remaining `refuted: false` handling in the Quality phase.
+- **Verification:** `node --test workflows/shepherd-deliver.test.mjs` green; grep shows no remaining `refuted: false` handling in the Quality phase.
 
 ### U2. Failure-scenario discipline and the two angle finders
 
 - **Goal:** Every finding carries a concrete failure scenario, and the roster gains the removed-behavior auditor and cross-file tracer.
 - **Requirements:** R4, R5, R6
 - **Dependencies:** U1
-- **Files:** `workflows/nadia-deliver.js`, `agents/codex-reviewer.md`, `workflows/nadia-deliver.test.mjs`
+- **Files:** `workflows/shepherd-deliver.js`, `agents/codex-reviewer.md`, `workflows/shepherd-deliver.test.mjs`
 - **Approach:** Add `failure_scenario` (string, required — codex strict mode requires every property in `required`) to `FINDINGS_SCHEMA` items. Update `reviewPrompt` to define the field (concrete inputs/state → wrong outcome; for cleanup findings, the concrete cost) and to instruct reviewers to pass every candidate with a nameable failure scenario through to verification rather than self-censoring. In `agents/codex-reviewer.md`, update BOTH codex touchpoints: the embedded schema copy in step 2 (the known drift point from issue #4) AND the step-3 prompt-writing instructions, which enumerate the finding fields codex must return — without the prompt-side definition, codex strict mode coerces filler into the required field. Update the U1-authored verifier prompt to include the finding's `failure_scenario` (U1 wrote it absence-tolerant), and flip any U1 test asserting tolerance to assert presence. Append two entries to the `personas`-derived reviewer list as inline-prompt reviewers without `agentType`, keys `removed-behavior` and `cross-file`, each combining `reviewPrompt`-style grounding (worktree, branch, diff command, plan path) with its angle procedure from the Sources section. Their findings flow through the same verify/dedup/fix path.
 - **Patterns to follow:** the codex roster entry shows how a non-persona reviewer joins `reviewers` with a custom `spawn`.
 - **Test scenarios:**
@@ -118,7 +118,7 @@ The dedup-then-verify sequence runs inside the existing `pipeline()` stage as ea
 - **Goal:** Merge same-defect findings across reviewers reliably, and cap verifier spawns with full accounting.
 - **Requirements:** R3, R7
 - **Dependencies:** U1
-- **Files:** `workflows/nadia-deliver.js`, `workflows/nadia-deliver.test.mjs`
+- **Files:** `workflows/shepherd-deliver.js`, `workflows/shepherd-deliver.test.mjs`
 - **Approach:** Replace the `file::line::title` fingerprint with the proximity merge from Key Technical Decisions. Dedup moves from post-verification to pre-verification (the built-in's order): candidates are deduped as reviewers complete — streaming, against coordinator-local accumulators inside the pipeline stage, no barrier — so duplicate findings stop consuming verifier spawns. Track `seen`, `dupes`, and `budgetDropped` as coordinator accumulators; decrement a `verifySlots` counter starting at `MAX_VERIFY` for suggested-severity findings only — blocking-severity findings always get a verifier. On a duplicate, merge into the kept finding: higher severity wins, personas concatenate (no verdict comparison — verdicts do not exist yet at dedup time). Log every budget-dropped finding with its identity (`file:line — title`), `log()` dupe and drop counts when non-zero, and add a `reviewStats` object (`candidates`, `verified`, `refuted`, `dupes`, `budgetDropped`, plus kept counts split by verdict) to the workflow result. In production the bucket-winner and drop selection follow reviewer completion order — accepted, because every drop is logged with identity.
 - **Patterns to follow:** the existing `byFingerprint` merge for severity/persona-credit semantics; the existing `log()` accounting lines for phrasing.
 - **Test scenarios:**
@@ -134,7 +134,7 @@ The dedup-then-verify sequence runs inside the existing `pipeline()` stage as ea
 - **Goal:** One fresh finder hunts only for gaps after verification, gated on diff size.
 - **Requirements:** R8
 - **Dependencies:** U1, U2, U3
-- **Files:** `workflows/nadia-deliver.js`, `workflows/nadia-deliver.test.mjs`
+- **Files:** `workflows/shepherd-deliver.js`, `workflows/shepherd-deliver.test.mjs`
 - **Approach:** After the reviewed pipeline and dedup settle and when `changedLines >= 50`, spawn one sweep finder (label `sweep`, inline prompt, `FINDINGS_SCHEMA`) grounded with the worktree/diff context, the verified-findings list rendered as `file:line — title` lines under "do NOT re-derive or re-confirm these", the gap-focus list from the Sources section, and a candidate cap of 8 ("if nothing new, return an empty list — do not pad"). Filter sweep candidates through the same `seen` dedup and `verifySlots` budget, verify survivors with `finding-verifier`, and merge non-REFUTED results into the confirmed set before fix batching. Log the sweep outcome (new candidates, survivors) and skip with a log line when gated off. In the test harness, add a default dispatcher route for the `sweep` label returning `{ findings: [] }` — the default `diffstat` of 120 opens the gate in most existing scenarios, and unrouted labels hard-throw.
 - **Patterns to follow:** the simplify gate (`changedLines >= 30`) for gate-plus-log shape.
 - **Test scenarios:**
@@ -150,7 +150,7 @@ The dedup-then-verify sequence runs inside the existing `pipeline()` stage as ea
 - **Goal:** Keep the repo's domain docs aligned with the new mechanisms.
 - **Requirements:** R9 (documentation side)
 - **Dependencies:** U1–U4
-- **Files:** `CONTEXT.md`, `workflows/nadia-deliver.js`
+- **Files:** `CONTEXT.md`, `workflows/shepherd-deliver.js`
 - **Approach:** Add CONTEXT.md entries for **Finding verifier** (3-state ladder persona, recall-biased, explicitly contrasted with the skeptical refuter and with the default-fail rule for terminally-trusted findings), **Verdict ladder**, and **Sweep**. Update the two entries U1 makes stale: **Skeptical refuter** (no longer the Quality phase's verifier — scope it to claim/premise verification) and **Second-model review** (codex findings now face the finding-verifier). Leave the **Adversarial verification** entry's "default to fail if uncertain" wording intact — the Finding verifier entry carries the variant, the repo-wide principle does not soften. Update the persona list comment near the schemas in the coordinator to include `finding-verifier`.
 - **Test expectation:** none — documentation and comments only.
 - **Verification:** CONTEXT.md entries follow the existing one-line bold-term format; no test changes.
@@ -159,7 +159,7 @@ The dedup-then-verify sequence runs inside the existing `pipeline()` stage as ea
 
 ## Scope Boundaries
 
-- The built-in's Scope and Synthesize phases are not ported: nadia's recon/diffstat already pin scope, and the fix step consumes findings directly, so a synthesis/ranking agent has no consumer.
+- The built-in's Scope and Synthesize phases are not ported: shepherd's recon/diffstat already pin scope, and the fix step consumes findings directly, so a synthesis/ranking agent has no consumer.
 - `agents/skeptical-refuter.md` is not modified.
 - Out of scope (tracked elsewhere): self-locating budget fixtures (issue #6), residual filing to the tracker (issue #1), accessibility persona (issue #2), codex protocol consolidation beyond the schema-sync touch in U2 (issue #4).
 
@@ -171,7 +171,7 @@ The dedup-then-verify sequence runs inside the existing `pipeline()` stage as ea
 - **Schema strictness.** `failure_scenario` must appear in `required` wherever it appears in `properties` — codex `--output-schema` enforces OpenAI strict structured output (constraint documented in issue #4).
 - **Persona registry snapshot.** `finding-verifier` resolves via `agentType` only in sessions started after the file lands. Running the improved workflow in the authoring session would fail at the verify stage; the first real run needs a fresh session.
 - **More agent spawns per run.** Two finders + sweep + PLAUSIBLE survivors mean more verifier and fixer work. `MAX_VERIFY` bounds the suggested-severity verifier side (blocking findings are exempt but bounded by the fixed roster); fix batching by file bounds the fixer side. No new unbounded loops are introduced.
-- **`MAX_VERIFY = 25` is borrowed, not derived.** The built-in runs at most 9 finders; nadia can field up to 9 personas + codex + sweep. The first real run's `reviewStats.candidates` is the evidence for retuning the constant.
+- **`MAX_VERIFY = 25` is borrowed, not derived.** The built-in runs at most 9 finders; shepherd can field up to 9 personas + codex + sweep. The first real run's `reviewStats.candidates` is the evidence for retuning the constant.
 
 ---
 
@@ -206,4 +206,4 @@ Extracted from the Claude Code CLI binary v2.1.170 (the built-in `code-review` w
 
 > Pass every candidate with a nameable failure scenario through — do not silently drop half-believed candidates; an independent verifier judges them next.
 
-**Built-in constants:** `MAX_VERIFY = 25`, sweep candidate cap 8, dedup bucket `Math.round(line / 5) * 5` — nadia deviates on the last one (per-file ±2 proximity merge instead; see Key Technical Decisions) because the rounding bucket splits near-duplicate pairs that straddle a multiple-of-2.5 boundary.
+**Built-in constants:** `MAX_VERIFY = 25`, sweep candidate cap 8, dedup bucket `Math.round(line / 5) * 5` — shepherd deviates on the last one (per-file ±2 proximity merge instead; see Key Technical Decisions) because the rounding bucket splits near-duplicate pairs that straddle a multiple-of-2.5 boundary.

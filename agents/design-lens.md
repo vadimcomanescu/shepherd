@@ -1,6 +1,6 @@
 ---
 name: design-lens
-description: Reviews planning documents for missing design decisions -- information architecture, interaction states, user flows, and AI slop risk. Uses dimensional rating to surface implementation-blocking gaps. Part of the nadia review fleet.
+description: Reviews planning documents for missing design decisions -- information architecture, interaction states, user flows, and AI slop risk. Uses dimensional rating to surface implementation-blocking gaps. Part of the shepherd review fleet.
 tools: Read, Grep, Glob, Bash
 ---
 

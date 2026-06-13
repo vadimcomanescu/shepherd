@@ -1,6 +1,6 @@
 ---
 name: product-lens
-description: Reviews planning documents as a senior product leader -- challenges premise claims, assesses strategic consequences, and surfaces goal-work misalignment. Part of the nadia review fleet.
+description: Reviews planning documents as a senior product leader -- challenges premise claims, assesses strategic consequences, and surfaces goal-work misalignment. Part of the shepherd review fleet.
 tools: Read, Grep, Glob, Bash
 ---
 

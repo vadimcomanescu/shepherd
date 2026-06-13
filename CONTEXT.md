@@ -20,9 +20,9 @@ The vocabulary this repo uses when talking about dynamic workflows. Definitions 
 - **Resume** — replaying a workflow run (`scriptPath` + `resumeFromRunId`); unchanged `agent()` calls return cached results, edited or new calls run live.
 - **Grunt work** — search, fetch, extraction, mechanical authoring, routine verification. Runs on `model: "sonnet"`; the session model is the default; `opus` is reserved for genuine top-tier reasoning.
 
-## nadia-deliver terms
+## shepherd-deliver terms
 
-The repo's own workflow ([`workflows/nadia-deliver.js`](workflows/nadia-deliver.js)) and its persona agents ([`agents/`](agents/)) add:
+The repo's own workflow ([`workflows/shepherd-deliver.js`](workflows/shepherd-deliver.js)) and its persona agents ([`agents/`](agents/)) add:
 
 - **Dossier** — a fully self-contained task brief produced by the `task-splitter` agent: everything a `unit-executor` needs to implement one task in a single context window.
 - **Unit executor** — the agent that implements one dossier inside an isolated git worktree, TDD by default (red-green-refactor, watch the test fail first), with honest status reporting.
@@ -42,10 +42,10 @@ The repo's own workflow ([`workflows/nadia-deliver.js`](workflows/nadia-deliver.
 - **CI watcher** — the `ci-watcher` persona: one watch-fix-push iteration per dispatch of the bounded (default 3) CI autofix loop; never weakens or deletes tests to get green.
 - **Compound step** — the pre-ship agent following the installed `ce-compound` skill headlessly: documents non-trivial solved-and-verified problems from the run under `docs/solutions/`. Runs before Ship so its docs commit rides the one push (a post-ship push would restart CI).
 
-## nadia-plan terms
+## shepherd-plan terms
 
-The plan-production workflow ([`workflows/nadia-plan.js`](workflows/nadia-plan.js)) adds:
+The plan-production workflow ([`workflows/shepherd-plan.js`](workflows/shepherd-plan.js)) adds:
 
-- **Intake** — the first-stage classifier agent in nadia-plan: reads the raw request or origin document and outputs a structured JSON object (conforming to `INTAKE_SCHEMA`) that names the plan type, research intent, blocking unknowns, and non-code-deliverable flag. All downstream routing decisions derive from intake output.
-- **Intake schema** — the JSON schema object (`INTAKE_SCHEMA` in `workflows/nadia-plan.js`) that the intake classifier must conform to. It is also the canonical list of valid values for the `research.intent` enum; adding a new intent option to agent guidance without updating this schema leaves the option unreachable.
-- **Origin coverage** — the gate-phase check that walks every section of the origin document (brainstorm, requirements doc, or ADR) and verifies that each normative item is addressed or explicitly deferred in the generated plan. A named phase in the nadia-plan `meta.phases` array; skipped when no origin doc is provided.
+- **Intake** — the first-stage classifier agent in shepherd-plan: reads the raw request or origin document and outputs a structured JSON object (conforming to `INTAKE_SCHEMA`) that names the plan type, research intent, blocking unknowns, and non-code-deliverable flag. All downstream routing decisions derive from intake output.
+- **Intake schema** — the JSON schema object (`INTAKE_SCHEMA` in `workflows/shepherd-plan.js`) that the intake classifier must conform to. It is also the canonical list of valid values for the `research.intent` enum; adding a new intent option to agent guidance without updating this schema leaves the option unreachable.
+- **Origin coverage** — the gate-phase check that walks every section of the origin document (brainstorm, requirements doc, or ADR) and verifies that each normative item is addressed or explicitly deferred in the generated plan. A named phase in the shepherd-plan `meta.phases` array; skipped when no origin doc is provided.

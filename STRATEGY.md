@@ -1,9 +1,9 @@
 ---
-name: nadia
+name: shepherd
 last_updated: 2026-06-09
 ---
 
-# nadia Strategy
+# shepherd Strategy
 
 ## Target problem
 
@@ -11,11 +11,11 @@ Agents authoring dynamic workflows from memory violate the load-bearing rules (c
 
 ## Our approach
 
-Nadia is the implementation of plan execution in practice: an approved plan moves into a deterministic coordinator script (split → route → execute in worktrees → adversarially verify), authored against the canonical workflow docs rather than from memory.
+Shepherd is the implementation of plan execution in practice: an approved plan moves into a deterministic coordinator script (split → route → execute in worktrees → adversarially verify), authored against the canonical workflow docs rather than from memory.
 
 ## Who it's for
 
-**Primary:** Vadim (and any engineer with this setup) — hiring nadia to take an approved plan and get it implemented end-to-end — split, routed, executed in worktrees, adversarially verified — without babysitting the model.
+**Primary:** Vadim (and any engineer with this setup) — hiring shepherd to take an approved plan and get it implemented end-to-end — split, routed, executed in worktrees, adversarially verified — without babysitting the model.
 
 ## Key metrics
 
@@ -30,7 +30,7 @@ Nothing instrumented yet; measured manually from run reports and git history.
 
 ### Execution harness
 
-nadia-deliver: plan splitting into dossiers, executor routing (Codex vs Claude), isolated worktree execution.
+shepherd-deliver: plan splitting into dossiers, executor routing (Codex vs Claude), isolated worktree execution.
 
 _Why it serves the approach:_ this is the plan-in-code harness itself.
 
