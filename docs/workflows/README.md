@@ -1,6 +1,8 @@
-# Dynamic Workflows in this Repo — Index and Core Principles
+# Dynamic Workflows in this Repo: Index and Core Principles
 
-**Shepherd is itself built as a dynamic workflow.** These principles are load-bearing, not background reading.
+Dynamic workflows are the **substrate** the Shepherd plan -> deliver practice is built on, not the headline. This doc is the authoring rulebook for that substrate: what a coordinator may and may not do, the eight core principles, the determinism rules, and the index into the rest of the substrate docs. For the engineering practice these rules serve (the plan and deliver pipelines, the agent fleet, routing, and verification), start at [`../practice/README.md`](../practice/README.md).
+
+**Shepherd is itself built as two dynamic workflows: `shepherd-plan` (produces a plan document) and `shepherd-deliver` (drives that plan to a pull request).** Both are coordinator scripts that obey every rule below, so these principles are load-bearing, not background reading.
 
 ---
 
@@ -10,7 +12,7 @@ A dynamic workflow is a JavaScript script that orchestrates many subagents at sc
 
 The defining principle: **the plan moves into code, not the model's context.** The script holds the loop, the branching, and the intermediate results. The main session's context holds only the final answer.
 
-The philosophy is "a harness for every task" — instead of a fixed multi-agent structure, the script encodes exactly the structure the task needs. Every workflow is custom-shaped to its problem. There is no one-size template.
+The philosophy is "a harness for every task": instead of a fixed multi-agent structure, the script encodes exactly the structure the task needs. Every workflow is custom-shaped to its problem. There is no one-size template.
 
 ```js
 // The coordinator script holds all control flow.
@@ -67,7 +69,7 @@ const src = await agent("Read src/index.ts and return its full contents.", {
 ```
 
 **2. `pipeline()` by default.**
-`pipeline()` is the default primitive for multi-stage work. Reach for `parallel()` only when a stage genuinely needs ALL prior-stage results together — dedup across the full set, early-exit when the count is zero, or cross-referencing the complete result set. "I need to flatten, map, or filter" is not a barrier reason; do it inside a pipeline stage.
+`pipeline()` is the default primitive for multi-stage work. Reach for `parallel()` only when a stage genuinely needs ALL prior-stage results together (dedup across the full set, early-exit when the count is zero, or cross-referencing the complete result set). "I need to flatten, map, or filter" is not a barrier reason; do it inside a pipeline stage.
 
 ```js
 // pipeline: item A can be in stage 2 while item B is still in stage 1
@@ -92,7 +94,7 @@ const allFindings = results.filter(Boolean).flat();
 ```
 
 **4. Ground context-less agents.**
-Each agent starts with a fresh, empty context window. It cannot see the coordinator's variables or other agents' work. Pass every agent exactly the data, paths, and facts it needs — inline in its prompt.
+Each agent starts with a fresh, empty context window. It cannot see the coordinator's variables or other agents' work. Pass every agent exactly the data, paths, and facts it needs, inline in its prompt.
 
 ```js
 // WRONG — agent cannot see `filePath` from coordinator scope
@@ -106,7 +108,7 @@ const result = await agent(
 ```
 
 **5. Verify adversarially.**
-For findings that must be trusted, spawn independent verifier agents prompted to REFUTE the finding. Require a majority. Default to "fail if uncertain." (Code-review findings are the carved-out exception: the recall-biased finding-verifier grades them — uncertain lands on PLAUSIBLE, never REFUTED — and PLAUSIBLE findings may only receive local, behavior-preserving fixes.)
+For findings that must be trusted, spawn independent verifier agents prompted to REFUTE the finding. Require a majority. Default to "fail if uncertain." (Code-review findings are the carved-out exception: the recall-biased finding-verifier grades them, so uncertain lands on PLAUSIBLE, never REFUTED, and PLAUSIBLE findings may only receive local, behavior-preserving fixes.)
 
 ```js
 const verifications = await parallel(
@@ -122,7 +124,7 @@ const confirmed = findings.filter((_, i) => verifications[i]?.includes("CONFIRME
 ```
 
 **6. No silent caps.**
-If the workflow bounds coverage — top-N, no-retry, sampling — `log()` what was dropped so the user knows the result is partial.
+If the workflow bounds coverage (top-N, no-retry, sampling), `log()` what was dropped so the user knows the result is partial.
 
 ```js
 const MAX = 50;
@@ -147,7 +149,7 @@ while (round < 10 && (!budget.total || budget.remaining() > 0)) {
 ```
 
 **8. Model policy for this repo.**
-Omit the `model` option by default to inherit the session model. For grunt work — search, fetch, extraction, mechanical authoring, routine verification — set `model: "sonnet"`. Reserve `model: "opus"` for steps that genuinely need top-tier reasoning.
+Omit the `model` option by default to inherit the session model. For grunt work (search, fetch, extraction, mechanical authoring, routine verification), set `model: "sonnet"`. Reserve `model: "opus"` for steps that genuinely need top-tier reasoning.
 
 ```js
 // Grunt work — extraction agent
@@ -174,10 +176,10 @@ const verdict = await agent(
 | **Agents per run** | A few per turn | A few per turn | Dozens to hundreds |
 | **Orchestration artifact** | None | Skill file | The script itself |
 | **Use when** | One focused task mid-turn | Instructions Claude follows | More agents than a conversation can coordinate; orchestration worth codifying; quality patterns (adversarial, tournament) that should run before reporting |
-| **Resumable** | No | No | Yes — same `scriptPath` + `resumeFromRunId` replays cached results |
-| **Background execution** | No | No | Yes — runtime executes it; main session stays responsive |
+| **Resumable** | No | No | Yes: same `scriptPath` + `resumeFromRunId` replays cached results |
+| **Background execution** | No | No | Yes: runtime executes it; main session stays responsive |
 
-A workflow is the right choice when the task needs more agents than one conversation can coordinate, when the orchestration is worth codifying and repeating, or when a quality pattern — adversarial verification, tournament comparison — must run before a result is reported.
+A workflow is the right choice when the task needs more agents than one conversation can coordinate, when the orchestration is worth codifying and repeating, or when a quality pattern (adversarial verification, tournament comparison) must run before a result is reported.
 
 ---
 
@@ -185,9 +187,9 @@ A workflow is the right choice when the task needs more agents than one conversa
 
 Three JavaScript forms are prohibited because they would break deterministic resume:
 
-- `Date.now()` — throws at parse/run time
-- `Math.random()` — throws at parse/run time
-- `new Date()` (no-argument constructor) — throws at parse/run time
+- `Date.now()` (throws at parse/run time)
+- `Math.random()` (throws at parse/run time)
+- `new Date()` (no-argument constructor, throws at parse/run time)
 
 Work around `Date.now()` by passing timestamps via `args` and stamping results after the run. Work around `Math.random()` by varying an agent's prompt or label by its index.
 
@@ -195,7 +197,7 @@ Work around `Date.now()` by passing timestamps via `args` and stamping results a
 
 ## The `meta` Export
 
-The `meta` export must be the **first statement** in the script. It must be a pure object literal — no variables, function calls, spreads, or interpolation. `name` and `description` are required. `phases` is an array of `{ title, detail }` objects used for the progress display; use the same titles in your `phase()` calls.
+The `meta` export must be the **first statement** in the script. It must be a pure object literal (no variables, function calls, spreads, or interpolation). `name` and `description` are required. `phases` is an optional array of `{ title, detail }` objects used for the progress display; when present, use the same titles in your `phase()` calls.
 
 ```js
 // Correct — pure literal, first statement
@@ -216,18 +218,19 @@ export const meta = {
 
 | Document | Description |
 |---|---|
+| [../practice/README.md](../practice/README.md) | The practice these rules serve: the plan -> deliver pipelines, the agent fleet, executor and model routing, and the verification doctrine. Read this for what Shepherd does; read the rows below for how the substrate works. |
 | [coordinator.md](coordinator.md) | The coordinator contract in full: what it is, what it cannot do, the `meta` export rules, plain-JavaScript constraints, and the banned runtime forms. |
-| [primitives.md](primitives.md) | Every primitive — `agent()`, `parallel()`, `pipeline()`, `phase()`, `log()`, `workflow()`, `budget`, `args` — with their signatures, return types, null-on-error semantics, and usage examples. |
+| [primitives.md](primitives.md) | Every primitive (`agent()`, `parallel()`, `pipeline()`, `phase()`, `log()`, `workflow()`, `budget`, `args`) with their signatures, return types, null-on-error semantics, and usage examples. |
 | [constraints.md](constraints.md) | Hard limits (concurrency cap, 1000-agent lifetime cap, 4096-item limit, one-level nesting), execution model (background run, resume, auto-approved edits, cost), and what those limits mean for workflow design. |
-| [patterns.md](patterns.md) | Canonical patterns — classify-and-act, fan-out-and-synthesize, adversarial verification, generate-and-filter, tournament, loop-until-done, multi-modal sweep, completeness critic — each with a concrete code example. |
+| [patterns.md](patterns.md) | Canonical patterns (classify-and-act, fan-out-and-synthesize, adversarial verification, generate-and-filter, tournament, loop-until-done, multi-modal sweep, completeness critic), each with a concrete code example. |
 
 ---
 
 ## Sources
 
-- [Official docs — Dynamic Workflows](https://code.claude.com/docs/en/workflows)
-- [Blog — A harness for every task: dynamic workflows in Claude Code](https://claude.com/blog/a-harness-for-every-task-dynamic-workflows-in-claude-code)
-- [Blog — Introducing dynamic workflows in Claude Code](https://claude.com/blog/introducing-dynamic-workflows-in-claude-code)
+- [Official docs: Dynamic Workflows](https://code.claude.com/docs/en/workflows)
+- [Blog: A harness for every task: dynamic workflows in Claude Code](https://claude.com/blog/a-harness-for-every-task-dynamic-workflows-in-claude-code)
+- [Blog: Introducing dynamic workflows in Claude Code](https://claude.com/blog/introducing-dynamic-workflows-in-claude-code)
 - [Subagents docs](https://code.claude.com/docs/en/sub-agents)
 - [Skills docs](https://code.claude.com/docs/en/skills)
 - [Managed Agents SDK](https://platform.claude.com/docs/en/managed-agents/overview)

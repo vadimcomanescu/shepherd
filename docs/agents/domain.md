@@ -2,12 +2,12 @@
 
 How the engineering skills should consume this repo's domain documentation when exploring the codebase.
 
-This is a **single-context repo**: one `CONTEXT.md` and one `docs/adr/` at the repo root.
+This is a **single-context repo**: one `CONTEXT.md` and one `docs/adr/` (when ADRs exist) at the repo root.
 
 ## Before exploring, read these
 
 - **`CONTEXT.md`** at the repo root — the domain glossary for dynamic-workflow vocabulary.
-- **`docs/adr/`** — read ADRs that touch the area you're about to work in.
+- **`docs/adr/`** (when it exists) — read ADRs that touch the area you're about to work in.
 
 If any of these files don't exist, **proceed silently**. Don't flag their absence; don't suggest creating them upfront. The producer skill (`/grill-with-docs`) creates them lazily when terms or decisions actually get resolved.
 
