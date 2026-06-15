@@ -762,6 +762,11 @@ hands the decision back to the human.`,
 A halt strands a human-reviewed plan and hands control back to a person, so it must be
 justified by a discovery that PROVABLY falsifies a premise the remaining tasks depend on.
 
+The RAW discoveries the gate was given (the source task id, status, and the executor's
+issue text — your primary evidence; inspect these directly, do not rely on the gate's
+summary alone):
+${JSON.stringify(discoveries, null, 2)}
+
 The gate's proposed halt reason:
 ${triage.reason}
 
@@ -771,16 +776,18 @@ ${(triage.evidence || []).map((e) => `- ${e}`).join('\n') || '(none cited)'}
 The tasks that would be skipped if you confirm the halt:
 ${remainingTasks.map((t) => `- ${t.id}: ${t.title} (files: ${t.files.join(', ')})`).join('\n')}
 
-Verify INDEPENDENTLY. You may read the plan at ${PLAN} and the repo to check. A real
-falsification means a premise the remaining tasks are built on is provably wrong: a
-module they extend does not exist or works completely differently, an API contract
-they assume is wrong, the capability they add already exists. The following are NOT
-falsifications: a dependency unit already created a file the plan assigns it (intended
-dependsOn sequencing), extra files touched, partial-then-finished work, test flakiness,
-style issues. Return "continue" if the cited evidence does not prove a real
-falsification, OR the proposed reason is internally inconsistent (e.g. its own text
-argues for continuing), OR you are uncertain. Return "halt" ONLY when you can
-independently name the falsified premise.`,
+Verify INDEPENDENTLY against the raw discoveries above. You may read the plan at ${PLAN}
+and the repo to check. A real falsification means a premise the remaining tasks are built
+on is provably wrong: a module they extend does not exist or works completely differently,
+an API contract they assume is wrong, the capability they add already exists. A discovery
+from a failed or partial task whose work never merged may not be visible in the repo —
+weigh the reported issue text itself rather than treating its absence from the tree as
+proof it is benign. The following are NOT falsifications: a dependency unit already created
+a file the plan assigns it (intended dependsOn sequencing), extra files touched,
+partial-then-finished work, test flakiness, style issues. Return "continue" if the raw
+discoveries do not prove a real falsification, OR the proposed reason is internally
+inconsistent (e.g. its own text argues for continuing), OR you are uncertain. Return
+"halt" ONLY when you can independently name the falsified premise from the evidence above.`,
         { label: `triage-confirm-wave-${w + 1}`, phase: 'Integrate', schema: TRIAGE_SCHEMA },
       )
       if (confirm && confirm.verdict === 'halt') {
