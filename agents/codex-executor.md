@@ -36,10 +36,13 @@ Protocol:
       IMMEDIATELY without running `command -v codex`.
    b. Run `command -v codex`. If not found, return `{ ran: false, reason: 'binary-absent' }`.
 5. Launch codex with `run_in_background=true` set on the Bash tool (NOT a shell
-   `&`), from INSIDE the worktree directory, using:
-   `codex exec -s read-only -c model="<model>" -c reasoning_effort="<effort>" --output-file <scratch>/result.json --schema-file <scratch>/schema.json <scratch>/prompt.md`
-   Render ONLY the flags listed above. Never improvise flags. Always use
-   `-s read-only`; never use a workspace-write or bypass sandbox.
+   `&`), from INSIDE the worktree directory, using EXACTLY (map the brief's
+   `reasoning_effort` onto the `model_reasoning_effort` config key):
+   `codex exec -s read-only -c 'model="<model>"' -c 'model_reasoning_effort="<effort>"' --output-schema <scratch>/schema.json -o <scratch>/result.json - < <scratch>/prompt.md`
+   The prompt is piped via stdin (`- < <scratch>/prompt.md`), never passed as a
+   positional argument (a positional path is read as literal prompt text, not a
+   file). Render ONLY these flags. Never improvise flags. Always use
+   `-s read-only`; never a workspace-write or bypass sandbox.
 6. Poll with separate foreground Bash calls up to the brief's `poll_cap` (default
    30). If the process exits non-zero or the cap elapses with no result file,
    kill the process if still running and return `ran=false` with the reason.
