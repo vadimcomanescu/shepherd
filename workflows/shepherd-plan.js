@@ -218,6 +218,23 @@ const PERSONA_FINDINGS_SCHEMA = {
   required: ['findings'],
 }
 
+// Lens dispatch return schema: the persona findings PLUS the codex-executor
+// `ran` signal. PERSONA_FINDINGS_SCHEMA stays byte-identical (R5); this wrapper
+// only references its findings property and adds `ran`. The wrapper is
+// load-bearing: a findings-only dispatch schema cannot carry `ran`, so a
+// codex-unavailable executor return either fails validation and retries to null
+// or drops `ran` (see docs/workflows/primitives.md) — either way the
+// `ran === false` fallback gate below would never fire and a codex-unavailable
+// lens would go silently uncovered. Mirrors deliver's CODEX_REVIEW_SCHEMA.
+const LENS_RESULT_SCHEMA = {
+  type: 'object',
+  properties: {
+    ran: { type: 'boolean', description: 'false only when codex could not run (absent/sandboxed/flags rejected); triggers the native Claude fallback' },
+    findings: PERSONA_FINDINGS_SCHEMA.properties.findings,
+  },
+  required: ['ran', 'findings'],
+}
+
 // Copied verbatim from shepherd-deliver.js — the refuter verdict contract.
 const VERDICT_SCHEMA = {
   type: 'object',
@@ -1278,7 +1295,7 @@ for (let r = 1; r <= EDITOR_ROUNDS; r++) {
     // finding set for dedup/promotion.
     log(`Round ${r}: routing ${personaRoster.length} lens(es) through codex-executor at gpt-5.5/xhigh: ${personaRoster.map((p) => p.key).join(', ')}`)
     const reviews = await parallel(personaRoster.map((p) => () =>
-      agent(codexLensBrief(p, r), { label: `review-r${r}-${p.key}`, phase: 'Review', agentType: 'codex-executor', model: 'sonnet', schema: PERSONA_FINDINGS_SCHEMA })))
+      agent(codexLensBrief(p, r), { label: `review-r${r}-${p.key}`, phase: 'Review', agentType: 'codex-executor', model: 'sonnet', schema: LENS_RESULT_SCHEMA })))
     // R6 sanctioned addition: per-lens Claude fallback. A lens is "ran" unless
     // its codex-executor result explicitly carries ran === false (codex absent,
     // sandboxed, or its flags rejected). Re-dispatch the fallen-back lenses on

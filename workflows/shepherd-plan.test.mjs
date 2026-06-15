@@ -1678,6 +1678,8 @@ S('S51 lens-via-codex: every review-r*-* routes through codex-executor at gpt-5.
     assert.ok(c.prompt.includes('xhigh'), `${c.label} brief pins reasoning_effort xhigh`)
     assert.ok(/role_file: agents\/[a-z-]+\.md/.test(c.prompt), `${c.label} brief names the lens role_file for the executor to read from disk`)
     assert.ok(c.schema, `${c.label} keeps the schema on agent() opts (S43 contract)`)
+    assert.ok(c.schema.properties && c.schema.properties.ran, `${c.label} dispatch schema declares 'ran' so the codex-unavailable signal survives structured-output validation and reaches the fallback gate`)
+    assert.ok(c.schema.properties.findings, `${c.label} dispatch schema still carries findings`)
   }
   // No fallback lens fired on the codex-available path.
   assert.ok(!trace.calls.some((c) => c.label.endsWith('-claude')), 'no -claude fallback on the codex-available path')

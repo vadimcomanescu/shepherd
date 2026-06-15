@@ -32,9 +32,10 @@ Protocol:
 4. Discovery — in this exact order before launching:
    a. Check whether `$CODEX_SANDBOX` or `$CODEX_SESSION_ID` is set. If EITHER
       env var is present the executor is inside a Codex sandbox where launching a
-      nested Codex process is unsupported. Return `{ ran: false, reason: 'sandboxed' }`
-      IMMEDIATELY without running `command -v codex`.
-   b. Run `command -v codex`. If not found, return `{ ran: false, reason: 'binary-absent' }`.
+      nested Codex process is unsupported. Return
+      `{ ran: false, findings: [], reason: 'sandboxed' }` IMMEDIATELY without
+      running `command -v codex`.
+   b. Run `command -v codex`. If not found, return `{ ran: false, findings: [], reason: 'binary-absent' }`.
 5. Launch codex with `run_in_background=true` set on the Bash tool (NOT a shell
    `&`), from INSIDE the worktree directory, using EXACTLY (map the brief's
    `reasoning_effort` onto the `model_reasoning_effort` config key):
@@ -45,13 +46,15 @@ Protocol:
    `-s read-only`; never a workspace-write or bypass sandbox.
 6. Poll with separate foreground Bash calls up to the brief's `poll_cap` (default
    30). If the process exits non-zero or the cap elapses with no result file,
-   kill the process if still running and return `ran=false` with the reason.
+   kill the process if still running and return `{ ran: false, findings: [], reason }`.
    Verify the worktree is untouched: `git status --porcelain` must be empty of
    new changes; if codex modified anything, restore with `git checkout --` and
    say so.
-7. Classify `<scratch>/result.json`:
-   - Missing or malformed JSON: return `{ ran: false, reason: '<detail>', findings: [] }`.
-   - Valid JSON: return `{ ran: true }` with the findings verbatim in the
-     caller's schema shape. No key renaming — the return shape IS the caller's schema.
+7. Classify `<scratch>/result.json` and return `{ ran, findings }`:
+   - Missing or malformed JSON: `{ ran: false, findings: [], reason: '<detail>' }`.
+   - Valid JSON: `{ ran: true, findings: [...] }` with the findings verbatim in
+     the caller's findings shape. No key renaming.
+   EVERY return carries BOTH `ran` and `findings` — omitting `findings` fails the
+   caller's dispatch-schema validation and retries to null, killing the fallback.
 
 Never invent findings, never drop findings, never edit code.
