@@ -56,7 +56,7 @@ A word on stage tags: the `haltStage` values (`S0-intake`, `S2-strategy-gate`, `
 
 ## S0: Intake
 
-Intake dispatches the **`intake-classifier`** persona (label `intake`, `agentType: 'intake-classifier'`, `model: 'sonnet'`, schema `INTAKE_SCHEMA`). It produces the structured spine the rest of the run depends on:
+Intake dispatches the **`intake-classifier`** persona (label `intake`, `agentType: 'intake-classifier'`, `model: 'opus'`, schema `INTAKE_SCHEMA`). It produces the structured spine the rest of the run depends on:
 
 - **Confirmed Intent**: a six-field object (`outcome`, `user`, `whyNow`, `success` as an observable statement, `constraints[]`, `outOfScope[]`). It is serialized to a `<confirmed-intent>` block and threaded into every downstream agent (each agent has a fresh context window and sees only what its prompt carries).
 - **Unknown classification**: `blockingUnknowns` (could materially change the outcome AND would likely upset the requester if guessed wrong) vs `decidableUnknowns` (everything else, each decided with a hypothesis plus the observation that would invalidate it). Decidable unknowns flow into the plan's `## Assumptions` section.

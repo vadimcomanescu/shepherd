@@ -126,7 +126,7 @@ Every plan-side dispatch that was previously an inline-prompt agent is now a nam
 | `committer` | `commit-plan` | Finalize | Runs `git add <planPath>` and `git commit` when `args.commit === true` | `sonnet` |
 | `hygiene-checker` | `hygiene` | Finalize | Runs `git status --porcelain`; computes `planVersion` via `git hash-object` | `sonnet` |
 
-**Note on `intake-classifier` and `strategy-gate` model tiers:** `intake-classifier` pins `model: 'sonnet'` (classification is mechanical). `strategy-gate` pins `model: 'opus'` (challenging the framing before any drafting is the highest-stakes gate judgment). Both are deliberate exceptions to the inherit-the-session-model default; see [Models](#models).
+**Note on `intake-classifier` and `strategy-gate` model tiers:** both pin `model: 'opus'`. `intake-classifier` because intent classification for a no-human-in-the-loop pipeline is judgment work (it sets the structured spine the whole run depends on), `strategy-gate` because challenging the framing before any drafting is the highest-stakes gate judgment. Both are deliberate exceptions to the inherit-the-session-model default; see [Models](#models).
 
 ---
 
