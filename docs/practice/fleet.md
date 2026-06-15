@@ -80,7 +80,7 @@ The personas that turn a plan unit into merged, tested code in [`shepherd-delive
 | `codex-runner` | Drives `codex exec` for one task and classifies the result | Codex binary path, worktree/branch, test command, sandbox flag, effort, dossier; `Bash, Read, Write` | `EXEC_SCHEMA` | **`sonnet` (pinned in frontmatter)** | **Mechanical protocol operator**: implements nothing; Codex does the work. Substitutes the literal scratch path into every Bash call (shell vars do not survive between calls), maps Codex's snake_case output to camelCase, and reports `completed` only if Codex did AND a commit now exists on the branch. |
 | `codex-reviewer` | Runs `codex exec` as a read-only second-model reviewer over a branch diff | Worktree path, branch, diff context; `Bash, Read, Write` | `CODEX_REVIEW_SCHEMA` (`ran`, `findings[]`) | **`sonnet` (pinned in frontmatter)** | **Mechanical protocol operator**: performs no review judgment and modifies nothing. Instructs Codex to hunt logic errors, broken edge cases, and contract violations a same-model reviewer might rationalize away. Verifies the worktree is untouched after the run; never invents or drops findings. |
 
-`codex-runner` and `codex-reviewer` are the **only two personas that pin a model in their own frontmatter** (both `sonnet`): the heavy reasoning is offloaded to the external Codex model, so the operator persona only needs sonnet. `unit-executor`'s tier comes exclusively from the router's `ROUTE_SCHEMA.model` and is never inherited from the session.
+`codex-runner`, `codex-reviewer`, and `codex-executor` are the **three personas that pin a model in their own frontmatter** (all `sonnet`): the heavy reasoning is offloaded to the external Codex model, so the operator persona only needs sonnet. `unit-executor`'s tier comes exclusively from the router's `ROUTE_SCHEMA.model` and is never inherited from the session.
 
 The third Codex mechanism, `codex-executor`, is detailed below in [Codex mechanisms](#codex-mechanisms).
 
@@ -109,11 +109,11 @@ The contrast is the point: on the **deliver** side, uncertainty keeps a finding 
 
 ## 7. Plan-side role agents (12 personas)
 
-Every plan-side dispatch that was previously an inline-prompt agent is now a named persona backed by a file in `agents/`. The judgment contract (what the role decides, what authority it respects, what it returns) lives in the role file; per-call data (paths, fix batches, violation lists) is passed at the dispatch site. All 12 pin `model: 'sonnet'` (mechanical gate and loop work). Multiple dispatch labels route to the same role file when the judgment contract is identical across sites.
+Every plan-side dispatch that was previously an inline-prompt agent is now a named persona backed by a file in `agents/`. The judgment contract (what the role decides, what authority it respects, what it returns) lives in the role file; per-call data (paths, fix batches, violation lists) is passed at the dispatch site. Ten of the 12 pin `model: 'sonnet'` (mechanical gate and loop work); the remaining two, `intake-classifier` and `strategy-gate`, pin `model: 'opus'` (they are the two plan-side opus-exception roles that live in this group, see the note below and [Models](#models)). Multiple dispatch labels route to the same role file when the judgment contract is identical across sites.
 
 | Persona | Labels (dispatch sites) | Phase | What it decides | Model |
 |---|---|---|---|---|
-| `intake-classifier` | `intake` | Intake | Classifies request into Confirmed Intent, depth tier, research intent, below-floor verdict, and unknown types | `sonnet` |
+| `intake-classifier` | `intake` | Intake | Classifies request into Confirmed Intent, depth tier, research intent, below-floor verdict, and unknown types | `opus` (see note) |
 | `strategy-gate` | `strategy-gate` | Gate | Challenges the framing before drafting; may halt, adjust, or proceed | `opus` (see note) |
 | `cross-plan-scanner` | `research-cross-plan` | Research | Scans `status:active` plans for file and risk-surface overlap | `sonnet` |
 | `persona-classifier` | `classify-personas` | Draft | Selects conditional review lenses; extracts KTDs and load-bearing assumptions | `sonnet` |
