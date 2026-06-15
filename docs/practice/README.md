@@ -57,7 +57,7 @@ Both halves are coordinator scripts in the sense [`../workflows/README.md`](../w
 
 ### 2. A fleet of narrow, single-purpose personas
 
-Real work is done by a fleet of agents, each with one job and a fresh, empty context window. An agent sees only what its prompt contains, never the coordinator's variables or another agent's output, so every dispatch is **grounded**: the coordinator passes each agent exactly the data, file paths, and authoritative facts it needs. The repo defines **22 persona files** under [`agents/`](../../agents/) (researchers, the plan author and editor, seven review lenses, the splitter, router, executors, reviewers, verifiers, and the CI watcher). Many other steps run as **inline-prompt agents** (the prompt and schema are written at the dispatch site, no persona file). The full catalog, the persona-vs-inline distinction, and which coordinator dispatches what are in [`./fleet.md`](./fleet.md).
+Real work is done by a fleet of agents, each with one job and a fresh, empty context window. An agent sees only what its prompt contains, never the coordinator's variables or another agent's output, so every dispatch is **grounded**: the coordinator passes each agent exactly the data, file paths, and authoritative facts it needs. The repo defines **35 persona files** under [`agents/`](../../agents/) (researchers, the plan author and editor, seven review lenses, twelve plan-side role agents, the Codex executor mechanism, the splitter, router, executors, reviewers, verifiers, and the CI watcher). Every dispatcher in `shepherd-plan.js` now carries an `agentType` backed by a file in `agents/`; the deliver coordinator still dispatches some steps as **inline-prompt agents** (prompt and schema at the dispatch site, no persona file). The full catalog and which coordinator dispatches what are in [`./fleet.md`](./fleet.md).
 
 ### 3. Typed JSON schemas as the contracts between stages
 
@@ -112,9 +112,10 @@ These are externally-installed compound-engineering skills, **not** files in thi
 
 1. [`./plan.md`](./plan.md): shepherd-plan deep dive: the 7 phases (Intake, Research, Gate, Draft, Review, Gates, Finalize), the bounded editor loop, and the releasability gates.
 2. [`./deliver.md`](./deliver.md): shepherd-deliver deep dive: the 12 phases (Recon through CI), worktree execution, integration waves, and the ship gate.
-3. [`./fleet.md`](./fleet.md): the agent fleet: all 22 personas plus the inline-prompt agents, what each does, and which coordinator dispatches it.
-4. [`./routing.md`](./routing.md): executor + model routing: the `executor-router`, `ROUTE_SCHEMA`, the Codex effort tiers, and the measured rubric behind them.
-5. [`./verification.md`](./verification.md): the verification and honesty doctrine: the two opposite default rules, self-report audits, and durable residuals.
-6. [`../workflows/README.md`](../workflows/README.md): the dynamic-workflow substrate: the authoring rules every coordinator obeys (`coordinator.md`, `primitives.md`, `constraints.md`, `patterns.md`).
+3. [`./fleet.md`](./fleet.md): the agent fleet: all 35 personas, what each does, and which coordinator dispatches it.
+4. [`./routing.md`](./routing.md): executor + model routing: the `executor-router`, `ROUTE_SCHEMA`, the Codex effort tiers, the measured rubric behind them, and the plan-side Codex lens routing.
+5. [`./verification.md`](./verification.md): the verification and honesty doctrine: the two opposite default rules, self-report audits, durable residuals, and the Codex lens precision/recall inversion caveat.
+6. [`./parity-ce-plan.md`](./parity-ce-plan.md): ce-plan parity matrix: coverage mapping from ce-plan agents, phases, and doctrine elements to shepherd equivalents, shepherd additions, and open gaps.
+7. [`../workflows/README.md`](../workflows/README.md): the dynamic-workflow substrate: the authoring rules every coordinator obeys (`coordinator.md`, `primitives.md`, `constraints.md`, `patterns.md`).
 
 For vocabulary, [`../../CONTEXT.md`](../../CONTEXT.md) is the domain glossary; for product direction, [`../../STRATEGY.md`](../../STRATEGY.md).

@@ -133,6 +133,20 @@ Crucially, Codex's findings are not trusted for being Codex's. They face the **s
 
 ---
 
+## Codex lens path: precision/recall inversion caveat
+
+`shepherd-plan` routes its 7 review lenses through `codex-executor` at Codex `gpt-5.5` / `xhigh` by default (see [`./routing.md`](./routing.md) and [`./plan.md`](./plan.md) S4a). This is the same cross-model-review principle applied to plan documents rather than code diffs, but it carries a load-bearing asymmetry that does not exist on the deliver side.
+
+**The inversion.** On the deliver side, Codex-produced findings face the **RECALL-biased** `finding-verifier` (keep-on-uncertainty: uncertain lands on PLAUSIBLE, not REFUTED). That pairing has been validated in this repo's dogfood. On the plan side, Codex-produced lens findings face the **PRECISION-biased** `skeptical-refuter` (drop-on-uncertainty: uncertain lands on `refuted: true`). This is the **inverse** verdict default from where Codex-as-producer was validated. There is no measured datum in this repo for Codex reviewing a markdown plan with no compile/test/sandbox-execution signal, nor for Codex findings surviving a precision-biased refuter.
+
+**The Codex lens path ships ON by default.** There is no run flag gating it and no off-by-default branch. The maintainer chose to ship the Codex path live; the post-ship playground A/B described below is the named mechanism for revisiting this decision.
+
+**The concrete failure mode.** Codex's cross-model phrasing may differ enough from Claude's same-family phrasing that the precision-biased `skeptical-refuter` refutes Codex findings at a higher rate than Claude findings for the same underlying real problems, degrading plan-side recall. The A/B experimenter must measure the **surviving-finding rate per arm** (the fraction of produced findings that are not refuted and reach the editor loop), not merely whether findings are present. A lower surviving rate in the Codex arm would indicate the refuter is more aggressively refuting cross-model phrasing, reducing the effective recall of the plan-side review.
+
+**The post-ship A/B as the named revisit mechanism.** The assumption that Codex+precision-refuter preserves plan quality is invalidated when an A/B (Claude-lens arm vs Codex-lens arm, identical briefs, at least 2 runs per arm, judged on findings that survive the precision-biased refuter) shows the Codex arm producing a materially lower surviving-finding rate. If that occurs, the ON-by-default decision is revisited. Until the A/B is run, the Codex lens path is the live default and the per-lens Claude fallback (available when Codex is absent or sandboxed) is the only recovery mechanism.
+
+---
+
 ## See also
 
 - [`./fleet.md`](./fleet.md): the two verifier personas (`skeptical-refuter`, `finding-verifier`) and the rest of the agent fleet.

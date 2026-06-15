@@ -1,6 +1,6 @@
 # Routing: who builds each task, and on what model
 
-Routing is how `shepherd-deliver` decides, for each split task, **who implements it** (the Codex CLI or a Claude executor) and **at what intensity** (a Codex reasoning-effort level or a Claude model tier). It is one persona's judgment, refined by a few coordinator-level overrides, calibrated by a measurement program. This page is the routing reference; for how tasks are produced and executed around routing see [`./deliver.md`](./deliver.md), and for the agents named here see [`./fleet.md`](./fleet.md).
+Routing is how both coordinators decide **who does the work** and **at what model tier**. On the deliver side, each split task is routed by the `executor-router` persona (Codex CLI vs a Claude executor, plus effort and tier). On the plan side, `shepherd-plan` now shares the same executor-as-dispatch-time-choice model: the 7 review lenses route through `codex-executor` at Codex `gpt-5.5` / `xhigh` by default, with a per-lens Claude fallback when Codex is unavailable. This page is the routing reference; for how tasks are produced and executed around routing see [`./deliver.md`](./deliver.md), and for the agents named here see [`./fleet.md`](./fleet.md).
 
 Orientation in one line: the **executor-router** persona ([`agents/executor-router.md`](../../agents/executor-router.md)) reads each task's dossier plus its risk/ambiguity/size metadata and returns a four-field `ROUTE_SCHEMA` verdict; the coordinator then clamps, overrides, and executes that verdict.
 
@@ -130,21 +130,26 @@ Every recovery path runs at the unit's **routed** Claude tier, exactly as the pe
 
 ---
 
-## The repo-wide model policy
+## The repo-wide model policy and the plan-side exception
 
-Routing decides the executor tier per task. A second, broader rule governs the model on **every other** agent dispatch in both coordinators. It is stated identically in [`CLAUDE.md`](../../CLAUDE.md) (item 8) and the substrate docs ([`../workflows/README.md`](../workflows/README.md), item 8):
+Routing decides the executor tier per task. A broader rule governs the model on every other agent dispatch in both coordinators. It is stated in [`CLAUDE.md`](../../CLAUDE.md) (item 8) and the substrate docs ([`../workflows/README.md`](../workflows/README.md), item 8):
 
 - **Omit `model`** to inherit the session tier (the default).
 - Use **`model: 'sonnet'`** for grunt work: search, fetch, extraction, mechanical authoring, routine verification.
 - Reserve **`model: 'opus'`** only for steps that genuinely need top-tier reasoning.
 
-The observable pattern in the code matches the policy precisely:
+**The plan side carries a documented exception to the inherit-the-session-model default.** Five plan-side roles are pinned to `model: 'opus'` at the dispatch site: `plan-author`, `plan-editor`, `strategy-gate`, and `skeptical-refuter` (all four dispatch labels). Rationale: plan authoring, the strategy gate, the editor verdict, and adversarial refutation are the highest-stakes judgment work in an autonomous pipeline that ships a plan with no human review between agents. The inherit default is correct for self-paced interactive work; it is not correct here. This exception is recorded explicitly and does not change the general rule; it is a per-role override, not a policy change.
 
-- **Every explicit `model:` literal in both coordinators is `'sonnet'`.** (22 occurrences in `shepherd-deliver.js`, 28 in `shepherd-plan.js`; zero hardcoded `opus`, `haiku`, or `fable`.) These are the mechanical dispatches: the router itself, `codex-runner`, `codex-reviewer`, browser-proofing, ship, gate-recheck, `finding-verifier`, audit checks, the research roster, fix application, adversarial refutation.
-- **The genuine-reasoning steps inherit by omitting `model`**: plan authoring (`plan-author`), task splitting (`task-splitter`), the persona doc/code reviewers, plan editing (`plan-editor`), and CI diagnosis (`ci-watcher`). They run at whatever tier the session is set to.
-- **`haiku` and `opus` reach an agent only one way: through the router's `ROUTE_SCHEMA.model`.** There is no hardcoded `haiku`/`opus` dispatch anywhere. The `unit-executor` (and its recovery dispatches) is the sole place either tier is used, and it always comes from the route, never from inheritance.
+Additionally, the 7 review lenses route through `codex-executor` at Codex `gpt-5.5` / `xhigh` by default. The `codex-executor` operator dispatch carries `model: 'sonnet'` (the operator is mechanical); the Codex model and effort travel as DATA in the `<codex-exec-brief>` prompt block. This follows the same discipline as deliver's `codex-runner` (which pins `model: 'sonnet'` and passes Codex effort as DATA rather than an `agent()` opt).
 
-A subtlety on persona tiers: personas do **not** carry an intrinsic model tier, except `codex-runner` and `codex-reviewer`, which pin `model: sonnet` in their own frontmatter (they are mechanical protocol operators whose heavy reasoning is offloaded to the external Codex model). Every other tier comes from the dispatch site, and `unit-executor`'s tier comes from the router, never inherited.
+The observable pattern, after the plan-side refactor:
+
+- **Plan-side `model:` literals are `'sonnet'` (mechanical roles) or `'opus'` (the five named exception roles above).** Inherit (no `model`) is absent from plan dispatches by design.
+- **Deliver-side explicit `model:` literals are `'sonnet'`**: the router itself, `codex-runner`, `codex-reviewer`, browser-proofing, ship, gate-recheck, `finding-verifier`, audit checks, the research roster, fix application.
+- **Deliver genuine-reasoning steps inherit by omitting `model`**: `task-splitter`, the persona doc/code reviewers, and `ci-watcher`.
+- **`haiku` and `opus` reach a deliver executor only through the router's `ROUTE_SCHEMA.model`.** On the plan side, `opus` reaches the five exception roles through their dispatch-site pins. `haiku` appears nowhere in either coordinator.
+
+A subtlety on persona tiers: personas do **not** carry an intrinsic model tier, except `codex-runner`, `codex-reviewer`, and `codex-executor`, which pin `model: sonnet` in their own frontmatter (they are mechanical protocol operators whose heavy reasoning is offloaded to the external Codex model). Every other tier comes from the dispatch site; `unit-executor`'s tier comes from the router, never inherited.
 
 ---
 
@@ -168,10 +173,25 @@ Read this as a calibration program, not continuous instrumentation. [`STRATEGY.m
 
 ---
 
+## Plan-side Codex routing
+
+`shepherd-plan` shares the executor-as-dispatch-time-choice model with `shepherd-deliver`. The 7 review lenses are dispatched through `codex-executor` at Codex `gpt-5.5` / `xhigh` by default, with no flag and no off-by-default branch.
+
+Key differences from the deliver-side Codex path:
+
+- **The executor is the lens operator, not the task implementer.** `codex-executor` runs each lens role's review doctrine against the plan document in read-only mode (`-s read-only`). It performs no implementation.
+- **The Codex model and effort travel as DATA** in a `<codex-exec-brief>` prompt block (field `model: gpt-5.5`, `reasoning_effort: xhigh`). The `agent()` opts carry `model: 'sonnet'` for the operator dispatch. This mirrors the discipline in `codex-runner` (deliver), which passes effort as DATA rather than an `agent()` opt, because the `agent()` `model` field accepts only Claude tier identifiers.
+- **Per-lens Claude fallback.** When a lens's `codex-executor` run returns `ran: false` (Codex binary absent or nested-sandbox detected), the coordinator re-dispatches that lens on its native Claude `agentType` at the session model. Every lens always contributes a full review; an unreviewed plan can never ship.
+- **`xhigh` effort is the plan-side default** because the 7 lenses are cross-cutting review work. The dogfood doc records `xhigh` as correct for cross-cutting work ("effort high never beat medium; reserve xhigh for cross-cutting work").
+
+The design rationale, risk, and post-ship A/B as the named revisit mechanism are documented in [`./verification.md`](./verification.md) (the precision/recall inversion caveat).
+
+---
+
 ## See also
 
 - [`./deliver.md`](./deliver.md): the deliver pipeline that splits, routes, executes, and verifies.
-- [`./fleet.md`](./fleet.md): the full agent catalog (executor-router, codex-runner, unit-executor, and the rest).
-- [`./verification.md`](./verification.md): the review passes that risk escalation triggers.
+- [`./fleet.md`](./fleet.md): the full agent catalog (executor-router, codex-runner, codex-executor, unit-executor, and the rest).
+- [`./verification.md`](./verification.md): the review passes that risk escalation triggers, and the Codex lens precision/recall caveat.
 - [`../workflows/README.md`](../workflows/README.md): the dynamic-workflow substrate and its model policy.
 - [`dogfood/LEDGER.md`](../../dogfood/LEDGER.md): the raw measurement program behind the rubric.
