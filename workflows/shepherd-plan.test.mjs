@@ -167,7 +167,15 @@ function makeDispatcher(overrides = {}, opts = {}) {
     if (label === 'strategy-gate') return { verdict: 'proceed', adjustedFraming: '', scopeDelta: '', loggedAssumptions: [], haltReason: '' }
     if (label === 'author-plan') return AUTHOR(opts.author)
     if (label === 'classify-personas') return CLASSIFY(opts.classify)
-    if (label.startsWith('review-')) return { findings: [] }
+    // Lenses route through codex-executor (agentType 'codex-executor') by default;
+    // the success path carries ran:true so the coordinator trusts the codex run
+    // and never falls back. A 'review-*-claude' label is the per-lens Claude
+    // fallback re-dispatch, which always carries findings without a ran flag.
+    if (label.startsWith('review-') && label.endsWith('-claude')) return { findings: [] }
+    if (label.startsWith('review-')) {
+      if (opts.codexUnavailable && o.agentType === 'codex-executor') return { findings: [], ran: false }
+      return { findings: [], ran: true }
+    }
     if (label.startsWith('ktd-refute-')) return { verdict: 'claim-correct', reason: 'The claim is correct: it holds against the code.' }
     if (label.startsWith('refute-')) return { refuted: false, reason: 'confirmed' } // covers refute-halt- too
     if (label.startsWith('fix-round-')) return FIX_ECHO(prompt)
@@ -215,8 +223,9 @@ S('S1 happy path / anti-churn THRESHOLD', async () => {
   const byLabel = Object.fromEntries(trace.calls.map((c) => [c.label, c]))
   assert.equal(byLabel['research-repo'].agentType, 'repo-researcher')
   assert.equal(byLabel['research-flow'].agentType, 'flow-analyzer')
-  assert.equal(byLabel['review-r1-coherence'].agentType, 'coherence-lens')
-  assert.equal(byLabel['review-r1-feasibility'].agentType, 'feasibility-lens')
+  // R8: lenses route through the generic Codex executor, not their native lens agentType.
+  assert.equal(byLabel['review-r1-coherence'].agentType, 'codex-executor')
+  assert.equal(byLabel['review-r1-feasibility'].agentType, 'codex-executor')
   assert.equal(byLabel['editor-r1'].agentType, 'plan-editor')
   assert.equal(byLabel['author-plan'].agentType, 'plan-author')
   assert.equal(byLabel['parse-plan'].model, 'sonnet')
@@ -738,7 +747,8 @@ S('S20 persona roster + rounds', async () => {
   assert.ifError(a.error)
   const r1 = labels(a.trace).filter((l) => l.startsWith('review-r1-'))
   assert.deepEqual(r1, ['review-r1-coherence', 'review-r1-feasibility', 'review-r1-security'])
-  assert.equal(a.trace.calls.find((c) => c.label === 'review-r1-security').agentType, 'security-lens')
+  // R8: every lens (including the conditional security lens) routes through codex-executor.
+  assert.equal(a.trace.calls.find((c) => c.label === 'review-r1-security').agentType, 'codex-executor')
   // (b) classifier dies -> duo only, surfaced
   const b = await run(makeDispatcher({ 'classify-personas': () => { throw new Error('classifier died') } }))
   assert.ifError(b.error)
@@ -838,7 +848,7 @@ S('S22 KTD refutation', async () => {
   assert.equal(count(cd.trace, 'ktd-refute-p1-'), 3)
   const k0 = cd.trace.calls.find((c) => c.label === 'ktd-refute-p1-0')
   assert.equal(k0.agentType, 'skeptical-refuter')
-  assert.equal(k0.model, 'sonnet')
+  assert.equal(k0.model, 'opus', 'R7: the skeptical-refuter is pinned to opus at every dispatch site')
   assert.ok(/return verdict\n'unverifiable', NOT 'claim-refuted'/.test(k0.prompt) || k0.prompt.includes("'unverifiable', NOT 'claim-refuted'"))
   assert.ok(k0.prompt.includes('about THE QUOTED CLAIM itself'), 'verdict referent stated in the refute prompt')
   assert.ok(k0.prompt.includes(PLAN_PATH) && /CURRENT/.test(k0.prompt))
@@ -991,15 +1001,15 @@ S('S26 first-class repo arg: every dispatch is grounded with the target reposito
   return 'one chokepoint grounds every contextless agent with the target repo'
 })
 
-S('S27 model-tier policy: grunt sites pinned to sonnet; keep-inherit sites stay undefined', async () => {
-  // (a) happy-path run: research-repo is always dispatched; intake + author-plan are keep-inherit
+S('S27 model-tier policy: mechanical sites pinned to sonnet; planning sites pinned to opus', async () => {
+  // (a) happy-path run: research-repo is always dispatched (sonnet); intake + author-plan are opus-pinned (R7)
   const a = await run(makeDispatcher())
   assert.ifError(a.error)
   const byLabel = (label) => a.trace.calls.find((c) => c.label === label)
   assert.equal(byLabel('research-repo').model, 'sonnet', 'research-repo pinned to sonnet')
   assert.equal(byLabel('research-flow').model, 'sonnet', 'research-flow pinned to sonnet like the rest of the research roster')
-  assert.equal(byLabel('intake').model, undefined, 'intake is keep-inherit')
-  assert.equal(byLabel('author-plan').model, undefined, 'author-plan is keep-inherit')
+  assert.equal(byLabel('intake').model, 'opus', 'R7: intake-classifier pinned to opus')
+  assert.equal(byLabel('author-plan').model, 'opus', 'R7: plan-author pinned to opus')
   // (b) trigger fix-round-1: reviewer returns a finding, editor REVISED carries it
   const RENAMED = UID_PAIRS.map((p) => (p.uid === 'U2' ? { uid: 'U2', name: 'TWO-renamed' } : p))
   const b = await run(makeDispatcher({
@@ -1027,7 +1037,7 @@ S('S27 model-tier policy: grunt sites pinned to sonnet; keep-inherit sites stay 
   const reviseSpike = d.trace.calls.find((c2) => c2.label === 'revise-spike')
   assert.ok(reviseSpike, 'revise-spike fired')
   assert.equal(reviseSpike.model, 'sonnet', 'revise-spike pinned to sonnet')
-  return 'research-repo/fix-round/refix-uid/revise-spike/parse-fix = sonnet; intake/author-plan = inherit'
+  return 'research-repo/fix-round/refix-uid/revise-spike/parse-fix = sonnet; intake/author-plan = opus'
 })
 
 S('S28 paraphrase findings: deduped before the fixer, accounted by identity not exact title', async () => {
@@ -1609,6 +1619,192 @@ S('S49 args.tokenBudget drives the same graceful floor halts as budget.total', a
   assert.ifError(c.error)
   assert.equal(c.result.haltStage, 'S4-budget-floor', 'budget.total takes precedence over args.tokenBudget')
   return 'args.tokenBudget reproduces the S4/S5 graceful floor halts; budget.total keeps precedence'
+})
+
+// ---------- S50-S54: executor-agnostic fleet + Codex lens routing (U3) ----------
+// Four-run coverage union: the de-inline completeness gate. The default happy
+// path misses three roles that only fire on specific inputs —
+// origin-coverage-auditor (needs args.origin), spike-investigator (needs editor
+// designUnknowns), and committer (needs commit:true). Union all four so every
+// dispatched agentType is observed. Each run carries commit:true so committer +
+// hygiene-checker are covered, and a successful run is asserted per arm.
+async function fourRunUnion() {
+  // (i) default happy path + commit -> base fleet, codex-executor lenses, committer, hygiene-checker
+  const base = await run(makeDispatcher(), { args: { ...ARGS, commit: true } })
+  // (ii) origin set + commit -> origin-coverage-auditor
+  const origin = await run(makeDispatcher(), { args: { ...ARGS, origin: 'docs/brainstorm.md', originVersion: 'v1', commit: true } })
+  // (iii) editor returns designUnknowns -> spike branch fires spike-investigator
+  const unknowns = [{ unknown: 'queue storage', affectedUids: ['U1'], whyDesignLevel: 'architecture-level' }]
+  const spike = await run(makeDispatcher({ 'editor-r1': () => EDITOR_REVISED({ designUnknowns: unknowns }) }), { args: { ...ARGS, commit: true } })
+  // (iv) persona-on union -> every conditional lens routes through codex-executor
+  const personaOn = await run(
+    makeDispatcher({}, { classify: { personas: { productLens: true, designLens: true, securityLens: true, scopeGuardian: true, adversarial: true } } }),
+    { args: { ...ARGS, commit: true } },
+  )
+  return { base, origin, spike, personaOn, runs: [base, origin, spike, personaOn] }
+}
+
+S('S50 no-inline four-run union: every dispatch carries a non-empty agentType', async () => {
+  const { runs, origin, spike } = await fourRunUnion()
+  for (const r of runs) assert.ifError(r.error)
+  // The completeness gate: union the calls across all four runs; not one is undefined.
+  const allCalls = runs.flatMap((r) => r.trace.calls)
+  const undefinedAgents = allCalls.filter((c) => !c.agentType)
+  assert.deepEqual(undefinedAgents.map((c) => c.label), [], 'every agent() call across the four-run union carries a non-empty agentType (zero inline agents)')
+  // The four runs together must surface the roles the default path misses.
+  const union = new Set(allCalls.map((c) => c.agentType))
+  assert.ok(union.has('origin-coverage-auditor'), 'origin run fires origin-coverage-auditor')
+  assert.ok(union.has('spike-investigator'), 'designUnknowns run fires spike-investigator')
+  assert.ok(union.has('committer'), 'commit run fires the committer')
+  assert.ok(union.has('hygiene-checker'), 'hygiene-checker covered')
+  assert.ok(union.has('codex-executor'), 'lenses route through codex-executor')
+  // Confirm the origin/spike runs actually reached those roles (not just present somewhere).
+  assert.ok(origin.trace.calls.some((c) => c.agentType === 'origin-coverage-auditor'), 'origin-coverage-auditor in the origin run')
+  assert.ok(spike.trace.calls.some((c) => c.agentType === 'spike-investigator'), 'spike-investigator in the designUnknowns run')
+  return `${allCalls.length} dispatches across 4 runs, zero undefined agentTypes; union covers ${union.size} roles`
+})
+
+S('S51 lens-via-codex: every review-r*-* routes through codex-executor at gpt-5.5/xhigh', async () => {
+  // Default happy path -> the codex-available lens path (ran:true), no fallback.
+  const { result, trace, error } = await run(makeDispatcher())
+  assert.ifError(error)
+  assert.equal(result.status, 'ready', 'codex-available path synthesizes the same ready outcome')
+  const lensCalls = trace.calls.filter((c) => /^review-r\d+-[a-z]+$/.test(c.label)) // exclude any -claude fallback labels
+  assert.ok(lensCalls.length > 0, 'lens dispatches present')
+  for (const c of lensCalls) {
+    assert.equal(c.agentType, 'codex-executor', `${c.label} routes through codex-executor`)
+    assert.equal(c.model, 'sonnet', `${c.label} carries model sonnet (Codex effort travels as prompt DATA, not the Claude-tier opts field)`)
+    assert.ok(c.prompt.includes('gpt-5.5'), `${c.label} brief pins the Codex model gpt-5.5`)
+    assert.ok(c.prompt.includes('xhigh'), `${c.label} brief pins reasoning_effort xhigh`)
+    assert.ok(/role_file: agents\/[a-z-]+\.md/.test(c.prompt), `${c.label} brief names the lens role_file for the executor to read from disk`)
+    assert.ok(c.schema, `${c.label} keeps the schema on agent() opts (S43 contract)`)
+  }
+  // No fallback lens fired on the codex-available path.
+  assert.ok(!trace.calls.some((c) => c.label.endsWith('-claude')), 'no -claude fallback on the codex-available path')
+  return `${lensCalls.length} lens dispatches all route through codex-executor at gpt-5.5/xhigh`
+})
+
+S('S52 opus pins: the planning + refuter labels carry model opus', async () => {
+  // Drive a run that fires all four skeptical-refuter dispatch sites:
+  //  - refute-r* : a non-halt P1 finding survives to the single refuter
+  //  - refute-halt-r* : a P0/manual/no-fix halt-class finding triggers majority arbitration
+  //  - ktd-refute-p* + refute-halt-ktd-p* : a refuted KTD triggers KTD arbitration
+  // The halt-class majority REFUTES (drops the finding) so the run does not halt
+  // before the KTD sites are reached; the KTD challenge is likewise refuted by arbitration.
+  const ktds = { ktds: ['use sqlite as the queue store'], loadBearingAssumptions: [] }
+  const haltFinding = FINDING({ title: 'design contradiction', severity: 'P0', autofixClass: 'manual', suggestedFix: '', whyItMatters: 'no fix exists' })
+  const trace = (await run(makeDispatcher({
+    'review-r1-coherence': () => ({ findings: [haltFinding, FINDING({ title: 'missing dep' })], ran: true }),
+    'refute-halt-r': () => ({ refuted: true, reason: 'majority refutes the halt-class finding' }),
+    'refute-r': () => ({ refuted: false, reason: 'confirmed' }),
+    'ktd-refute-p1-0': () => ({ verdict: 'claim-refuted', reason: 'The claim is contradicted: postgres is already used.' }),
+    'refute-halt-ktd-': (p, o, label) => ({ verdict: label.endsWith('-v2') ? 'ktd-is-wrong' : 'ktd-is-right', reason: 'vote' }),
+  }, { classify: ktds }))).trace
+  const opusLabels = {
+    intake: 'intake', 'strategy-gate': 'strategy-gate', 'author-plan': 'author-plan', 'editor-r1': 'editor-r1',
+  }
+  for (const lbl of Object.values(opusLabels)) {
+    const c = trace.calls.find((x) => x.label === lbl)
+    assert.ok(c, `${lbl} dispatched`)
+    assert.equal(c.model, 'opus', `R7: ${lbl} pinned to opus`)
+  }
+  // All four skeptical-refuter dispatch sites carry opus.
+  const refuterPrefixes = ['refute-halt-r', 'refute-r', 'ktd-refute-p', 'refute-halt-ktd-p']
+  for (const prefix of refuterPrefixes) {
+    const c = trace.calls.find((x) => x.label.startsWith(prefix))
+    assert.ok(c, `a ${prefix}* dispatch fired`)
+    assert.equal(c.agentType, 'skeptical-refuter', `${c.label} is the skeptical-refuter`)
+    assert.equal(c.model, 'opus', `R7: ${c.label} (skeptical-refuter) pinned to opus`)
+  }
+  return 'intake/strategy-gate/author-plan/editor-r1 + all four skeptical-refuter sites carry model opus'
+})
+
+S('S53 schema byte-identity: PERSONA_FINDINGS_SCHEMA literal unchanged in coordinator source', async () => {
+  // R5: the coordinator's PERSONA_FINDINGS_SCHEMA JS object is byte-for-byte
+  // unchanged by the refactor (Codex's additionalProperties:false is added by
+  // the executor at schema-write time, never by mutating this object). Pin the
+  // literal against scriptSrc, mirroring S44's file-content style.
+  const SCHEMA_LITERAL = `const PERSONA_FINDINGS_SCHEMA = {
+  type: 'object',
+  properties: {
+    findings: { type: 'array', items: { type: 'object', properties: {
+      section: { type: 'string' }, title: { type: 'string' },
+      severity: { enum: ['P0', 'P1', 'P2', 'P3'] },
+      findingType: { enum: ['error', 'omission'] },
+      confidence: { enum: [0, 25, 50, 75, 100] },
+      autofixClass: { enum: ['safe_auto', 'gated_auto', 'manual'] },
+      evidence: { type: 'string', description: 'verbatim quote from the document' },
+      whyItMatters: { type: 'string' },
+      suggestedFix: { type: 'string', description: '"" when no concrete fix exists' },
+    }, required: ['section', 'title', 'severity', 'findingType', 'confidence', 'autofixClass', 'evidence', 'whyItMatters', 'suggestedFix'] } },
+  },
+  required: ['findings'],
+}`
+  assert.ok(
+    scriptSrc.includes(SCHEMA_LITERAL),
+    'PERSONA_FINDINGS_SCHEMA literal is byte-identical to its pre-refactor definition (R5 pin)',
+  )
+  // additionalProperties:false must NOT appear inside the coordinator object — it
+  // is added only at schema-write time by the executor.
+  assert.ok(!SCHEMA_LITERAL.includes('additionalProperties'), 'no additionalProperties in the coordinator schema object')
+  return 'PERSONA_FINDINGS_SCHEMA literal byte-identical in coordinator source; no additionalProperties mutation'
+})
+
+S('S54 codex-unavailable fallback: each lens re-dispatches on its native agentType, round completes', async () => {
+  // codexUnavailable -> every codex-executor lens reports ran:false; the
+  // coordinator must re-dispatch each lens on its native Claude agentType via a
+  // -claude-suffixed label at the SESSION model (no model opt), and the round
+  // must complete with a full finding set — not a zero-finding READY, not a halt.
+  const a = await run(
+    makeDispatcher({}, {
+      codexUnavailable: true,
+      classify: { personas: { productLens: false, designLens: false, securityLens: true, scopeGuardian: false, adversarial: false }, reasons: ['security: handles tokens'] },
+    }),
+  )
+  assert.ifError(a.error)
+  assert.equal(a.result.status, 'ready', 'fallback round completes ready, not a zero-finding halt')
+  // The three round-1 lenses each report ran:false on the codex dispatch...
+  const codexLenses = a.trace.calls.filter((c) => /^review-r1-[a-z]+$/.test(c.label) && c.agentType === 'codex-executor')
+  assert.deepEqual(codexLenses.map((c) => c.label).sort(), ['review-r1-coherence', 'review-r1-feasibility', 'review-r1-security'])
+  // ...and each is re-dispatched on its native lens agentType via a -claude label at the session model.
+  const fallbacks = a.trace.calls.filter((c) => c.label.endsWith('-claude'))
+  const fbByLabel = Object.fromEntries(fallbacks.map((c) => [c.label, c]))
+  assert.equal(fbByLabel['review-r1-coherence-claude'].agentType, 'coherence-lens', 'coherence lens falls back to its native agentType')
+  assert.equal(fbByLabel['review-r1-feasibility-claude'].agentType, 'feasibility-lens', 'feasibility lens falls back to its native agentType')
+  assert.equal(fbByLabel['review-r1-security-claude'].agentType, 'security-lens', 'security lens falls back to its native agentType')
+  for (const c of fallbacks) assert.equal(c.model, undefined, `${c.label} re-dispatches at the SESSION model (no model opt)`)
+  // The fell-back lenses are logged (no silent cap, principle 6).
+  assert.ok(a.trace.logs.some((m) => /codex unavailable for 3 lens\(es\)/.test(m) && /coherence/.test(m) && /security/.test(m)),
+    'a log() names the fell-back lenses')
+  // (b) when codex IS available, no fallback fires for the same roster.
+  const b = await run(
+    makeDispatcher({}, { classify: { personas: { productLens: false, designLens: false, securityLens: true, scopeGuardian: false, adversarial: false } } }),
+  )
+  assert.ifError(b.error)
+  assert.ok(!b.trace.calls.some((c) => c.label.endsWith('-claude')), 'no fallback when codex is available')
+  return 'each ran:false lens re-dispatches on its native agentType (-claude, session model); round completes with full coverage, fell-back lenses logged'
+})
+
+S('S55 S40/S42 four-run union covers committer/hygiene/origin/spike on disk and within budget', async () => {
+  const { runs } = await fourRunUnion()
+  for (const r of runs) assert.ifError(r.error)
+  const agentTypes = [...new Set(runs.flatMap((r) => r.trace.calls.map((c) => c.agentType)).filter(Boolean))]
+  // The four roles the two-run S40/S42 union misses are now covered.
+  for (const role of ['committer', 'hygiene-checker', 'origin-coverage-auditor', 'spike-investigator', 'codex-executor']) {
+    assert.ok(agentTypes.includes(role), `${role} present in the four-run union`)
+  }
+  // On-disk check (mirrors S40): every dispatched agentType has a backing agents/*.md file.
+  const agentsDir = join(dir, '..', 'agents')
+  for (const at of agentTypes) {
+    assert.ok(existsSync(join(agentsDir, `${at}.md`)), `agents/${at}.md not found on disk (agentType in four-run union)`)
+  }
+  // Budget check (mirrors S42): the union sums to < 1471 lines.
+  let totalLines = 0
+  for (const at of agentTypes) {
+    totalLines += readFileSync(join(agentsDir, `${at}.md`), 'utf8').split('\n').length
+  }
+  assert.ok(totalLines < 1471, `four-run fleet total ${totalLines} must be < 1471 (R10 budget)`)
+  return `four-run union: ${agentTypes.length} agentTypes on disk, fleet total ${totalLines} lines < 1471`
 })
 
 let pass = 0, fail = 0
