@@ -25,10 +25,12 @@ Protocol:
    `additionalProperties: false` added at EVERY object level and EVERY property
    forced into `required`, so the caller's schema stays byte-identical in their
    code while the on-disk schema.json satisfies Codex strict structured output.
-3. Read the role file at the path given by the brief's `role_file` field (relative
-   to repo root). Write `<scratch>/prompt.md` by concatenating: the brief's
-   assembled review instructions, then the role file's full content, then the
-   document path to review.
+3. Read the role file at the brief's `role_file` path, resolved from the SESSION's
+   starting directory (this fleet's own `agents/`), NOT any `args.repo` target —
+   the role files are this project's own and do not exist under a target repo (the
+   coordinator's target-repo grounding carries an `agents/` exception for exactly
+   this). Write `<scratch>/prompt.md` by concatenating: the brief's assembled
+   review instructions, then the role file's full content, then the document path.
 4. Discovery — in this exact order before launching:
    a. Check whether `$CODEX_SANDBOX` or `$CODEX_SESSION_ID` is set. If EITHER
       env var is present the executor is inside a Codex sandbox where launching a
