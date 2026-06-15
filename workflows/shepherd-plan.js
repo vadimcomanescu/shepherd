@@ -66,7 +66,7 @@ You are working on the repository at ${REPO}, NOT your current working directory
 Resolve every relative path in this brief (docs/plans/..., lib/..., test and git
 commands) against ${REPO}: cd into it first in any shell command, search and
 read only there, and write files only under ${REPO}.
-Exception: skills/ paths (doctrine skills) resolve from the session's starting directory, NOT ${REPO}. For skill reads, do NOT cd into ${REPO} — open skills/ paths directly from wherever the session started (e.g. Read skills/decomposition/SKILL.md without any cd, or prefix with the session start directory).
+Exception: skills/ and agents/ paths (doctrine skills, and the lens/role files this run dispatches, e.g. the codex-executor role_file agents/coherence-lens.md) resolve from the session's starting directory, NOT ${REPO} — they are Shepherd's own files and do not exist in the target repo. For these reads, do NOT cd into ${REPO} — open skills/ and agents/ paths directly from wherever the session started (e.g. Read skills/decomposition/SKILL.md or agents/coherence-lens.md without any cd, or prefix with the session start directory).
 
 ${prompt}`, opts)
 }

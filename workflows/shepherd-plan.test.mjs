@@ -988,7 +988,7 @@ S('S26 first-class repo arg: every dispatch is grounded with the target reposito
   assert.ifError(grounded.error)
   const ungroundedCalls = grounded.trace.calls.filter((c) => !c.prompt.startsWith('TARGET REPOSITORY: /sibling/target-repo\n'))
   assert.deepEqual(ungroundedCalls.map((c) => c.label), [], 'every agent dispatch carries the repo grounding prefix (trailing slash trimmed)')
-  const exceptionLine = "Exception: skills/ paths (doctrine skills) resolve from the session's starting directory, NOT /sibling/target-repo."
+  const exceptionLine = "Exception: skills/ and agents/ paths (doctrine skills, and the lens/role files this run dispatches, e.g. the codex-executor role_file agents/coherence-lens.md) resolve from the session's starting directory, NOT /sibling/target-repo"
   assert.deepEqual(grounded.trace.calls.filter((c) => !c.prompt.includes(exceptionLine)).map((c) => c.label), [], 'every grounded prompt carries the skills-root exception')
   const plain = await run(makeDispatcher())
   assert.ifError(plain.error)

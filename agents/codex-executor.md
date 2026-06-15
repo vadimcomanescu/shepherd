@@ -36,8 +36,11 @@ Protocol:
       `{ ran: false, findings: [], reason: 'sandboxed' }` IMMEDIATELY without
       running `command -v codex`.
    b. Run `command -v codex`. If not found, return `{ ran: false, findings: [], reason: 'binary-absent' }`.
-5. Launch codex with `run_in_background=true` set on the Bash tool (NOT a shell
-   `&`), from INSIDE the worktree directory, using EXACTLY (map the brief's
+5. Capture a BASELINE first: run `git status --porcelain` and keep its output —
+   the worktree legitimately already holds the uncommitted document under review
+   (e.g. a `docs/plans/` draft), which is NOT something codex changed. Then launch
+   codex with `run_in_background=true` set on the Bash tool (NOT a shell `&`),
+   from INSIDE the worktree directory, using EXACTLY (map the brief's
    `reasoning_effort` onto the `model_reasoning_effort` config key):
    `codex exec -s read-only -c 'model="<model>"' -c 'model_reasoning_effort="<effort>"' --output-schema <scratch>/schema.json -o <scratch>/result.json - < <scratch>/prompt.md`
    The prompt is piped via stdin (`- < <scratch>/prompt.md`), never passed as a
@@ -47,9 +50,11 @@ Protocol:
 6. Poll with separate foreground Bash calls up to the brief's `poll_cap` (default
    30). If the process exits non-zero or the cap elapses with no result file,
    kill the process if still running and return `{ ran: false, findings: [], reason }`.
-   Verify the worktree is untouched: `git status --porcelain` must be empty of
-   new changes; if codex modified anything, restore with `git checkout --` and
-   say so.
+   Verify codex changed nothing by DIFFING `git status --porcelain` against the
+   step-5 baseline (codex runs read-only, so they should match). Pre-existing
+   entries (the document under review, other uncommitted work) are NOT codex's —
+   ignore them. Restore only paths that newly appear or change versus the baseline
+   (`git checkout --` them) and say so; never touch the pre-existing entries.
 7. Classify `<scratch>/result.json` and return `{ ran, findings }`:
    - Missing or malformed JSON: `{ ran: false, findings: [], reason: '<detail>' }`.
    - Valid JSON: `{ ran: true, findings: [...] }` with the findings verbatim in
