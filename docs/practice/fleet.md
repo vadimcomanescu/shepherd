@@ -7,9 +7,9 @@ The fleet is **35 single-purpose personas**, one Markdown file each under [`agen
 Two facts shape everything below:
 
 - **Each persona gets a fresh context window.** It cannot see the coordinator's variables, the plan document, or any other agent's output unless that data is in its prompt. Every dispatch must ground the agent with exactly the paths, facts, and schema it needs (the grounding principle).
-- **Personas carry no intrinsic model tier**, with two exceptions (`codex-runner`, `codex-reviewer`). Every other agent's model is decided at the dispatch site or inherited from the session. See the [Models](#models) note and [`./routing.md`](./routing.md).
+- **Personas carry no intrinsic model tier**, with three exceptions (`codex-runner`, `codex-reviewer`, `codex-executor`, all pinned `sonnet` in frontmatter). Every other agent's model is decided at the dispatch site or inherited from the session. See the [Models](#models) note and [`./routing.md`](./routing.md).
 
-The 35 personas split as: **27 plan-side** (5 research + 2 authoring + 7 review lenses + 12 role-extracted gate and loop agents + 1 Codex executor mechanism) and **8 deliver/shared** (5 delivery + 2 verifiers + 1 CI). Every dispatcher in both coordinators carries an `agentType` backed by a file in `agents/`; there are no inline-prompt agents on the plan side. The groups below follow that split.
+The 35 personas split as: **27 plan-side** (5 research + 2 authoring + 7 review lenses + 12 role-extracted gate and loop agents + 1 Codex executor mechanism) and **8 deliver/shared** (5 delivery + 2 verifiers + 1 CI). Every **plan-side** dispatch carries an `agentType` backed by a file in `agents/` — there are no inline-prompt agents on the plan side. The deliver coordinator deliberately keeps some inline-prompt dispatches (e.g. `repo-recon`, `merge-*`, `ship`); only `shepherd-plan` was de-inlined in this refactor. The groups below follow that split.
 
 ---
 

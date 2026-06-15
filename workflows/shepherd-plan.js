@@ -1296,19 +1296,23 @@ for (let r = 1; r <= EDITOR_ROUNDS; r++) {
     log(`Round ${r}: routing ${personaRoster.length} lens(es) through codex-executor at gpt-5.5/xhigh: ${personaRoster.map((p) => p.key).join(', ')}`)
     const reviews = await parallel(personaRoster.map((p) => () =>
       agent(codexLensBrief(p, r), { label: `review-r${r}-${p.key}`, phase: 'Review', agentType: 'codex-executor', model: 'sonnet', schema: LENS_RESULT_SCHEMA })))
-    // R6 sanctioned addition: per-lens Claude fallback. A lens is "ran" unless
-    // its codex-executor result explicitly carries ran === false (codex absent,
-    // sandboxed, or its flags rejected). Re-dispatch the fallen-back lenses on
-    // their native Claude agentType (p.type) at the session model and use those
-    // findings, so every lens always contributes a full review and an
-    // unreviewed plan can never ship. This is a dispatch-layer retry only — it
-    // does NOT alter any downstream synthesis step.
-    const fellBack = personaRoster.filter((p, i) => reviews[i] && reviews[i].ran === false)
+    // R6 sanctioned addition: per-lens Claude fallback. A lens needs the native
+    // Claude fallback when its codex-executor result is UNUSABLE — either it
+    // explicitly carries ran === false (codex absent, sandboxed, or its flags
+    // rejected) OR it is null (the codex-executor operator died terminally after
+    // retries, or was skipped — the documented agent() null return). Both cases
+    // mean the lens produced no trustworthy review, so re-dispatch it on its
+    // native Claude agentType (p.type) at the session model and use those
+    // findings; every lens always contributes a full review and an unreviewed
+    // plan can never ship. This is a dispatch-layer retry only — it does NOT
+    // alter any downstream synthesis step.
+    const needsFallback = (rev) => !rev || rev.ran === false
+    const fellBack = personaRoster.filter((p, i) => needsFallback(reviews[i]))
     if (fellBack.length) {
-      log(`Round ${r}: codex unavailable for ${fellBack.length} lens(es) — falling back to native Claude lenses: ${fellBack.map((p) => p.key).join(', ')}`)
+      log(`Round ${r}: codex unusable for ${fellBack.length} lens(es) — falling back to native Claude lenses: ${fellBack.map((p) => p.key).join(', ')}`)
     }
     const fallbackReturns = await parallel(personaRoster.map((p, i) => () =>
-      (reviews[i] && reviews[i].ran === false)
+      needsFallback(reviews[i])
         ? agent(reviewPrompt(p, r), { label: `review-r${r}-${p.key}-claude`, phase: 'Review', agentType: p.type, schema: PERSONA_FINDINGS_SCHEMA })
         : Promise.resolve(reviews[i])))
     fallbackReturns.forEach((rev, i) => {

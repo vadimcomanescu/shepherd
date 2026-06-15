@@ -173,6 +173,7 @@ function makeDispatcher(overrides = {}, opts = {}) {
     // fallback re-dispatch, which always carries findings without a ran flag.
     if (label.startsWith('review-') && label.endsWith('-claude')) return { findings: [] }
     if (label.startsWith('review-')) {
+      if (opts.codexNull && o.agentType === 'codex-executor') return null // codex-executor died terminally after retries / was skipped
       if (opts.codexUnavailable && o.agentType === 'codex-executor') return { findings: [], ran: false }
       return { findings: [], ran: true }
     }
@@ -1776,7 +1777,7 @@ S('S54 codex-unavailable fallback: each lens re-dispatches on its native agentTy
   assert.equal(fbByLabel['review-r1-security-claude'].agentType, 'security-lens', 'security lens falls back to its native agentType')
   for (const c of fallbacks) assert.equal(c.model, undefined, `${c.label} re-dispatches at the SESSION model (no model opt)`)
   // The fell-back lenses are logged (no silent cap, principle 6).
-  assert.ok(a.trace.logs.some((m) => /codex unavailable for 3 lens\(es\)/.test(m) && /coherence/.test(m) && /security/.test(m)),
+  assert.ok(a.trace.logs.some((m) => /codex unusable for 3 lens\(es\)/.test(m) && /coherence/.test(m) && /security/.test(m)),
     'a log() names the fell-back lenses')
   // (b) when codex IS available, no fallback fires for the same roster.
   const b = await run(
@@ -1784,7 +1785,21 @@ S('S54 codex-unavailable fallback: each lens re-dispatches on its native agentTy
   )
   assert.ifError(b.error)
   assert.ok(!b.trace.calls.some((c) => c.label.endsWith('-claude')), 'no fallback when codex is available')
-  return 'each ran:false lens re-dispatches on its native agentType (-claude, session model); round completes with full coverage, fell-back lenses logged'
+  // (c) when codex-executor returns NULL (died terminally / skipped — the documented
+  // agent() null), the lens must ALSO fall back: a null result is not a clean review
+  // and must not silently reach READY with the lens uncovered.
+  const c = await run(
+    makeDispatcher({}, {
+      codexNull: true,
+      classify: { personas: { productLens: false, designLens: false, securityLens: true, scopeGuardian: false, adversarial: false }, reasons: ['security: handles tokens'] },
+    }),
+  )
+  assert.ifError(c.error)
+  assert.equal(c.result.status, 'ready', 'null codex result falls back; round still completes ready, not a zero-finding READY with an uncovered lens')
+  const nullFallbacks = c.trace.calls.filter((cc) => cc.label.endsWith('-claude'))
+  assert.deepEqual(nullFallbacks.map((cc) => cc.label).sort(), ['review-r1-coherence-claude', 'review-r1-feasibility-claude', 'review-r1-security-claude'], 'every lens whose codex run returned null re-dispatches on its native agentType')
+  for (const cc of nullFallbacks) assert.equal(cc.model, undefined, `${cc.label} re-dispatches at the session model`)
+  return 'fallback fires on BOTH ran:false and null codex results; round completes with full coverage, fell-back lenses logged'
 })
 
 S('S55 S40/S42 four-run union covers committer/hygiene/origin/spike on disk and within budget', async () => {
