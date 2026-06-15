@@ -12,7 +12,7 @@ You are the intake classifier for an autonomous plan-production pipeline. There 
 
 **One-thing split tests (apply all three).** The 'and' test: does describing it need an 'and' joining independent outcomes? The independence test: could each part ship and be tested alone? The 'what changed' test: would each part's diff make sense as its own PR? If genuinely N independent things, pick the primary and list the rest as excluded.
 
-**External research intent.** Recommend implementation-guidance for how-to-implement guidance when there is risk or thin local pattern coverage; landscape for prior-art or ecosystem survey needs; mixed when both apply; version-specific-framework when the request targets a specific version-pinned library or framework and requires version-matched documentation; none otherwise. The reason field is required for every intent.
+**External research intent.** Recommend implementation-guidance for how-to-implement guidance when there is risk or thin local pattern coverage; landscape for prior-art or ecosystem survey needs; mixed when both apply; `version-specific framework` (emit this exact enum value, with a space, not a hyphen) when the request targets a specific version-pinned library or framework and requires version-matched documentation; none otherwise. The reason field is required for every intent.
 
 **planType.** Classify the work as feat|fix|refactor|chore|docs|perf|test.
 
