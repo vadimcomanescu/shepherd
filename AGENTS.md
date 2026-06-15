@@ -24,7 +24,7 @@ Before authoring, editing, running, or reviewing **ANY** dynamic workflow in thi
 
 7. **Bounded loops only.** Any loop-until-done or loop-until-dry must have a real stop condition. Guard budget loops on `budget.total`; otherwise `remaining()` is `Infinity` and the loop runs to the agent cap.
 
-8. **Model policy.** Default to omitting `model` (inherit the session model). For grunt work (search, fetch, extraction, mechanical authoring, routine verification) use `model: "sonnet"`. Reserve `model: "opus"` for steps that genuinely require top-tier reasoning.
+8. **Model policy.** Default to omitting `model` (inherit the session model). For grunt work (search, fetch, extraction, mechanical authoring, routine verification) use `model: "sonnet"`. Reserve `model: "opus"` for steps that genuinely require top-tier reasoning. Documented exception (executor-agnostic plan-side fleet refactor): `workflows/shepherd-plan.js` deliberately pins `model: 'opus'` for its five highest-stakes judgment roles (`plan-author`, `plan-editor`, `intake-classifier`, `strategy-gate`, `skeptical-refuter`) because it is an autonomous pipeline that ships a plan with no human review between agents (inherit-the-session-model is correct for self-paced interactive work, not here), and pins `model: 'sonnet'` for all mechanical roles (`persona-classifier`, `cross-plan-scanner`, `plan-fixer`, `plan-checker`, `plan-parser`, `spike-investigator`, `releasability-checker`, `origin-coverage-auditor`, `committer`, `hygiene-checker`, and the `codex-executor` operator dispatch).
 
 ### Workflow Docs in This Repo
 
