@@ -454,7 +454,7 @@ files and the edits intended, state the repo conventions (use a conventional
 commit message, stage the touched files by name, run the repo's test command),
 and say what evidence to report back. When verdict=false: belowFloor.reason is one
 line explaining what pushes it above the floor, and belowFloor.directPrompt is "".`,
-  { label: 'intake', phase: 'Intake', schema: INTAKE_SCHEMA },
+  { label: 'intake', phase: 'Intake', agentType: 'intake-classifier', model: 'opus', schema: INTAKE_SCHEMA },
 )
 
 if (!intake) {
@@ -616,7 +616,7 @@ List every *.md file under docs/plans/ whose YAML frontmatter says status:
 active. For each, extract the title, the union of all per-unit Files lists,
 and riskSurfaces (which of auth/payments/migrations/crypto/public-api/deps it
 touches). Return an empty list if the directory does not exist.`,
-  { label: 'research-cross-plan', phase: 'Research', model: 'sonnet', schema: CROSS_PLAN_SCHEMA },
+  { label: 'research-cross-plan', phase: 'Research', agentType: 'cross-plan-scanner', model: 'sonnet', schema: CROSS_PLAN_SCHEMA },
 ) })
 
 // Clamp for M18 discipline — cannot fire with a <=6-row roster by construction.
@@ -690,7 +690,7 @@ scope delta: the capability already exists, the approach conflicts with the
 architecture, or the scope is materially larger than stated. Verdict adjust =
 proceed with adjustedFraming and loggedAssumptions recorded as testable
 assumptions.`,
-  { label: 'strategy-gate', phase: 'Gate', schema: STRATEGY_SCHEMA },
+  { label: 'strategy-gate', phase: 'Gate', agentType: 'strategy-gate', model: 'opus', schema: STRATEGY_SCHEMA },
 )
 
 let ADJUSTED_FRAMING = ''
@@ -808,7 +808,7 @@ data lifecycles, auth boundaries, performance, shared infrastructure);
 dependencies); ## Acceptance Examples (when requirements have conditional
 shape); ## Documentation / Operational Notes (monitoring, runbooks, rollout);
 ## Sources / Research (research breadcrumbs).`,
-  { label: 'author-plan', phase: 'Draft', agentType: 'plan-author', schema: AUTHOR_SCHEMA },
+  { label: 'author-plan', phase: 'Draft', agentType: 'plan-author', model: 'opus', schema: AUTHOR_SCHEMA },
 )
 
 if (!author) {
@@ -841,7 +841,7 @@ Return one reason line per activated conditional persona.
 Also extract the document's Key Technical Decisions (quote them) ordered most
 load-bearing first, and the load-bearing entries of ## Assumptions (the ones
 whose failure would invalidate the plan), ordered.`,
-  { label: 'classify-personas', phase: 'Draft', model: 'sonnet', schema: CLASSIFY_SCHEMA },
+  { label: 'classify-personas', phase: 'Draft', agentType: 'persona-classifier', model: 'sonnet', schema: CLASSIFY_SCHEMA },
 )
 
 let personaSel = { productLens: false, designLens: false, securityLens: false, scopeGuardian: false, adversarial: false }
@@ -922,6 +922,28 @@ whyItMatters, and suggestedFix ("" when no concrete fix exists). Do not
 re-raise findings the decision primer marks as settled unless the document
 text they referenced has materially changed.${p.key === 'coherence' && repo && repo.contextMdPath ? `
 A domain glossary exists at ${repo.contextMdPath} — check the plan's vocabulary against it and flag conflicts as findings.` : ''}`
+
+// Lens dispatch brief for the generic Codex executor (R8). The lenses route
+// through agents/codex-executor.md at gpt-5.5/xhigh by default. The executor
+// reads the lens role file (role_file) from disk and concatenates it ahead of
+// the context in prompt.md; Codex model + reasoning-effort travel as DATA here
+// because agent() opts.model is a Claude-tier identifier only. The context
+// field carries the FULL reviewPrompt(p, r) return so no lens branch (the
+// adversarial-lens Document-type/Origin switch, the coherence glossary
+// appendix) is silently disabled.
+const codexLensBrief = (p, r) => `Run a document-review lens through the Codex CLI as a read-only executor.
+
+<codex-exec-brief>
+role_file: agents/${p.type}.md
+model: gpt-5.5
+reasoning_effort: xhigh
+document_path: ${planPath}
+poll_cap: 30
+output_schema (serialize to schema.json with additionalProperties:false added at every object level and every property forced into required):
+${JSON.stringify(PERSONA_FINDINGS_SCHEMA, null, 2)}
+context (the assembled lens review instructions — concatenate the role file content ahead of this block in prompt.md):
+${reviewPrompt(p, r)}
+</codex-exec-brief>`
 
 const refutePrompt = (f) => `Attempt to REFUTE this document-review finding against the actual document and codebase.
 Finding (${f.severity}, ${f.findingType}, reviewer: ${f.reviewer}): [${f.section}] ${f.title}
@@ -1152,8 +1174,8 @@ const fileOverlapViolations = (unitFiles) => {
 // retry. Returns the checker result or null (caller halts fail-closed).
 const runChecker = async (tag, applied, pending, phaseName) => {
   const p = checkerPrompt(applied, pending)
-  let c = await agent(p, { label: `check-${tag}`, phase: phaseName, model: 'sonnet', schema: CHECKER_SCHEMA })
-  if (!c) c = await agent(p, { label: `check-${tag}-retry`, phase: phaseName, model: 'sonnet', schema: CHECKER_SCHEMA })
+  let c = await agent(p, { label: `check-${tag}`, phase: phaseName, agentType: 'plan-checker', model: 'sonnet', schema: CHECKER_SCHEMA })
+  if (!c) c = await agent(p, { label: `check-${tag}-retry`, phase: phaseName, agentType: 'plan-checker', model: 'sonnet', schema: CHECKER_SCHEMA })
   return c
 }
 
@@ -1183,8 +1205,8 @@ const postMutationChecks = async (checkerIn, ctx) => {
   let violations = uidStabilityViolations(uidBaseline, current, ctx.rIdEditAuthorized)
   if (violations.length) {
     log(`uid/R-ID stability violation after ${ctx.tag}: ${violations.join('; ')}`)
-    await agent(refixUidPrompt(violations), { label: `refix-uid-${ctx.tag}`, phase: ctx.phase, model: 'sonnet', schema: FIX_SCHEMA }) // restoring exact uid/R-ID strings from a diff of violations is mechanical targeted repair
-    const recheck = await agent(checkerPrompt([], []), { label: `check-refix-${ctx.tag}`, phase: ctx.phase, model: 'sonnet', schema: CHECKER_SCHEMA })
+    await agent(refixUidPrompt(violations), { label: `refix-uid-${ctx.tag}`, phase: ctx.phase, agentType: 'plan-fixer', model: 'sonnet', schema: FIX_SCHEMA }) // restoring exact uid/R-ID strings from a diff of violations is mechanical targeted repair
+    const recheck = await agent(checkerPrompt([], []), { label: `check-refix-${ctx.tag}`, phase: ctx.phase, agentType: 'plan-checker', model: 'sonnet', schema: CHECKER_SCHEMA })
     if (!recheck) {
       return { haltStage: 'S4-uid-stability', haltReason: `uid stability re-check failed after violation: ${violations.join('; ')}`, nextStep: `Restore the original U-ID/R-ID identities in ${planPath} by hand (draft preserved at ${planPath}), then re-invoke shepherd-plan` }
     }
@@ -1248,10 +1270,31 @@ for (let r = 1; r <= EDITOR_ROUNDS; r++) {
     ]
     const personaRoster = personaRosterAll.slice(0, PERSONA_CAP)
     if (personaRosterAll.length > personaRoster.length) log(`Persona cap: ${personaRosterAll.length - personaRoster.length} persona(s) beyond ${PERSONA_CAP} dropped this round`)
-    // Barrier justified: synthesis (b) needs the full round's finding set for dedup/promotion.
+    // R8: lenses route through the generic Codex executor at gpt-5.5/xhigh as
+    // the live default. The label stays `review-r${r}-${p.key}` (harness
+    // label-prefix routing + every review-* scenario depend on it); the schema
+    // stays on the agent() opts (S43) AND is serialized into the brief for the
+    // Codex executor. Barrier justified: synthesis (b) needs the full round's
+    // finding set for dedup/promotion.
+    log(`Round ${r}: routing ${personaRoster.length} lens(es) through codex-executor at gpt-5.5/xhigh: ${personaRoster.map((p) => p.key).join(', ')}`)
     const reviews = await parallel(personaRoster.map((p) => () =>
-      agent(reviewPrompt(p, r), { label: `review-r${r}-${p.key}`, phase: 'Review', agentType: p.type, schema: PERSONA_FINDINGS_SCHEMA })))
-    reviews.forEach((rev, i) => {
+      agent(codexLensBrief(p, r), { label: `review-r${r}-${p.key}`, phase: 'Review', agentType: 'codex-executor', model: 'sonnet', schema: PERSONA_FINDINGS_SCHEMA })))
+    // R6 sanctioned addition: per-lens Claude fallback. A lens is "ran" unless
+    // its codex-executor result explicitly carries ran === false (codex absent,
+    // sandboxed, or its flags rejected). Re-dispatch the fallen-back lenses on
+    // their native Claude agentType (p.type) at the session model and use those
+    // findings, so every lens always contributes a full review and an
+    // unreviewed plan can never ship. This is a dispatch-layer retry only — it
+    // does NOT alter any downstream synthesis step.
+    const fellBack = personaRoster.filter((p, i) => reviews[i] && reviews[i].ran === false)
+    if (fellBack.length) {
+      log(`Round ${r}: codex unavailable for ${fellBack.length} lens(es) — falling back to native Claude lenses: ${fellBack.map((p) => p.key).join(', ')}`)
+    }
+    const fallbackReturns = await parallel(personaRoster.map((p, i) => () =>
+      (reviews[i] && reviews[i].ran === false)
+        ? agent(reviewPrompt(p, r), { label: `review-r${r}-${p.key}-claude`, phase: 'Review', agentType: p.type, schema: PERSONA_FINDINGS_SCHEMA })
+        : Promise.resolve(reviews[i])))
+    fallbackReturns.forEach((rev, i) => {
       if (!rev) {
         log(`Persona ${personaRoster[i].key} failed round ${r} — its lens is uncovered this round`)
         return
@@ -1397,7 +1440,7 @@ for (let r = 1; r <= EDITOR_ROUNDS; r++) {
       }
       haltClassUsed++
       const votes = await parallel([0, 1, 2].map((j) => () =>
-        agent(refutePrompt(f), { label: `refute-halt-r${r}-f${i}-v${j}`, phase: 'Review', model: 'sonnet', agentType: 'skeptical-refuter', schema: VERDICT_SCHEMA })))
+        agent(refutePrompt(f), { label: `refute-halt-r${r}-f${i}-v${j}`, phase: 'Review', model: 'opus', agentType: 'skeptical-refuter', schema: VERDICT_SCHEMA })))
       // nulls count as refuted — fail-closed on the runtime side, conservative against halting.
       const sustainedVotes = votes.filter((v) => v && !v.refuted).length
       if (sustainedVotes >= 2) {
@@ -1415,7 +1458,7 @@ for (let r = 1; r <= EDITOR_ROUNDS; r++) {
     // Single refuters for the remaining gating findings — pipeline: each
     // verdict independently flips one finding, no barrier needed.
     const verdicts = await pipeline(singles, (f, _o, i) =>
-      agent(refutePrompt(f), { label: `refute-r${r}-f${i}`, phase: 'Review', model: 'sonnet', agentType: 'skeptical-refuter', schema: VERDICT_SCHEMA }))
+      agent(refutePrompt(f), { label: `refute-r${r}-f${i}`, phase: 'Review', model: 'opus', agentType: 'skeptical-refuter', schema: VERDICT_SCHEMA }))
     confirmedGating = []
     singles.forEach((f, i) => {
       const v = verdicts[i]
@@ -1436,7 +1479,7 @@ for (let r = 1; r <= EDITOR_ROUNDS; r++) {
         openQuestions.push(...claimOverflow.map((k) => `unrefuted claim (KTD cap): ${head80(k)}`))
       }
       const ktdVerdicts = await pipeline(claims, (k, _o, i) =>
-        agent(ktdRefutePrompt(k), { label: `ktd-refute-p${pass}-${i}`, phase: 'Review', model: 'sonnet', agentType: 'skeptical-refuter', schema: KTD_VERDICT_SCHEMA }))
+        agent(ktdRefutePrompt(k), { label: `ktd-refute-p${pass}-${i}`, phase: 'Review', model: 'opus', agentType: 'skeptical-refuter', schema: KTD_VERDICT_SCHEMA }))
       for (let i = 0; i < claims.length; i++) {
         const k = claims[i]
         const v = ktdVerdicts[i]
@@ -1457,7 +1500,7 @@ for (let r = 1; r <= EDITOR_ROUNDS; r++) {
         if (ktdHaltUsed < KTD_HALT_CAP) {
           ktdHaltUsed++
           const votes = await parallel([0, 1, 2].map((j) => () =>
-            agent(ktdArbitrationPrompt(k, v.reason), { label: `refute-halt-ktd-p${pass}-${i}-v${j}`, phase: 'Review', model: 'sonnet', agentType: 'skeptical-refuter', schema: KTD_ARBITRATION_SCHEMA })))
+            agent(ktdArbitrationPrompt(k, v.reason), { label: `refute-halt-ktd-p${pass}-${i}-v${j}`, phase: 'Review', model: 'opus', agentType: 'skeptical-refuter', schema: KTD_ARBITRATION_SCHEMA })))
           const wrongVotes = votes.filter((vv) => vv && vv.verdict === 'ktd-is-wrong').length
           if (wrongVotes >= 2) {
             openQuestions.push(`KTD refuted: ${head80(k)}: ${v.reason}`)
@@ -1520,7 +1563,7 @@ for (let r = 1; r <= EDITOR_ROUNDS; r++) {
       log(`Round ${r}: nothing to fix or document — fixer and checker skipped`)
     } else {
       log(`Round ${r}: ${fixNow.length} fix-now, ${docCost.length} document-as-known-cost`)
-      fx = await agent(fixerPrompt(fixNow, docCost), { label: `fix-round-${r}`, phase: 'Review', model: 'sonnet', schema: FIX_SCHEMA }) // applying confirmed-gating and safe-auto fixes from supplied suggestedFix text is mechanical editing
+      fx = await agent(fixerPrompt(fixNow, docCost), { label: `fix-round-${r}`, phase: 'Review', agentType: 'plan-fixer', model: 'sonnet', schema: FIX_SCHEMA }) // applying confirmed-gating and safe-auto fixes from supplied suggestedFix text is mechanical editing
       const routed = [...fixNow, ...docCost]
       if (!fx) {
         residualFindings.push(...routed.map((f) => ({ title: f.title, section: f.section, class: 'fixer-failed', reason: 'fixer agent failed' })))
@@ -1579,7 +1622,7 @@ for (let r = 1; r <= EDITOR_ROUNDS; r++) {
 
   // ---- f. Fresh editor verdict — M5 (runs before the spike branch, which
   // consumes its designUnknowns) ----
-  const ed = await agent(editorPrompt(r), { label: `editor-r${r}`, phase: 'Review', agentType: 'plan-editor', schema: EDITOR_SCHEMA })
+  const ed = await agent(editorPrompt(r), { label: `editor-r${r}`, phase: 'Review', agentType: 'plan-editor', model: 'opus', schema: EDITOR_SCHEMA })
   editorVerdict = ed
   if (!ed) {
     log(`Editor died round ${r} — round counts as REVISED`)
@@ -1609,7 +1652,7 @@ for (let r = 1; r <= EDITOR_ROUNDS; r++) {
     // READY failing ONLY on count/path evidence: one arbitration dispatch per
     // round — the checker, not either self-report, owns the counts. This
     // breaks the author-miscount deadlock when no mutation ever occurred.
-    const arb = await agent(checkerPrompt([], []), { label: `check-evidence-r${r}`, phase: 'Review', model: 'sonnet', schema: CHECKER_SCHEMA })
+    const arb = await agent(checkerPrompt([], []), { label: `check-evidence-r${r}`, phase: 'Review', agentType: 'plan-checker', model: 'sonnet', schema: CHECKER_SCHEMA })
     if (arb) {
       unitCount = arb.unitCount
       requirementCount = arb.requirementCount
@@ -1664,7 +1707,7 @@ for (let r = 1; r <= EDITOR_ROUNDS; r++) {
         }
       }
       const spikeReturns = await pipeline(spiked, (u, _o, i) =>
-        agent(spikePrompt(u), { label: `spike-${i}`, phase: 'Review', model: 'sonnet', schema: SPIKE_SCHEMA }))
+        agent(spikePrompt(u), { label: `spike-${i}`, phase: 'Review', agentType: 'spike-investigator', model: 'sonnet', schema: SPIKE_SCHEMA }))
       const spikeResults = spiked.map((u, i) => {
         if (spikeReturns[i]) return spikeReturns[i]
         log(`Spike ${i} died — "${u.unknown}" treated as runtime-blocked`)
@@ -1672,7 +1715,7 @@ for (let r = 1; r <= EDITOR_ROUNDS; r++) {
       })
       for (const s of spikeResults) if (s.resolution === 'runtime-blocked') openQuestions.push(s.unknown)
       // ONE revision pass (label prefix-disjoint from spike- investigations).
-      const rev = await agent(reviseSpikePrompt(spikeResults), { label: 'revise-spike', phase: 'Review', model: 'sonnet', schema: FIX_SCHEMA }) // routing resolved/blocked spike results to fixed sections is mechanical document folding
+      const rev = await agent(reviseSpikePrompt(spikeResults), { label: 'revise-spike', phase: 'Review', agentType: 'plan-fixer', model: 'sonnet', schema: FIX_SCHEMA }) // routing resolved/blocked spike results to fixed sections is mechanical document folding
       if (!rev) log('Spike revision agent failed — spike results were not folded into the document')
       const spikeChecker = await runChecker('spike', [], carryFindings, 'Review')
       if (!spikeChecker) return summary('halted', CHECKER_HALT('spike revision'))
@@ -1800,8 +1843,8 @@ renumbered or reassigned. Report applied/documented/unapplied and
 sectionsTouched.`
 
 // ---- Gate 1: parse conformance (M11) ----
-let parsed = await agent(parsePlanPrompt(), { label: 'parse-plan', phase: 'Gates', model: 'sonnet', schema: UNITS_SCHEMA })
-if (!parsed) parsed = await agent(parsePlanPrompt(), { label: 'parse-plan-retry', phase: 'Gates', model: 'sonnet', schema: UNITS_SCHEMA })
+let parsed = await agent(parsePlanPrompt(), { label: 'parse-plan', phase: 'Gates', agentType: 'plan-parser', model: 'sonnet', schema: UNITS_SCHEMA })
+if (!parsed) parsed = await agent(parsePlanPrompt(), { label: 'parse-plan-retry', phase: 'Gates', agentType: 'plan-parser', model: 'sonnet', schema: UNITS_SCHEMA })
 if (!parsed) {
   return summary('halted', {
     haltStage: 'S5-parse-gate',
@@ -1813,12 +1856,12 @@ parsed = filterRiskSurfaces(parsed)
 let violations = parseViolations(parsed)
 if (violations.length) {
   log(`Parse gate violations: ${violations.join('; ')}`)
-  await agent(parseFixPrompt(violations), { label: 'parse-fix', phase: 'Gates', model: 'sonnet', schema: FIX_SCHEMA }) // correcting structural parse violations (missing targets, cycles, file-overlap) against explicit checker output is mechanical repair
+  await agent(parseFixPrompt(violations), { label: 'parse-fix', phase: 'Gates', agentType: 'plan-fixer', model: 'sonnet', schema: FIX_SCHEMA }) // correcting structural parse violations (missing targets, cycles, file-overlap) against explicit checker output is mechanical repair
   const parseFixChecker = await runChecker('parse-fix', [], [], 'Gates')
   if (!parseFixChecker) return summary('halted', CHECKER_HALT('parse-fix'))
   const parseBatteryHalt = await postMutationChecks(parseFixChecker, { tag: 'parse-fix', phase: 'Gates', applied: [], rIdEditAuthorized: true })
   if (parseBatteryHalt) return summary('halted', parseBatteryHalt)
-  parsed = await agent(parsePlanPrompt(), { label: 'parse-plan-retry', phase: 'Gates', model: 'sonnet', schema: UNITS_SCHEMA })
+  parsed = await agent(parsePlanPrompt(), { label: 'parse-plan-retry', phase: 'Gates', agentType: 'plan-parser', model: 'sonnet', schema: UNITS_SCHEMA })
   if (parsed) parsed = filterRiskSurfaces(parsed)
   violations = parsed ? parseViolations(parsed) : ['re-parse after the fix round returned null']
   if (violations.length) {
@@ -1862,7 +1905,7 @@ const normalizeRelease = (res) => RELEASE_IDS.map((id) => {
   const item = res && res.items.find((it) => it.id === id)
   return item || { id, pass: false, evidence: 'not reported' }
 })
-const release = await agent(releasabilityPrompt(), { label: 'releasability', phase: 'Gates', schema: RELEASE_SCHEMA })
+const release = await agent(releasabilityPrompt(), { label: 'releasability', phase: 'Gates', agentType: 'releasability-checker', model: 'sonnet', schema: RELEASE_SCHEMA })
 if (!release) log('Releasability agent failed — routed to the shared gate-fix round')
 const releaseItems = normalizeRelease(release)
 const releaseFailures = releaseItems.filter((it) => !it.pass)
@@ -1879,7 +1922,7 @@ let originOmissions = []
 if (!ORIGIN) {
   log('Origin coverage skipped: no origin doc')
 } else {
-  const cov = await agent(originCoveragePrompt(), { label: 'origin-coverage', phase: 'Gates', model: 'sonnet', schema: ORIGIN_COVERAGE_SCHEMA })
+  const cov = await agent(originCoveragePrompt(), { label: 'origin-coverage', phase: 'Gates', agentType: 'origin-coverage-auditor', model: 'sonnet', schema: ORIGIN_COVERAGE_SCHEMA })
   // Vacuous-return rule (M-X1): a zero-section walk is a verifier failure —
   // omissions: [] alone is not evidence of coverage.
   if (!cov || !cov.sections.length) {
@@ -1926,7 +1969,7 @@ ${GATE_AUTHORITY}
 U-IDs and R-IDs may be ADDED (next free number, gaps fine) or deleted, NEVER
 renumbered or reassigned. Report applied/documented/unapplied and
 sectionsTouched.`
-  const gateFix = await agent(gateFixPrompt(), { label: 'gate-fix', phase: 'Gates', schema: FIX_SCHEMA })
+  const gateFix = await agent(gateFixPrompt(), { label: 'gate-fix', phase: 'Gates', agentType: 'plan-fixer', model: 'sonnet', schema: FIX_SCHEMA })
   if (!gateFix && (releaseFailures.length || originOmissions.length)) {
     // Nothing was fixed — same halts as failed retries.
     if (releaseFailures.length) {
@@ -1950,7 +1993,7 @@ sectionsTouched.`
     if (gateBatteryHalt) return summary('halted', gateBatteryHalt)
     // Re-verify ONLY what failed.
     if (releaseFailures.length) {
-      const releaseRetry = await agent(releasabilityPrompt(), { label: 'releasability-retry', phase: 'Gates', schema: RELEASE_SCHEMA })
+      const releaseRetry = await agent(releasabilityPrompt(), { label: 'releasability-retry', phase: 'Gates', agentType: 'releasability-checker', model: 'sonnet', schema: RELEASE_SCHEMA })
       const stillFailing = normalizeRelease(releaseRetry).filter((it) => !it.pass)
       if (stillFailing.length) {
         return summary('halted', {
@@ -1961,7 +2004,7 @@ sectionsTouched.`
       }
     }
     if (originOmissions.length) {
-      const covRetry = await agent(originCoveragePrompt(), { label: 'origin-coverage-retry', phase: 'Gates', model: 'sonnet', schema: ORIGIN_COVERAGE_SCHEMA })
+      const covRetry = await agent(originCoveragePrompt(), { label: 'origin-coverage-retry', phase: 'Gates', agentType: 'origin-coverage-auditor', model: 'sonnet', schema: ORIGIN_COVERAGE_SCHEMA })
       if (!covRetry || !covRetry.sections.length) {
         openQuestions.push('origin coverage unverified (verifier failed)')
         log('Origin coverage retry failed or returned a vacuous walk — coverage unverified')
@@ -1975,7 +2018,7 @@ sectionsTouched.`
     }
     // The document mutated after the parse — the consumer's parser must bless
     // the FINAL bytes (total parse dispatches <= 4 per run worst case, bounded).
-    parsed = await agent(parsePlanPrompt(), { label: 'parse-plan-final', phase: 'Gates', model: 'sonnet', schema: UNITS_SCHEMA })
+    parsed = await agent(parsePlanPrompt(), { label: 'parse-plan-final', phase: 'Gates', agentType: 'plan-parser', model: 'sonnet', schema: UNITS_SCHEMA })
     if (parsed) parsed = filterRiskSurfaces(parsed)
     const finalViolations = parsed ? parseViolations(parsed) : ['final parse returned null after the gate-fix round']
     if (finalViolations.length) {
@@ -2010,7 +2053,7 @@ if (COMMIT) {
     `git add ${planPath} (by name, nothing else) && git commit -m "docs(plans): add ${slug} plan".
 Report the sha and the git show --name-only file list of the commit you made.
 If the working tree contains other changes, do NOT stage them.`,
-    { label: 'commit-plan', phase: 'Finalize', model: 'sonnet', schema: COMMIT_SCHEMA },
+    { label: 'commit-plan', phase: 'Finalize', agentType: 'committer', model: 'sonnet', schema: COMMIT_SCHEMA },
   )
   if (!commitRes || !commitRes.committed) {
     log(`Commit ${commitRes ? `reported failure: ${commitRes.detail}` : 'agent failed'} — the plan file exists but is uncommitted`)
@@ -2031,7 +2074,7 @@ change. onlyPlanChanged = true iff nothing outside ${planPath} changed
 (untracked files outside docs/plans/ count as violations; when a commit was
 just made, a clean tree also counts as true). Compute planVersion with
 git hash-object ${planPath}. Read-only — change nothing, stage nothing.`,
-  { label: 'hygiene', phase: 'Finalize', model: 'sonnet', schema: HYGIENE_SCHEMA },
+  { label: 'hygiene', phase: 'Finalize', agentType: 'hygiene-checker', model: 'sonnet', schema: HYGIENE_SCHEMA },
 )
 if (!hygiene) {
   hygieneClean = null
