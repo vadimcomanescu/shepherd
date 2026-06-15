@@ -278,10 +278,11 @@ S('S6 merge conflict -> redo -> retry merge; attribution reflects the redo', asy
   return 'conflict redo path works, attribution correct'
 })
 
-S('S7 plan-invalidating discovery halts after wave 1; quality/validate skipped', async () => {
+S('S7 plan-invalidating discovery halts after wave 1 when independently confirmed; quality/validate skipped', async () => {
   const d = makeDispatcher({
     'exec-U1': () => ({ ...EXEC_OK('U1'), issues: ['planned module src/legacy.js does not exist'] }),
     'triage-wave-1': () => ({ verdict: 'halt', reason: 'U2/U3 extend a module that does not exist', evidence: ['src/legacy.js missing'] }),
+    'triage-confirm-wave-1': () => ({ verdict: 'halt', reason: 'confirmed: U2/U3 extend src/legacy.js which is absent', evidence: ['src/legacy.js missing'] }),
   })
   const { result, trace, error } = await run(d)
   assert.ifError(error)
@@ -289,6 +290,7 @@ S('S7 plan-invalidating discovery halts after wave 1; quality/validate skipped',
   assert.equal(result.tasks.U2.status, 'skipped')
   assert.match(result.tasks.U2.detail, /plan invalidated/)
   assert.equal(result.planInvalidation.afterWave, 1)
+  assert.ok(trace.calls.some((c) => c.label === 'triage-confirm-wave-1'), 'a genuine halt is independently confirmed before acting')
   assert.equal(result.validation, null)
   assert.equal(result.confirmedReviewFindings, 0)
   assert.equal(result.reviewStats, null, 'halted run never reviews — stats stay null')
@@ -297,6 +299,26 @@ S('S7 plan-invalidating discovery halts after wave 1; quality/validate skipped',
   assert.equal(result.ship.pushed, false)
   assert.match(result.ship.detail, /halted/)
   return 'stop-loss halt: partial work kept, tail skipped, hands back to human'
+})
+
+S('S7b triage proposes halt but independent confirmation overturns it; run continues', async () => {
+  // Regression for the verdict/reasoning divergence observed live: a triage agent set
+  // verdict:'halt' while its own reason prose argued for continue. The independent
+  // confirmation must override the spurious halt so the remaining sound tasks still run.
+  const d = makeDispatcher({
+    'exec-U1': () => ({ ...EXEC_OK('U1'), issues: ['agents/codex-executor.md already exists on the branch'] }),
+    'triage-wave-1': () => ({ verdict: 'halt', reason: 'Wait — re-reading my evidence this is a clear CONTINUE, not a halt; the file pre-existing is intended dependsOn sequencing. Correcting my verdict to continue.', evidence: ['intended dependsOn sequencing'] }),
+    // triage-confirm-wave-1 intentionally NOT overridden — it falls through to the
+    // default 'triage-' continue, modelling an independent confirmer that disagrees.
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  assert.ok(trace.calls.some((c) => c.label === 'triage-confirm-wave-1'), 'a proposed halt is independently confirmed before acting')
+  assert.equal(result.planInvalidation, null, 'overturned halt does not invalidate the plan')
+  for (const id of ['U1', 'U2', 'U3', 'U4']) assert.equal(result.tasks[id].status, 'merged', `${id} merged — run continued past the spurious halt`)
+  assert.ok(result.validation, 'quality/validate ran because the run continued')
+  assert.equal(result.ship.pushed, true, 'continued run reaches ship')
+  return 'spurious halt (enum/prose divergence) overturned by independent confirmation; run completes'
 })
 
 S('S8 budget floor: wave 2 skipped cleanly, budgetHalted set', async () => {
