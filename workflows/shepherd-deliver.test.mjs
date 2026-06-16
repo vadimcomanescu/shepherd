@@ -323,6 +323,22 @@ S('S7b triage proposes halt but independent confirmation overturns it; run conti
   return 'spurious halt (enum/prose divergence) overturned by independent confirmation; run completes'
 })
 
+S('S7c triage proposes halt but confirmer dies (null); fail-open, run continues', async () => {
+  // Dead-confirmer path: the coordinator guard is `if (confirm && confirm.verdict === 'halt')`.
+  // When the confirmer returns null, the condition is falsy and the run must continue.
+  const d = makeDispatcher({
+    'exec-U1': () => ({ ...EXEC_OK('U1'), issues: ['planned module src/legacy.js does not exist'] }),
+    'triage-wave-1': () => ({ verdict: 'halt', reason: 'U2/U3 extend a module that does not exist', evidence: ['src/legacy.js missing'] }),
+    'triage-confirm-wave-1': () => { throw new Error('confirmer died') },
+  })
+  const { result, trace, error } = await run(d)
+  assert.ifError(error)
+  assert.ok(trace.calls.some((c) => c.label === 'triage-confirm-wave-1'), 'confirmer was dispatched before acting on halt')
+  assert.equal(result.planInvalidation, null, 'dead confirmer does not invalidate the plan')
+  for (const id of ['U1', 'U2', 'U3', 'U4']) assert.equal(result.tasks[id].status, 'merged', `${id} merged — run continued past the unconfirmed halt`)
+  return 'dead confirmer (null) falls through; run completes fail-open'
+})
+
 S('S8 budget floor: wave 2 skipped cleanly, budgetHalted set', async () => {
   const d = makeDispatcher({}, { units: { units: UNITS().units.slice(0, 2) } }) // U1, U2(dep U1)
   // 10k/call: 7 calls before wave 1 (remaining 40k > floor), 9 before wave 2 (20k <= floor)
