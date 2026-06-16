@@ -423,54 +423,12 @@ const summary = (status, extra) => {
 phase('Intake')
 
 const intake = await agent(
-  `You are the intake classifier for an autonomous plan-production pipeline.
-There is no human to ask: never pose questions back — classify them instead.
-
-Request (raw):
+  `Request (raw):
 ${REQUEST || '(none — origin document only)'}
 
 ${ORIGIN ? `Origin document: ${ORIGIN} (version: ${ORIGIN_VERSION}). Read it fully before classifying.` : 'No origin document was provided.'}
 
-Depth tier: ${PINNED_DEPTH ? `depth tier is PINNED to "${PINNED_DEPTH}" — return it as depthTier unchanged.` : 'derive the tier: Lightweight 2–4 units / Standard 3–6 / Deep 4–8.'}
-
-Confirmed Intent — fill all six fields (outcome, user, whyNow, success as an
-observable statement, constraints, outOfScope) derived from the request and the
-origin doc ONLY; never invent facts the requester did not state or imply.
-constraints is a LIST of every hard constraint the requester stated or implied;
-return an empty array when none were stated or implied.
-
-Unknown classification: blocking = could materially change the outcome AND
-would likely upset the requester if guessed wrong; everything else: decide,
-attach hypothesis + the observation that would invalidate it.
-
-One-thing split tests (apply all three): the 'and' test: does describing it
-need an 'and' joining independent outcomes; the independence test: could each
-part ship and be tested alone; the 'what changed' test: would each part's diff
-make sense as its own PR — if genuinely N independent things, pick the primary
-and list the rest as excluded.
-
-External research intent: recommend implementation-guidance for how-to-implement
-guidance when there is risk or thin local pattern coverage; recommend landscape
-for prior-art or ecosystem survey needs; recommend mixed when both apply;
-recommend version-specific framework when the request targets a specific
-version-pinned library or framework and requires version-matched documentation
-(e.g. "use Next.js 16 cache components", "upgrade to Rails 8.1"); use none
-otherwise. The reason field is required for every intent.
-
-planType: classify the work as feat|fix|refactor|chore|docs|perf|test.
-nonCodeDeliverable: true when the request is not a code change (knowledge work).
-
-BELOW-FLOOR JUDGMENT (proportional machinery — do not over-plan a trivial change):
-set belowFloor.verdict=true ONLY when ALL of these hold: the estimated change
-touches at most 2 files; it introduces no new module or interface boundary; it
-carries no data, auth, migration, or concurrency risk; it needs no cross-component
-coordination; and its verification is a single obvious command or observation.
-When verdict=true, belowFloor.directPrompt MUST be a complete, self-contained
-executor brief a single executor can run without further planning: name the exact
-files and the edits intended, state the repo conventions (use a conventional
-commit message, stage the touched files by name, run the repo's test command),
-and say what evidence to report back. When verdict=false: belowFloor.reason is one
-line explaining what pushes it above the floor, and belowFloor.directPrompt is "".`,
+Depth tier: ${PINNED_DEPTH ? `PINNED to "${PINNED_DEPTH}" — return it as depthTier unchanged.` : 'not pinned — derive it per your role contract.'}`,
   { label: 'intake', phase: 'Intake', agentType: 'intake-classifier', model: 'opus', schema: INTAKE_SCHEMA },
 )
 
@@ -629,10 +587,7 @@ plan must not miss.`,
 researchRoster.push({ key: 'crossplan', thunk: () => agent(
   `${researchGrounding}
 
-List every *.md file under docs/plans/ whose YAML frontmatter says status:
-active. For each, extract the title, the union of all per-unit Files lists,
-and riskSurfaces (which of auth/payments/migrations/crypto/public-api/deps it
-touches). Return an empty list if the directory does not exist.`,
+Scan the repository's active plans (under docs/plans/) for file and risk-surface overlap with this work, per your role contract.`,
   { label: 'research-cross-plan', phase: 'Research', agentType: 'cross-plan-scanner', model: 'sonnet', schema: CROSS_PLAN_SCHEMA },
 ) })
 
@@ -697,16 +652,7 @@ const strategy = await agent(
 
 ${CODEBASE_CONTEXT}
 ${ORIGIN ? `\nOrigin document: ${ORIGIN} (version: ${ORIGIN_VERSION}) — read it.\n` : ''}
-Challenge the framing before anything is drafted: is this the right problem?
-the right architectural direction for this repo? are unvalidated assumptions
-baked into the intent? Apply a LOW bar to redirecting the approach (do not
-preserve the intake framing because it exists) and a HIGH bar to halting (halt
-only when proceeding would bake in a decision the requester must make).
-Separately, compare the research against the intake scope claim and report the
-scope delta: the capability already exists, the approach conflicts with the
-architecture, or the scope is materially larger than stated. Verdict adjust =
-proceed with adjustedFraming and loggedAssumptions recorded as testable
-assumptions.`,
+Challenge the framing and report the scope delta per your role contract, then return your verdict (proceed / adjust / halt).`,
   { label: 'strategy-gate', phase: 'Gate', agentType: 'strategy-gate', model: 'opus', schema: STRATEGY_SCHEMA },
 )
 
@@ -845,19 +791,8 @@ requirementCount = author.requirementCount
 log('Draft written: ' + planPath + ' (' + unitCount + ' units, ' + requirementCount + ' requirements) — ' + author.detail)
 
 const classify = await agent(
-  `Read the plan document at ${planPath}. Classify it and select conditional
-review personas using EXACTLY these trigger rules (ce-doc-review's rules):
-- documentType: plan (implementation plan) or requirements.
-- productLens: challengeable premise claims OR strategic weight — either leg sufficient.
-- designLens: UI/UX references, frontend components, user flows, screens, interactions, responsive, accessibility.
-- securityLens: auth/authz, externally exposed endpoints, PII/payments/tokens/credentials/encryption, third-party trust boundaries.
-- scopeGuardian: multiple priority tiers, >8 requirements, stretch goals, scope-boundary language misaligned with goals.
-- adversarial: high-stakes domain (auth/payments/billing/migrations/privacy/compliance/external integrations/crypto); new abstraction/framework/architectural pattern; greenfield with no origin doc; explicit scope extension beyond origin; explicit alternatives or unresolved tradeoffs. Negative rule: adversarial is NOT triggered by structural complexity, and NOT for a routine plan derived from a validated origin that stays in scope and touches no high-stakes domain.
-Origin document: ${ORIGIN || 'none'}.
-Return one reason line per activated conditional persona.
-Also extract the document's Key Technical Decisions (quote them) ordered most
-load-bearing first, and the load-bearing entries of ## Assumptions (the ones
-whose failure would invalidate the plan), ordered.`,
+  `Read the plan document at ${planPath} and classify it per your role contract: documentType, which conditional review personas to activate (one reason line each), and the extracted Key Technical Decisions and load-bearing Assumptions entries.
+Origin document: ${ORIGIN || 'none'}.`,
   { label: 'classify-personas', phase: 'Draft', agentType: 'persona-classifier', model: 'sonnet', schema: CLASSIFY_SCHEMA },
 )
 
@@ -2071,9 +2006,9 @@ if (belowBudgetFloor()) {
 let commitDirty = false
 if (COMMIT) {
   const commitRes = await agent(
-    `git add ${planPath} (by name, nothing else) && git commit -m "docs(plans): add ${slug} plan".
-Report the sha and the git show --name-only file list of the commit you made.
-If the working tree contains other changes, do NOT stage them.`,
+    `Plan file to commit: ${planPath}
+Commit-message slug: ${slug} (message: "docs(plans): add ${slug} plan")
+Commit the plan file per your role contract (stage only this file, by name).`,
     { label: 'commit-plan', phase: 'Finalize', agentType: 'committer', model: 'sonnet', schema: COMMIT_SCHEMA },
   )
   if (!commitRes || !commitRes.committed) {
@@ -2090,11 +2025,8 @@ If the working tree contains other changes, do NOT stage them.`,
 }
 
 const hygiene = await agent(
-  `Run git status --porcelain at the repo root. Report every tracked-file
-change. onlyPlanChanged = true iff nothing outside ${planPath} changed
-(untracked files outside docs/plans/ count as violations; when a commit was
-just made, a clean tree also counts as true). Compute planVersion with
-git hash-object ${planPath}. Read-only — change nothing, stage nothing.`,
+  `Plan file: ${planPath}
+Run the workspace hygiene gate per your role contract: report changedFiles, onlyPlanChanged, and the planVersion hash for this file.`,
   { label: 'hygiene', phase: 'Finalize', agentType: 'hygiene-checker', model: 'sonnet', schema: HYGIENE_SCHEMA },
 )
 if (!hygiene) {
