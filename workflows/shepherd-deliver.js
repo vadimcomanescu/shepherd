@@ -748,10 +748,55 @@ hands the decision back to the human.`,
       { label: `triage-wave-${w + 1}`, phase: 'Integrate', schema: TRIAGE_SCHEMA },
     )
     if (triage && triage.verdict === 'halt') {
-      for (const t of remainingTasks) results[t.id] = { status: 'skipped', executor: '-', detail: `plan invalidated after wave ${w + 1}: ${triage.reason}` }
-      planInvalidation = { afterWave: w + 1, reason: triage.reason, evidence: triage.evidence }
-      log(`HALT after wave ${w + 1}: plan-invalidating discovery — ${triage.reason}`)
-      break
+      // A halt strands a human-reviewed plan and hands control back to a person, so it
+      // is a high-consequence verdict that must be unambiguous. Observed live: a triage
+      // agent emitted verdict:'halt' while its own reason prose concluded the opposite
+      // ("this is a clear CONTINUE ... Correcting my verdict to continue") — the enum
+      // and the reasoning diverged and a sound, half-built plan was stranded mid-run.
+      // Per the adversarial-verification doctrine, confirm a halt with an INDEPENDENT
+      // agent before acting on it; on any disagreement, uncertainty, or a dead confirmer,
+      // continue — the triage's own default (a human-reviewed plan executes unless a
+      // premise is provably falsified). One fumbled enum can no longer strand the run.
+      const confirm = await agent(
+        `An automated stop-loss gate has PROPOSED HALTING a plan-execution run after wave ${w + 1}.
+A halt strands a human-reviewed plan and hands control back to a person, so it must be
+justified by a discovery that PROVABLY falsifies a premise the remaining tasks depend on.
+
+The RAW discoveries the gate was given (the source task id, status, and the executor's
+issue text — your primary evidence; inspect these directly, do not rely on the gate's
+summary alone):
+${JSON.stringify(discoveries, null, 2)}
+
+The gate's proposed halt reason:
+${triage.reason}
+
+The gate's cited evidence:
+${(triage.evidence || []).map((e) => `- ${e}`).join('\n') || '(none cited)'}
+
+The tasks that would be skipped if you confirm the halt:
+${remainingTasks.map((t) => `- ${t.id}: ${t.title} (files: ${t.files.join(', ')})`).join('\n')}
+
+Verify INDEPENDENTLY against the raw discoveries above. You may read the plan at ${PLAN}
+and the repo to check. A real falsification means a premise the remaining tasks are built
+on is provably wrong: a module they extend does not exist or works completely differently,
+an API contract they assume is wrong, the capability they add already exists. A discovery
+from a failed or partial task whose work never merged may not be visible in the repo —
+weigh the reported issue text itself rather than treating its absence from the tree as
+proof it is benign. The following are NOT falsifications: a dependency unit already created
+a file the plan assigns it (intended dependsOn sequencing), extra files touched,
+partial-then-finished work, test flakiness, style issues. Return "continue" if the raw
+discoveries do not prove a real falsification, OR the proposed reason is internally
+inconsistent (e.g. its own text argues for continuing), OR you are uncertain. Return
+"halt" ONLY when you can independently name the falsified premise from the evidence above.`,
+        { label: `triage-confirm-wave-${w + 1}`, phase: 'Integrate', schema: TRIAGE_SCHEMA },
+      )
+      if (confirm && confirm.verdict === 'halt') {
+        for (const t of remainingTasks) results[t.id] = { status: 'skipped', executor: '-', detail: `plan invalidated after wave ${w + 1}: ${confirm.reason}` }
+        planInvalidation = { afterWave: w + 1, reason: confirm.reason, evidence: confirm.evidence }
+        log(`HALT after wave ${w + 1}: plan-invalidating discovery confirmed — ${confirm.reason}`)
+        break
+      }
+      log(`Triage proposed halt after wave ${w + 1} but independent confirmation did not agree (verdict=${confirm ? confirm.verdict : 'null'}) — continuing. Proposed reason: ${triage.reason}`)
     }
   }
 
