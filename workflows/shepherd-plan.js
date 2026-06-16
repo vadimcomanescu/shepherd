@@ -892,7 +892,7 @@ model: gpt-5.5
 reasoning_effort: xhigh
 document_path: ${planPath}
 poll_cap: 30
-output_schema (serialize to schema.json with additionalProperties:false added at every object level and every property forced into required):
+output_schema (the lens findings schema the executor must enforce; it serializes this to schema.json per its own strict-output rules):
 ${JSON.stringify(PERSONA_FINDINGS_SCHEMA, null, 2)}
 context (the assembled lens review instructions — concatenate the role file content ahead of this block in prompt.md):
 ${reviewPrompt(p, r)}

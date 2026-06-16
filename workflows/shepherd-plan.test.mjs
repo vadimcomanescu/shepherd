@@ -174,7 +174,7 @@ function makeDispatcher(overrides = {}, opts = {}) {
     if (label.startsWith('review-') && label.endsWith('-claude')) return { findings: [] }
     if (label.startsWith('review-')) {
       if (opts.codexNull && o.agentType === 'codex-executor') return null // codex-executor died terminally after retries / was skipped
-      if (opts.codexUnavailable && o.agentType === 'codex-executor') return { findings: [], ran: false }
+      if (opts.codexUnavailable && o.agentType === 'codex-executor') return { findings: [], ran: false, reason: 'binary-absent' }
       return { findings: [], ran: true }
     }
     if (label.startsWith('ktd-refute-')) return { verdict: 'claim-correct', reason: 'The claim is correct: it holds against the code.' }
@@ -1660,6 +1660,8 @@ S('S51 lens-via-codex: every review-r*-* routes through codex-executor at gpt-5.
     assert.ok(/role_file: agents\/[a-z-]+\.md/.test(c.prompt), `${c.label} brief names the lens role_file for the executor to read from disk`)
     assert.ok(c.prompt.includes('document_path:') && c.prompt.includes('poll_cap'), `${c.label} brief carries document_path and poll_cap`)
     assert.ok(c.prompt.includes('output_schema') && c.prompt.includes('autofixClass'), `${c.label} brief serializes PERSONA_FINDINGS_SCHEMA so the executor can write schema.json`)
+    const schemaBlock = c.prompt.slice(c.prompt.indexOf('output_schema'), c.prompt.indexOf('context ('))
+    assert.ok(!schemaBlock.includes('"ran"'), `${c.label} brief serializes the findings-only PERSONA_FINDINGS_SCHEMA (no root "ran" key) — Codex emits findings and the executor wraps ran; serializing LENS_RESULT_SCHEMA here would tell Codex to emit ran itself`)
     assert.ok(c.prompt.includes('read the document yourself'), `${c.label} brief embeds the full reviewPrompt as context (no lens branch like the coherence glossary or adversarial Document-type switch is silently dropped)`)
     assert.ok(c.schema, `${c.label} keeps the schema on agent() opts (S43 contract)`)
     assert.ok(c.schema.properties && c.schema.properties.ran, `${c.label} dispatch schema declares 'ran' so the codex-unavailable signal survives structured-output validation and reaches the fallback gate`)
@@ -1762,6 +1764,7 @@ S('S54 codex-unavailable fallback: each lens re-dispatches on its native agentTy
   // The fell-back lenses are logged (no silent cap, principle 6).
   assert.ok(a.trace.logs.some((m) => /codex unusable for 3 lens\(es\)/.test(m) && /coherence/.test(m) && /security/.test(m)),
     'a log() names the fell-back lenses')
+  assert.ok(a.trace.logs.some((m) => /codex unusable/.test(m) && m.includes('binary-absent')), 'the fallback log surfaces the per-lens reason from LENS_RESULT_SCHEMA.reason (binary-absent), not just the lens key — a misconfigured-Codex host is diagnosable')
   // (b) when codex IS available, no fallback fires for the same roster.
   const b = await run(
     makeDispatcher({}, { classify: { personas: { productLens: false, designLens: false, securityLens: true, scopeGuardian: false, adversarial: false } } }),
@@ -1821,6 +1824,42 @@ S('S55 S40/S42 four-run union covers committer/hygiene/origin/spike on disk and 
   }
   assert.ok(totalLines < 1471, `four-run fleet total ${totalLines} must be < 1471 (R10 budget)`)
   return `four-run union: ${agentTypes.length} agentTypes on disk, fleet total ${totalLines} lines < 1471`
+})
+
+S('S56 codex-executor protocol pins: the untested-by-harness CLI invariants are content-guarded', async () => {
+  // The harness stubs the dispatcher and never runs codex, so the executor's live
+  // protocol is unexercised. Pin the load-bearing invariants in the role file so a
+  // prose regression (read-only -> workspace-write, dropped sandbox guard, lost stdin
+  // redirect, wrong effort key) is caught here rather than only on a live Codex host.
+  const src = readFileSync(join(dir, '..', 'agents', 'codex-executor.md'), 'utf8')
+  assert.ok(src.includes('-s read-only'), 'launches read-only')
+  assert.ok(src.includes('--output-schema') && /-o\s+<scratch>\/result\.json/.test(src), 'uses --output-schema and -o result.json (proven flag forms)')
+  assert.ok(src.includes('- < <scratch>/prompt.md'), 'pipes the prompt via stdin, never as a positional arg')
+  assert.ok(src.includes('model_reasoning_effort'), 'maps effort onto the model_reasoning_effort config key')
+  assert.ok(src.includes('$CODEX_SANDBOX') && src.includes('$CODEX_SESSION_ID'), 'guards the nested-sandbox case before launching')
+  assert.ok(src.includes('command -v codex'), 'probes the binary before launching')
+  assert.ok(src.includes('additionalProperties') && src.includes('required'), 'strictifies schema.json (additionalProperties:false + all required)')
+  assert.ok(/ran: true/.test(src) && /ran: false/.test(src) && /findings: \[\]/.test(src), 'every return carries ran + findings (success ran:true; failure ran:false + findings:[])')
+  return 'codex-executor.md load-bearing CLI/protocol invariants are content-pinned'
+})
+
+S('S57 relocated role-doctrine pins: de-inlined judgment contracts are content-guarded in their role files', async () => {
+  // The relocation moved standing doctrine out of the coordinator into agents/*.md.
+  // Existence (S40) and line-count (S42) checks would not catch a future edit that
+  // silently drops a load-bearing rule. Pin the key relocated doctrine here.
+  const role = (n) => readFileSync(join(dir, '..', 'agents', `${n}.md`), 'utf8')
+  const intake = role('intake-classifier')
+  assert.ok(/below-floor/i.test(intake) && intake.includes('at most 2 files') && intake.includes('directPrompt'), 'intake-classifier keeps the below-floor judgment')
+  assert.ok(/one-thing split/i.test(intake) && intake.includes('version-specific framework'), 'intake-classifier keeps the split tests + exact research-intent enum value')
+  const persona = role('persona-classifier')
+  assert.ok(persona.includes('adversarial') && /NOT triggered by structural complexity/.test(persona), 'persona-classifier keeps the adversarial NEGATIVE rule')
+  const strategy = role('strategy-gate')
+  assert.ok(/LOW bar to redirect/i.test(strategy) && /HIGH bar to halt/i.test(strategy), 'strategy-gate keeps the LOW-redirect / HIGH-halt bars')
+  const release = role('releasability-checker')
+  for (const id of ['scope-boundaries-substantive', 'no-oversized-unit', 'ktd-rationale-present']) {
+    assert.ok(release.includes(id), `releasability-checker keeps the ${id} item definition`)
+  }
+  return 'relocated doctrine (intake below-floor/split, persona adversarial-negative, strategy bars, releasability items) is content-pinned'
 })
 
 let pass = 0, fail = 0
