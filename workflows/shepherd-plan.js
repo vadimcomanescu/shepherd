@@ -953,40 +953,26 @@ const fixerPrompt = (fixNow, docList) => `Plan document to edit: ${planPath} (ed
 
 ${CONFIRMED_INTENT}
 
-Fix-now findings (apply each fix):
+Fix-now findings (apply per your authority classes; each carries its refutationSurvived flag):
 ${fixNow.map((f) => `- [${f.section}] (${f.severity}, reviewer: ${f.reviewer}, refutationSurvived: ${f.refutationSurvived ? 'true' : 'false'}) ${f.title}
   evidence: ${window300(f.evidence)}
   fix: ${f.suggestedFix}`).join('\n') || '- none'}
 
-Document-as-known-cost entries (append each as a documentation entry to its
-target section; Assumptions entries MUST name the observation that would
-invalidate them):
+Document-as-known-cost entries (route each to its target section):
 ${docList.map((f) => `- [route to: ${f.routedTo}] ${f.title}: ${window300(f.whyItMatters || f.evidence || f.title)}`).join('\n') || '- none'}
 
-Before applying anything, scan the whole batch for cross-finding tensions —
-two fixes that contradict each other, or a premise challenge that moots
-others. Return conflicting findings UNAPPLIED with the conflict named in
-reason.
-
-You may apply safe_auto@confidence-100 fixes and refutation-survived fixes. PROTECTED SURFACES: any
+PROTECTED SURFACES: any
 change to the Requirements set, Scope Boundaries, or unit uid/Dependencies
 structure requires refutationSurvived=true — otherwise return it unapplied. A
 fix may NEVER widen scope; return scope-widening proposals unapplied with
 reason starting 'scope-widening:'. U-IDs and R-IDs may be ADDED (next free
-number, gaps fine) or deleted, NEVER renumbered or reassigned.
+number, gaps fine) or deleted, NEVER renumbered or reassigned.`
 
-Report every finding as applied (title), documented (title + routedTo), or
-unapplied (title + reason); report sectionsTouched (the H2 sections you
-edited).`
-
-const checkerPrompt = (applied, pending) => `Plan document: ${planPath} — read the document as it now stands.
-${applied.length ? `Applied fixes to verify (did each land, and does the edit match the fix's intent?):
+const checkerPrompt = (applied, pending) => `Plan document: ${planPath} — read the document as it now stands, then verify and extract structure per your role contract.
+${applied.length ? `Applied fixes to verify:
 ${applied.map((f) => `- [${f.section}] ${f.title}: ${f.suggestedFix || '(documentation entry)'}`).join('\n')}` : 'No applied fixes to verify — return fixesVerified: [].'}
-${pending.length ? `Still-pending findings (report as staleFindings the titles whose section/evidence no longer matches the post-edit text):
-${pending.map((f) => `- [${f.section}] ${f.title}: ${window300(f.evidence)}`).join('\n')}` : 'No pending findings — return staleFindings: [].'}
-Extract every unit's uid, name, Files list and Dependencies; every R-ID; the
-unit count and requirement count; the H2 sections present. Read-only — change
-nothing.`
+${pending.length ? `Still-pending findings to stale-check:
+${pending.map((f) => `- [${f.section}] ${f.title}: ${window300(f.evidence)}`).join('\n')}` : 'No pending findings — return staleFindings: [].'}`
 
 const refixUidPrompt = (violations) => `Plan document to edit: ${planPath} (edit ONLY this file).
 A post-edit check found U-ID/R-ID identity violations. Restore these
@@ -1719,18 +1705,7 @@ if (belowBudgetFloor()) {
 // The sibling's parse prompt VERBATIM except the path slot and the version
 // parenthetical; the trailing missing-file/knowledge-work sentence stays — a
 // zero-unit return is a gate failure here.
-const parsePlanPrompt = () => `Read the plan document at "${planPath}" (version: post-review) in this repository. It follows the ce-plan format:
-level-3 headed Implementation Units ("### U1. Name") with bold fields Goal,
-Requirements, Dependencies, Files, Approach, Execution note (optional), Patterns
-to follow, Test scenarios, Verification; plus plan-level Requirements (R-IDs),
-"Deferred to Implementation" questions, and "Scope Boundaries".
-Extract everything into the structured output, faithfully and completely — quote
-field text rather than paraphrasing. Derive "slug" as a short kebab-case branch
-slug from the title. For riskSurfaces, report which of
-auth/payments/migrations/crypto/public-api/deps the plan touches based on its
-units' files and goals. If the file is missing or carries
-"execution: knowledge-work" frontmatter, return zero units and explain in
-planTitle.`
+const parsePlanPrompt = () => `Read the plan document at "${planPath}" (version: post-review) and parse it into the structured output per your role contract (extract every Implementation Unit and plan-level Requirement/Deferred/Scope-Boundary faithfully, quote field text, derive the slug, report riskSurfaces, and return zero units if the file is missing or carries "execution: knowledge-work" frontmatter).`
 
 const KNOWN_RISK_SURFACES = ['auth', 'payments', 'migrations', 'crypto', 'public-api', 'deps']
 // riskSurfaces well-formedness is NOT a gate: the value is PARSER-derived, a
@@ -1791,8 +1766,7 @@ The execution pipeline's parser found these structural violations:
 ${violations.map((v) => '- ' + v).join('\n')}
 ${GATE_AUTHORITY}
 U-IDs and R-IDs may be ADDED (next free number, gaps fine) or deleted, NEVER
-renumbered or reassigned. Report applied/documented/unapplied and
-sectionsTouched.`
+renumbered or reassigned.`
 
 // ---- Gate 1: parse conformance (M11) ----
 let parsed = await agent(parsePlanPrompt(), { label: 'parse-plan', phase: 'Gates', agentType: 'plan-parser', model: 'sonnet', schema: UNITS_SCHEMA })
@@ -1841,15 +1815,7 @@ ${CONFIRMED_INTENT}
 
 Depth tier: ${DEPTH} — tier unit budgets: lightweight 2–4 / standard 3–6 / deep 4–8.
 
-Evaluate EVERY one of these seven releasability items, returning pass/fail
-with one line of evidence each (return all seven ids):
-- scope-boundaries-substantive: Scope Boundaries names real exclusions of specific functionality, not boilerplate.
-- verification-observable: every requirement and per-unit Verification states an observable outcome, numeric where applicable — outcome-level, no command recipes.
-- no-design-unknown-deferred: no architecture choice or unvalidated technical assumption sits in Deferred to Implementation — only execution detail belongs there.
-- no-oversized-unit: a unit is oversized when its Files list exceeds ~8 files, its Goal needs an 'and' joining independent outcomes, it spans 2+ independent subsystems, or its Test scenarios mix unrelated concerns.
-- unit-count-within-tier: the unit count fits the depth tier's budget.
-- scenarios-final-non-tautological: Test scenarios derive from requirements and match the FINAL post-review interfaces — they never just restate the Approach.
-- ktd-rationale-present: every Key Technical Decision carries a rationale with trade-offs.`
+Evaluate all seven releasability items per your role contract, returning pass/fail with one line of evidence each (return all seven ids).`
 
 // Completeness rule (M-X1): gates count against the EXPECTED set — a missing
 // item is synthesized as a failure, so a partial return can never vacuously pass.
@@ -1864,12 +1830,7 @@ const releaseFailures = releaseItems.filter((it) => !it.pass)
 
 // ---- Gate 3: origin coverage (M14, conditional) ----
 const originCoveragePrompt = () => `Origin document: ${ORIGIN} (version: ${ORIGIN_VERSION}).
-Walk the origin document section by section; confirm each
-requirement/decision/boundary is addressed or explicitly deferred in the plan
-at ${planPath}; do NOT take the plan's word — check the plan text. Your
-sections[] walk is the evidence of work: return one entry per origin section.
-You have not seen the plan author's claims and must not assume coverage.
-When an origin section contains a normative list (principles, lessons, rules, requirements, decisions), each list item is an individual coverage unit — do not judge the whole section "addressed" if member items were not individually traced to the plan. A section marked "addressed" while specific normative list items are unaddressed is an omission. Exception: illustrative lists (alternative options, candidate approaches, background examples where only some items are intended as requirements) are NOT individual coverage units — if the plan deliberately selects a subset of such a list, the unselected items are intentional non-requirements, not omissions.`
+Audit this origin's coverage against the plan at ${planPath} per your role contract: walk it section by section, check the plan text yourself (do not take the plan's word), return one entry per origin section, and apply your normative-vs-illustrative list rule.`
 let originOmissions = []
 if (!ORIGIN) {
   log('Origin coverage skipped: no origin doc')
@@ -1919,8 +1880,7 @@ ${overlapEntries.map((e) => `- ${e.title}`).join('\n') || '- none'}
 
 ${GATE_AUTHORITY}
 U-IDs and R-IDs may be ADDED (next free number, gaps fine) or deleted, NEVER
-renumbered or reassigned. Report applied/documented/unapplied and
-sectionsTouched.`
+renumbered or reassigned.`
   const gateFix = await agent(gateFixPrompt(), { label: 'gate-fix', phase: 'Gates', agentType: 'plan-fixer', model: 'sonnet', schema: FIX_SCHEMA })
   if (!gateFix && (releaseFailures.length || originOmissions.length)) {
     // Nothing was fixed — same halts as failed retries.

@@ -1364,12 +1364,13 @@ S('S38 verbatim-surface pins: GATE_AUTHORITY (both dispatches), research-cap log
     'research-cap log template present in coordinator source (scriptSrc pin)'
   )
 
-  // ---- R13 list-item granularity instruction in originCoveragePrompt ----
-  // Must reach both 'origin-coverage' and 'origin-coverage-retry' dispatches (same factory).
-  const R13_TEXT = `When an origin section contains a normative list (principles, lessons, rules, requirements, decisions), each list item is an individual coverage unit — do not judge the whole section "addressed" if member items were not individually traced to the plan. A section marked "addressed" while specific normative list items are unaddressed is an omission. Exception: illustrative lists (alternative options, candidate approaches, background examples where only some items are intended as requirements) are NOT individual coverage units — if the plan deliberately selects a subset of such a list, the unselected items are intentional non-requirements, not omissions.`
+  // ---- R13 list-item granularity now lives in the role file (R3 relocation) ----
+  const originRole = readFileSync(join(dir, '..', 'agents', 'origin-coverage-auditor.md'), 'utf8')
+  assert.ok(originRole.includes('each list item is an individual coverage unit'), 'origin-coverage role: normative-list rule present')
+  assert.ok(/illustrative lists/i.test(originRole) && originRole.includes('intentional non-requirements'), 'origin-coverage role: illustrative-list exception present')
   const originArgs = { ...ARGS, origin: 'docs/brainstorm.md', originVersion: 'ov-r13' }
 
-  // (a) 'origin-coverage' dispatch carries R13
+  // (a) 'origin-coverage' dispatch fires and routes to its role agent
   const covRun = await run(makeDispatcher({
     'origin-coverage': (p, o, label) => (label === 'origin-coverage'
       ? { sections: [{ heading: 'Goals', status: 'omitted', evidence: 'not found in plan' }], omissions: [{ item: 'export retries', fromSection: 'Goals', detail: 'retry handling missing' }] }
@@ -1378,12 +1379,12 @@ S('S38 verbatim-surface pins: GATE_AUTHORITY (both dispatches), research-cap log
   assert.ifError(covRun.error)
   const covCall = covRun.trace.calls.find((c) => c.label === 'origin-coverage')
   assert.ok(covCall, 'origin-coverage dispatched')
-  assert.ok(covCall.prompt.includes(R13_TEXT), 'origin-coverage: R13 list-item granularity instruction byte-identical')
+  assert.equal(covCall.agentType, 'origin-coverage-auditor', 'origin-coverage routes to its role agent')
 
-  // (b) 'origin-coverage-retry' dispatch also carries R13 (same factory)
+  // (b) 'origin-coverage-retry' dispatch also fires after an omission (same factory)
   const retryCovCall = covRun.trace.calls.find((c) => c.label === 'origin-coverage-retry')
   assert.ok(retryCovCall, 'origin-coverage-retry dispatched after omission found')
-  assert.ok(retryCovCall.prompt.includes(R13_TEXT), 'origin-coverage-retry: R13 list-item granularity instruction byte-identical')
+  assert.equal(retryCovCall.agentType, 'origin-coverage-auditor', 'retry routes to its role agent')
 
   return 'GATE_AUTHORITY pinned in both parseFixPrompt and gateFixPrompt; research-cap log invariant confirmed; R13 list-item granularity reaches both origin-coverage dispatches'
 })
