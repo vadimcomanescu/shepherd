@@ -168,14 +168,15 @@ function makeDispatcher(overrides = {}, opts = {}) {
     if (label === 'author-plan') return AUTHOR(opts.author)
     if (label === 'classify-personas') return CLASSIFY(opts.classify)
     // Lenses route through codex-executor (agentType 'codex-executor') by default;
-    // the success path carries ran:true so the coordinator trusts the codex run
-    // and never falls back. A 'review-*-claude' label is the per-lens Claude
-    // fallback re-dispatch, which always carries findings without a ran flag.
+    // the success path carries ran:true (and reason:'' per LENS_RESULT_SCHEMA's
+    // required-reason contract) so the coordinator trusts the codex run and never
+    // falls back. A 'review-*-claude' label is the per-lens Claude fallback
+    // re-dispatch, which always carries findings without a ran flag.
     if (label.startsWith('review-') && label.endsWith('-claude')) return { findings: [] }
     if (label.startsWith('review-')) {
       if (opts.codexNull && o.agentType === 'codex-executor') return null // codex-executor died terminally after retries / was skipped
       if (opts.codexUnavailable && o.agentType === 'codex-executor') return { findings: [], ran: false, reason: 'binary-absent' }
-      return { findings: [], ran: true }
+      return { findings: [], ran: true, reason: '' }
     }
     if (label.startsWith('ktd-refute-')) return { verdict: 'claim-correct', reason: 'The claim is correct: it holds against the code.' }
     if (label.startsWith('refute-')) return { refuted: false, reason: 'confirmed' } // covers refute-halt- too

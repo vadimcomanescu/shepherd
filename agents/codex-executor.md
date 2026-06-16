@@ -62,11 +62,13 @@ Protocol:
    entries (the document under review, other uncommitted work) are NOT codex's —
    ignore them. Restore only paths that newly appear or change versus the baseline
    (`git checkout --` them) and say so; never touch the pre-existing entries.
-7. Classify `<scratch>/result.json` and return `{ ran, findings }`:
+7. Classify `<scratch>/result.json` and return `{ ran, findings, reason }`:
    - Missing or malformed JSON: `{ ran: false, findings: [], reason: '<detail>' }`.
-   - Valid JSON: `{ ran: true, findings: [...] }` with the findings verbatim in
-     the caller's findings shape. No key renaming.
-   EVERY return carries BOTH `ran` and `findings` — omitting `findings` fails the
-   caller's dispatch-schema validation and retries to null, killing the fallback.
+   - Valid JSON: `{ ran: true, findings: [...], reason: '' }` with the findings
+     verbatim in the caller's findings shape. No key renaming. `reason` is the
+     empty string on success.
+   EVERY return carries ALL THREE of `ran`, `findings`, and `reason` (`reason: ''`
+   on success) — omitting any of them fails the caller's dispatch-schema validation
+   and retries to null, killing the fallback.
 
 Never invent findings, never drop findings, never edit code.

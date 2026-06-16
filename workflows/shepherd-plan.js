@@ -233,7 +233,11 @@ const LENS_RESULT_SCHEMA = {
     findings: PERSONA_FINDINGS_SCHEMA.properties.findings,
     reason: { type: 'string', description: 'why codex was unusable when ran=false (binary-absent | sandboxed | flags-rejected | malformed result); "" on success — surfaced in the fallback log so a misconfigured-Codex host is diagnosable' },
   },
-  required: ['ran', 'findings'],
+  // reason is required: the executor returns it on EVERY path ('' on success), so
+  // the fallback diagnostic log is never blank. The success return MUST carry
+  // reason: '' (see agents/codex-executor.md step 7) — otherwise schema validation
+  // rejects every successful lens, retries to null, and spuriously falls back.
+  required: ['ran', 'findings', 'reason'],
 }
 
 // Copied verbatim from shepherd-deliver.js — the refuter verdict contract.
