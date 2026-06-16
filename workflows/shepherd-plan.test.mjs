@@ -1782,7 +1782,23 @@ S('S54 codex-unavailable fallback: each lens re-dispatches on its native agentTy
   const nullFallbacks = c.trace.calls.filter((cc) => cc.label.endsWith('-claude'))
   assert.deepEqual(nullFallbacks.map((cc) => cc.label).sort(), ['review-r1-coherence-claude', 'review-r1-feasibility-claude', 'review-r1-security-claude'], 'every lens whose codex run returned null re-dispatches on its native agentType')
   for (const cc of nullFallbacks) assert.equal(cc.model, undefined, `${cc.label} re-dispatches at the session model`)
-  return 'fallback fires on BOTH ran:false and null codex results; round completes with full coverage, fell-back lenses logged'
+  // (d) MIXED roster: coherence's codex SUCCEEDS (ran:true) while feasibility and
+  // security return ran:false in the SAME round. Only the ran:false lenses may fall
+  // back (proves the per-index reviews[i] correlation), and a fallback's findings
+  // must flow into synthesis tagged with the right reviewer (fallback-content path).
+  const distinct = FINDING({ title: 'fallback-only security defect' })
+  const d = await run(
+    makeDispatcher({
+      'review-r1-coherence': (p, o, label) => (label.endsWith('-claude') ? { findings: [] } : { findings: [], ran: true }),
+      'review-r1-feasibility': (p, o, label) => (label.endsWith('-claude') ? { findings: [] } : { findings: [], ran: false }),
+      'review-r1-security': (p, o, label) => (label.endsWith('-claude') ? { findings: [distinct] } : { findings: [], ran: false }),
+    }, { classify: { personas: { productLens: false, designLens: false, securityLens: true, scopeGuardian: false, adversarial: false }, reasons: ['security: handles tokens'] } }),
+  )
+  assert.ifError(d.error)
+  const dFallbacks = d.trace.calls.filter((cc) => cc.label.endsWith('-claude')).map((cc) => cc.label).sort()
+  assert.deepEqual(dFallbacks, ['review-r1-feasibility-claude', 'review-r1-security-claude'], 'only the ran:false lenses fall back; the ran:true coherence lens does NOT (per-index correlation, not a uniform flip)')
+  assert.ok(d.trace.calls.some((cc) => !cc.label.startsWith('review-') && cc.prompt && cc.prompt.includes('fallback-only security defect')), 'a non-empty finding sourced from a -claude fallback flows into synthesis (reaches a downstream refute/fix dispatch), not silently dropped')
+  return 'fallback fires on ran:false AND null; mixed-roster per-index correlation holds; fallback-sourced findings flow into synthesis'
 })
 
 S('S55 S40/S42 four-run union covers committer/hygiene/origin/spike on disk and within budget', async () => {
