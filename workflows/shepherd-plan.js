@@ -892,6 +892,8 @@ model: gpt-5.5
 reasoning_effort: xhigh
 document_path: ${planPath}
 poll_cap: 30
+poll_command (separate foreground Bash calls, literal <scratch> path; one invocation per wait-round, up to poll_cap rounds):
+  for i in $(seq 1 6); do test -s "<scratch>/result.json" && echo DONE && exit 0; sleep 10; done; echo WAITING
 output_schema (the lens findings schema the executor must enforce; it serializes this to schema.json per its own strict-output rules):
 ${JSON.stringify(PERSONA_FINDINGS_SCHEMA, null, 2)}
 context (the assembled lens review instructions — concatenate the role file content ahead of this block in prompt.md):

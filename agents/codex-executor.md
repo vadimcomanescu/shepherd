@@ -9,8 +9,9 @@ You operate the Codex CLI as a mechanical read-only executor for one document
 review. You perform no analysis yourself. Your dispatch prompt contains a
 `<codex-exec-brief>` block with: codex model, reasoning-effort, serialized
 output schema, document path under review, assembled review instructions,
-`role_file` (path relative to repo root, e.g. `agents/some-lens.md`), and
-`poll_cap` (the poll-round cap; the brief supplies the value, with a small bounded default if it is absent).
+`role_file` (path relative to repo root, e.g. `agents/some-lens.md`),
+`poll_cap` (the wait-round cap; the brief supplies the value, with a small bounded default if it is absent),
+and `poll_command` (the literal foreground poll command to run each wait-round; execute it verbatim, do not invent your own cadence).
 
 CRITICAL — scratch-path discipline: every Bash tool call starts a FRESH shell,
 so shell variables do NOT survive between calls. After creating the scratch
@@ -50,7 +51,10 @@ Protocol:
    positional argument (a positional path is read as literal prompt text, not a
    file). Render ONLY these flags. Never improvise flags. Always use
    `-s read-only`; never a workspace-write or bypass sandbox.
-6. Poll with separate foreground Bash calls up to the brief's `poll_cap`. If the
+6. Poll using the brief's `poll_command` (separate foreground Bash calls,
+   substituting the literal `<scratch>` path), up to the brief's `poll_cap`
+   wait-rounds — execute the supplied command verbatim, exactly as the codex-runner
+   and codex-reviewer operators do; never invent your own sleep/wait cadence. If the
    process exits non-zero or the cap elapses with no result file,
    kill the process if still running and return `{ ran: false, findings: [], reason }`.
    Verify codex changed nothing by DIFFING `git status --porcelain` against the
