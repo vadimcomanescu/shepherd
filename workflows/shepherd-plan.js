@@ -1027,7 +1027,7 @@ Plan document: ${planPath}
 
 ${CODEBASE_CONTEXT}
 
-Read code and docs only — no tests, no execution. A question answerable only at runtime returns 'runtime-blocked'. Return: unknown, resolution (resolved | documented-trade-off | runtime-blocked), evidence, recommendation.`
+Investigate this one design-level unknown per your role contract.`
 
 const reviseSpikePrompt = (spikeResults) => `Plan document to edit: ${planPath} (edit ONLY this file).
 
@@ -1038,15 +1038,11 @@ ${spikeResults.map((s) => `- [${s.resolution}] ${s.unknown}
   evidence: ${window300(s.evidence)}
   recommendation: ${s.recommendation}`).join('\n')}
 
-Rules: resolved → update the affected units' Approach (and KTD rationale if
-implicated) per the recommendation; documented-trade-off → append a testable
-entry to ## Assumptions naming the invalidating observation; runtime-blocked →
-append to ## Open Questions. Same uid/R-ID rules as a fix round: U-IDs and
+Apply these spike results per your role contract. Same uid/R-ID rules as a fix round: U-IDs and
 R-IDs may be ADDED (next free number, gaps fine) or deleted, NEVER renumbered
 or reassigned. Protected surfaces (Requirements set, Scope Boundaries,
 uid/Dependencies structure) are OFF-LIMITS entirely — no spike result carries
-refutation-survived authority. Report applied/documented/unapplied and
-sectionsTouched.`
+refutation-survived authority.`
 
 // ---- shared pure-JS checks (M9/M13/M-X1) ----
 // Identity is about WHICH unit a uid names, not how the name is typeset: fixers
