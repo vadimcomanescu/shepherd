@@ -1858,10 +1858,18 @@ S('S57 relocated role-doctrine pins: de-inlined judgment contracts are content-g
   const strategy = role('strategy-gate')
   assert.ok(/LOW bar to redirect/i.test(strategy) && /HIGH bar to halt/i.test(strategy), 'strategy-gate keeps the LOW-redirect / HIGH-halt bars')
   const release = role('releasability-checker')
-  for (const id of ['scope-boundaries-substantive', 'no-oversized-unit', 'ktd-rationale-present']) {
-    assert.ok(release.includes(id), `releasability-checker keeps the ${id} item definition`)
+  // Drift guard: derive the release id list from the coordinator's own
+  // RELEASE_IDS array (single source of truth) and assert EVERY id appears in the
+  // role file, so a rename on either side fails this test instead of silently
+  // drifting. No third hardcoded copy of the list.
+  const releaseIdsMatch = scriptSrc.match(/RELEASE_IDS\s*=\s*\[([^\]]*)\]/)
+  assert.ok(releaseIdsMatch, 'RELEASE_IDS array is extractable from shepherd-plan.js source')
+  const releaseIds = [...releaseIdsMatch[1].matchAll(/'([^']+)'/g)].map((m) => m[1])
+  assert.equal(releaseIds.length, 7, `expected 7 release ids in RELEASE_IDS, got ${releaseIds.length}`)
+  for (const id of releaseIds) {
+    assert.ok(release.includes(id), `releasability-checker keeps the ${id} item definition (RELEASE_IDS/role-file drift)`)
   }
-  return 'relocated doctrine (intake below-floor/split, persona adversarial-negative, strategy bars, releasability items) is content-pinned'
+  return `relocated doctrine pinned; all ${releaseIds.length} RELEASE_IDS present in releasability-checker.md`
 })
 
 let pass = 0, fail = 0
