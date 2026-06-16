@@ -144,7 +144,7 @@ Additionally, the 7 review lenses route through `codex-executor` at Codex `gpt-5
 
 The observable pattern, after the plan-side refactor:
 
-- **Plan-side `model:` literals are `'sonnet'` (mechanical roles) or `'opus'` (the five named exception roles above).** Inherit (no `model`) is absent from plan dispatches by design.
+- **Plan-side `model:` literals are `'sonnet'` (mechanical roles) or `'opus'` (the five named exception roles above).** Inherit (no `model`) is otherwise absent from plan dispatches by design, with one intentional exception: the per-lens Claude fallback (`review-r${r}-${p.key}-claude`, fired only when Codex is unavailable) runs at the session model per R6.
 - **Deliver-side explicit `model:` literals are `'sonnet'`**: the router itself, `codex-runner`, `codex-reviewer`, browser-proofing, ship, gate-recheck, `finding-verifier`, audit checks, the research roster, fix application.
 - **Deliver genuine-reasoning steps inherit by omitting `model`**: `task-splitter`, the persona doc/code reviewers, and `ci-watcher`.
 - **`haiku` and `opus` reach a deliver executor only through the router's `ROUTE_SCHEMA.model`.** On the plan side, `opus` reaches the five exception roles through their dispatch-site pins. `haiku` appears nowhere in either coordinator.

@@ -1401,26 +1401,12 @@ S('S39 rented-dispatch pin: coordinator contains zero compound-engineering: refe
 })
 
 S('S40 persona-on-disk pin: every dispatched agentType has a backing agents/*.md file', async () => {
-  // Run 1: all conditional review personas on (default intent 'none')
-  const r1 = await run(
-    makeDispatcher({}, { classify: { personas: { productLens: true, designLens: true, securityLens: true, scopeGuardian: true, adversarial: true } } }),
-  )
-  assert.ifError(r1.error)
-  // Run 2: intent 'mixed' so both conditional research personas (web-researcher,
-  // external-grounding-researcher) enter the trace — they are only dispatched on
-  // non-'none' intents and were absent from the default-intent trace.
-  const r2 = await run(
-    makeDispatcher({}, {
-      classify: { personas: { productLens: true, designLens: true, securityLens: true, scopeGuardian: true, adversarial: true } },
-      intake: { research: { intent: 'mixed', reason: 'coverage run' } },
-    }),
-  )
-  assert.ifError(r2.error)
-  // Union: every agentType dispatched in either run must have a backing agents/*.md file
-  const agentTypes = [...new Set([
-    ...r1.trace.calls.map((c) => c.agentType),
-    ...r2.trace.calls.map((c) => c.agentType),
-  ].filter(Boolean))]
+  // Derive the fleet from the FOUR-run union (one shared definition) so the on-disk
+  // check covers committer, hygiene-checker, origin-coverage-auditor, and
+  // spike-investigator — not just the base/persona fleet the old two-run union saw.
+  const { runs } = await fourRunUnion()
+  for (const r of runs) assert.ifError(r.error)
+  const agentTypes = [...new Set(runs.flatMap((r) => r.trace.calls.map((c) => c.agentType)).filter(Boolean))]
   assert.ok(agentTypes.length > 0, 'at least one agentType observed in trace')
   const agentsDir = join(dir, '..', 'agents')
   for (const at of agentTypes) {
@@ -1450,25 +1436,12 @@ S('S41 no-dangling-skills pin: every skills/ reference in agents/*.md has a skil
 })
 
 S('S42 budget pin: trace-derived persona fleet < 1471 lines; doctrine skills each 40-80 lines', async () => {
-  // Derive the persona file list from two runs so the full owned fleet is covered:
-  // Run 1: all conditional review personas on (default intent 'none')
-  const r1 = await run(
-    makeDispatcher({}, { classify: { personas: { productLens: true, designLens: true, securityLens: true, scopeGuardian: true, adversarial: true } } }),
-  )
-  assert.ifError(r1.error)
-  // Run 2: intent 'mixed' to dispatch web-researcher and external-grounding-researcher
-  const r2 = await run(
-    makeDispatcher({}, {
-      classify: { personas: { productLens: true, designLens: true, securityLens: true, scopeGuardian: true, adversarial: true } },
-      intake: { research: { intent: 'mixed', reason: 'coverage run' } },
-    }),
-  )
-  assert.ifError(r2.error)
-  // Union of agentTypes across both runs covers the full dispatch fleet
-  const agentTypes = [...new Set([
-    ...r1.trace.calls.map((c) => c.agentType),
-    ...r2.trace.calls.map((c) => c.agentType),
-  ].filter(Boolean))]
+  // Derive the persona file list from the FOUR-run union (one shared definition) so
+  // the budget sum covers the full owned fleet incl. committer, hygiene-checker,
+  // origin-coverage-auditor, and spike-investigator.
+  const { runs } = await fourRunUnion()
+  for (const r of runs) assert.ifError(r.error)
+  const agentTypes = [...new Set(runs.flatMap((r) => r.trace.calls.map((c) => c.agentType)).filter(Boolean))]
   const agentsDir = join(dir, '..', 'agents')
   const skillsDir = join(dir, '..', 'skills')
   // R11: sum of persona file line counts must be < 1471
@@ -1639,9 +1612,14 @@ async function fourRunUnion() {
   // (iii) editor returns designUnknowns -> spike branch fires spike-investigator
   const unknowns = [{ unknown: 'queue storage', affectedUids: ['U1'], whyDesignLevel: 'architecture-level' }]
   const spike = await run(makeDispatcher({ 'editor-r1': () => EDITOR_REVISED({ designUnknowns: unknowns }) }), { args: { ...ARGS, commit: true } })
-  // (iv) persona-on union -> every conditional lens routes through codex-executor
+  // (iv) persona-on union + mixed intent -> every conditional review lens routes
+  // through codex-executor AND both conditional research personas (web-researcher,
+  // external-grounding-researcher) enter the trace, so this is the FULL-fleet arm.
   const personaOn = await run(
-    makeDispatcher({}, { classify: { personas: { productLens: true, designLens: true, securityLens: true, scopeGuardian: true, adversarial: true } } }),
+    makeDispatcher({}, {
+      classify: { personas: { productLens: true, designLens: true, securityLens: true, scopeGuardian: true, adversarial: true } },
+      intake: { research: { intent: 'mixed', reason: 'coverage run' } },
+    }),
     { args: { ...ARGS, commit: true } },
   )
   return { base, origin, spike, personaOn, runs: [base, origin, spike, personaOn] }
@@ -1680,6 +1658,9 @@ S('S51 lens-via-codex: every review-r*-* routes through codex-executor at gpt-5.
     assert.ok(c.prompt.includes('gpt-5.5'), `${c.label} brief pins the Codex model gpt-5.5`)
     assert.ok(c.prompt.includes('xhigh'), `${c.label} brief pins reasoning_effort xhigh`)
     assert.ok(/role_file: agents\/[a-z-]+\.md/.test(c.prompt), `${c.label} brief names the lens role_file for the executor to read from disk`)
+    assert.ok(c.prompt.includes('document_path:') && c.prompt.includes('poll_cap'), `${c.label} brief carries document_path and poll_cap`)
+    assert.ok(c.prompt.includes('output_schema') && c.prompt.includes('autofixClass'), `${c.label} brief serializes PERSONA_FINDINGS_SCHEMA so the executor can write schema.json`)
+    assert.ok(c.prompt.includes('read the document yourself'), `${c.label} brief embeds the full reviewPrompt as context (no lens branch like the coherence glossary or adversarial Document-type switch is silently dropped)`)
     assert.ok(c.schema, `${c.label} keeps the schema on agent() opts (S43 contract)`)
     assert.ok(c.schema.properties && c.schema.properties.ran, `${c.label} dispatch schema declares 'ran' so the codex-unavailable signal survives structured-output validation and reaches the fallback gate`)
     assert.ok(c.schema.properties.findings, `${c.label} dispatch schema still carries findings`)

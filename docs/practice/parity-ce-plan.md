@@ -2,7 +2,7 @@
 
 This matrix maps every ce-plan agent, phase, and doctrine element to its shepherd-plan coverage. Each row belongs to exactly one coverage class: **covered**, **covered-stronger**, **intentionally-not-implemented**, or **gap**. The four gaps are enumerated at the bottom with their open/closed status. The six shepherd additions absent from ce-plan follow separately.
 
-Sources: ce-plan from `EveryInc/compound-engineering-plugin` (`skills/ce-plan/SKILL.md`); shepherd-plan from [`../../workflows/shepherd-plan.js`](../../workflows/shepherd-plan.js) and the persona files under [`../../agents/`](../../agents/). The raw side-by-side walkthrough that this matrix distills is [`../comparisons/ce-plan-vs-shepherd-plan.md`](../comparisons/ce-plan-vs-shepherd-plan.md).
+Sources: ce-plan from `EveryInc/compound-engineering-plugin` (`skills/ce-plan/SKILL.md`); shepherd-plan from [`../../workflows/shepherd-plan.js`](../../workflows/shepherd-plan.js) and the persona files under [`../../agents/`](../../agents/).
 
 ---
 

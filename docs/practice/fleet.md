@@ -208,7 +208,7 @@ Model policy and its plan-side exceptions (see also [`./routing.md`](./routing.m
 - **Deliver genuine-reasoning steps inherit the session model** by omitting `model`: `task-splitter`, the deliver persona reviewers, and `ci-watcher`.
 - **`unit-executor` is the exception to "set or inherited":** its tier comes from the router's `ROUTE_SCHEMA.model` (`haiku`, `sonnet`, or `opus`) and is **never inherited from the session**. `haiku` and `opus` reach an agent only through that field on the deliver side; the plan-side `opus` pins are the only other place either tier appears in a coordinator.
 
-The net observable pattern: every plan-side `model:` literal is either `'sonnet'` (mechanical work) or `'opus'` (the five named roles above); inherit (no `model`) is absent from plan dispatches by design. The deliver side has `'sonnet'` literals for mechanical work and inherits for genuine reasoning.
+The net observable pattern: every plan-side `model:` literal is either `'sonnet'` (mechanical work) or `'opus'` (the five named roles above); inherit (no `model`) is otherwise absent from plan dispatches by design, with one intentional exception — the per-lens Claude fallback (`review-r*-*-claude`, fired only when Codex is unavailable) runs at the session model per R6. The deliver side has `'sonnet'` literals for mechanical work and inherits for genuine reasoning.
 
 ---
 

@@ -231,6 +231,7 @@ const LENS_RESULT_SCHEMA = {
   properties: {
     ran: { type: 'boolean', description: 'false only when codex could not run (absent/sandboxed/flags rejected); triggers the native Claude fallback' },
     findings: PERSONA_FINDINGS_SCHEMA.properties.findings,
+    reason: { type: 'string', description: 'why codex was unusable when ran=false (binary-absent | sandboxed | flags-rejected | malformed result); "" on success — surfaced in the fallback log so a misconfigured-Codex host is diagnosable' },
   },
   required: ['ran', 'findings'],
 }
@@ -1226,7 +1227,8 @@ for (let r = 1; r <= EDITOR_ROUNDS; r++) {
     const needsFallback = (rev) => !rev || rev.ran === false
     const fellBack = personaRoster.filter((p, i) => needsFallback(reviews[i]))
     if (fellBack.length) {
-      log(`Round ${r}: codex unusable for ${fellBack.length} lens(es) — falling back to native Claude lenses: ${fellBack.map((p) => p.key).join(', ')}`)
+      const why = personaRoster.map((p, i) => needsFallback(reviews[i]) ? `${p.key}(${(reviews[i] && reviews[i].reason) || 'no result'})` : null).filter(Boolean).join(', ')
+      log(`Round ${r}: codex unusable for ${fellBack.length} lens(es) — falling back to native Claude lenses: ${why}`)
     }
     const fallbackReturns = await parallel(personaRoster.map((p, i) => () =>
       needsFallback(reviews[i])
