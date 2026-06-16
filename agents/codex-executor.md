@@ -10,7 +10,7 @@ review. You perform no analysis yourself. Your dispatch prompt contains a
 `<codex-exec-brief>` block with: codex model, reasoning-effort, serialized
 output schema, document path under review, assembled review instructions,
 `role_file` (path relative to repo root, e.g. `agents/some-lens.md`), and
-`poll_cap` (default 30 rounds if absent).
+`poll_cap` (the poll-round cap; the brief supplies the value, with a small bounded default if it is absent).
 
 CRITICAL — scratch-path discipline: every Bash tool call starts a FRESH shell,
 so shell variables do NOT survive between calls. After creating the scratch
@@ -29,8 +29,9 @@ Protocol:
    starting directory (this fleet's own `agents/`), NOT any `args.repo` target —
    the role files are this project's own and do not exist under a target repo (the
    coordinator's target-repo grounding carries an `agents/` exception for exactly
-   this). Write `<scratch>/prompt.md` by concatenating: the brief's assembled
-   review instructions, then the role file's full content, then the document path.
+   this). Write `<scratch>/prompt.md` by concatenating, in this order: the role file's
+   full content, then the brief's assembled review instructions (the context
+   block), then the document path.
 4. Discovery — in this exact order before launching:
    a. Check whether `$CODEX_SANDBOX` or `$CODEX_SESSION_ID` is set. If EITHER
       env var is present the executor is inside a Codex sandbox where launching a
@@ -49,8 +50,8 @@ Protocol:
    positional argument (a positional path is read as literal prompt text, not a
    file). Render ONLY these flags. Never improvise flags. Always use
    `-s read-only`; never a workspace-write or bypass sandbox.
-6. Poll with separate foreground Bash calls up to the brief's `poll_cap` (default
-   30). If the process exits non-zero or the cap elapses with no result file,
+6. Poll with separate foreground Bash calls up to the brief's `poll_cap`. If the
+   process exits non-zero or the cap elapses with no result file,
    kill the process if still running and return `{ ran: false, findings: [], reason }`.
    Verify codex changed nothing by DIFFING `git status --porcelain` against the
    step-5 baseline (codex runs read-only, so they should match). Pre-existing

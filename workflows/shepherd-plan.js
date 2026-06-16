@@ -1224,14 +1224,18 @@ for (let r = 1; r <= EDITOR_ROUNDS; r++) {
     // findings; every lens always contributes a full review and an unreviewed
     // plan can never ship. This is a dispatch-layer retry only — it does NOT
     // alter any downstream synthesis step.
+    // Compute the per-lens fallback decision ONCE, positionally aligned with both
+    // reviews and personaRoster, so the count, the diagnostic log, and the
+    // re-dispatch all read one single-sourced decision (not three recomputations).
     const needsFallback = (rev) => !rev || rev.ran === false
-    const fellBack = personaRoster.filter((p, i) => needsFallback(reviews[i]))
+    const fallbackNeeded = reviews.map(needsFallback)
+    const fellBack = personaRoster.filter((p, i) => fallbackNeeded[i])
     if (fellBack.length) {
-      const why = personaRoster.map((p, i) => needsFallback(reviews[i]) ? `${p.key}(${(reviews[i] && reviews[i].reason) || 'no result'})` : null).filter(Boolean).join(', ')
+      const why = personaRoster.map((p, i) => fallbackNeeded[i] ? `${p.key}(${(reviews[i] && reviews[i].reason) || 'no result'})` : null).filter(Boolean).join(', ')
       log(`Round ${r}: codex unusable for ${fellBack.length} lens(es) — falling back to native Claude lenses: ${why}`)
     }
     const fallbackReturns = await parallel(personaRoster.map((p, i) => () =>
-      needsFallback(reviews[i])
+      fallbackNeeded[i]
         ? agent(reviewPrompt(p, r), { label: `review-r${r}-${p.key}-claude`, phase: 'Review', agentType: p.type, schema: PERSONA_FINDINGS_SCHEMA })
         : Promise.resolve(reviews[i])))
     fallbackReturns.forEach((rev, i) => {

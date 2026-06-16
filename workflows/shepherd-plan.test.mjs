@@ -1665,6 +1665,7 @@ S('S51 lens-via-codex: every review-r*-* routes through codex-executor at gpt-5.
     assert.ok(c.prompt.includes('read the document yourself'), `${c.label} brief embeds the full reviewPrompt as context (no lens branch like the coherence glossary or adversarial Document-type switch is silently dropped)`)
     assert.ok(c.schema, `${c.label} keeps the schema on agent() opts (S43 contract)`)
     assert.ok(c.schema.properties && c.schema.properties.ran, `${c.label} dispatch schema declares 'ran' so the codex-unavailable signal survives structured-output validation and reaches the fallback gate`)
+    assert.ok(Array.isArray(c.schema.required) && c.schema.required.includes('ran'), `${c.label} dispatch schema REQUIRES 'ran' (not merely declares it): a return that omits ran must fail validation, else needsFallback (ran === false) silently trusts a codex-unavailable lens`)
     assert.ok(c.schema.properties.findings, `${c.label} dispatch schema still carries findings`)
   }
   // No fallback lens fired on the codex-available path.
@@ -1801,6 +1802,7 @@ S('S54 codex-unavailable fallback: each lens re-dispatches on its native agentTy
   const dFallbacks = d.trace.calls.filter((cc) => cc.label.endsWith('-claude')).map((cc) => cc.label).sort()
   assert.deepEqual(dFallbacks, ['review-r1-feasibility-claude', 'review-r1-security-claude'], 'only the ran:false lenses fall back; the ran:true coherence lens does NOT (per-index correlation, not a uniform flip)')
   assert.ok(d.trace.calls.some((cc) => !cc.label.startsWith('review-') && cc.prompt && cc.prompt.includes('fallback-only security defect')), 'a non-empty finding sourced from a -claude fallback flows into synthesis (reaches a downstream refute/fix dispatch), not silently dropped')
+  assert.ok(d.trace.calls.some((cc) => !cc.label.startsWith('review-') && cc.prompt && cc.prompt.includes('fallback-only security defect') && /reviewer:\s*security/.test(cc.prompt)), 'the fallback finding is tagged with the SECURITY reviewer downstream (correct per-index attribution, not a neighbour lens key)')
   return 'fallback fires on ran:false AND null; mixed-roster per-index correlation holds; fallback-sourced findings flow into synthesis'
 })
 
@@ -1838,7 +1840,7 @@ S('S56 codex-executor protocol pins: the untested-by-harness CLI invariants are 
   assert.ok(src.includes('model_reasoning_effort'), 'maps effort onto the model_reasoning_effort config key')
   assert.ok(src.includes('$CODEX_SANDBOX') && src.includes('$CODEX_SESSION_ID'), 'guards the nested-sandbox case before launching')
   assert.ok(src.includes('command -v codex'), 'probes the binary before launching')
-  assert.ok(src.includes('additionalProperties') && src.includes('required'), 'strictifies schema.json (additionalProperties:false + all required)')
+  assert.ok(/EVERY object level/i.test(src) && /forced into .?required/i.test(src), 'strictifies schema.json at EVERY object level with every property forced into required (not just the root object)')
   assert.ok(/ran: true/.test(src) && /ran: false/.test(src) && /findings: \[\]/.test(src), 'every return carries ran + findings (success ran:true; failure ran:false + findings:[])')
   return 'codex-executor.md load-bearing CLI/protocol invariants are content-pinned'
 })
