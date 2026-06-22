@@ -16,9 +16,36 @@ Shepherd is built as two deterministic JavaScript coordinators. Each holds the l
 
 The handoff is deliberate, not automatic. `shepherd-plan` does not call `shepherd-deliver`. It returns a structured run summary, and a person (or an outer tool) hands that summary forward.
 
+## Install
+
+Shepherd is distributed as a Claude Code **plugin**. One install brings four things into any repo: the `/shepherd-pd` skill (the entry point), the agent fleet the coordinators dispatch, the doctrine skills the plan author reads, and the two coordinator scripts themselves. Dynamic workflows cannot be declared in a plugin manifest, so the coordinators travel *inside* the skill — the skill is how the practice ships.
+
+**Persistent install** — registers the marketplace, then installs the plugin for future sessions:
+
+```bash
+claude plugin marketplace add vadimcomanescu/shepherd
+claude plugin install shepherd@shepherd
+```
+
+**Session-scoped** — no marketplace; loads a local clone for the current session only:
+
+```bash
+claude --plugin-dir /path/to/shepherd      # a local checkout of this repo
+```
+
+The entry point is the **`/shepherd:shepherd-pd`** skill (just `/shepherd-pd` when run from a checkout of this repo). It has three modes:
+
+| Mode | Argument | Result |
+|------|----------|--------|
+| `plan` | a request, or a path to a brainstorm/requirements doc | a committed plan document |
+| `deliver` | a path to a committed plan | a pull request |
+| `plan-deliver` | a request | both, with the handoff automated — it stops if the plan halts rather than delivering nothing |
+
+The skill is a thin, deliberate front door: it routes to the coordinators below and, for `plan-deliver`, performs the same `planPath + planVersion` handoff a human would. Anything it does, you can also do by invoking the coordinators directly.
+
 ## Using it
 
-Both coordinators are invoked by name (their `meta.name`) with an `args` object. See each script's `meta.whenToUse` for the full contract.
+The `/shepherd-pd` skill above is the front door. To drive the coordinators directly, invoke each by name (its `meta.name`) with an `args` object; see each script's `meta.whenToUse` for the full contract.
 
 ```
 1. Plan.   Invoke shepherd-plan with a request, or an origin brainstorm/requirements doc:
@@ -83,11 +110,12 @@ Each clause below is one phase from the coordinator's `meta.phases`. The deep di
 |------|------------|
 | [`workflows/`](workflows/) | The two coordinator scripts ([`shepherd-plan.js`](workflows/shepherd-plan.js), [`shepherd-deliver.js`](workflows/shepherd-deliver.js)) and their tests. This is the practice, expressed as dynamic workflows. |
 | [`agents/`](agents/) | The 22-persona fleet (`agents/<name>.md` files dispatched by `agentType`): 14 plan-side personas (5 researchers including `flow-analyzer`, 2 authors, 7 review lenses) and 8 deliver-and-shared personas. Catalog: [`docs/practice/fleet.md`](docs/practice/fleet.md). Symlinked into `.claude/agents`. |
-| [`skills/`](skills/) | The 6 doctrine skills (the plan author and editor read five of them before acting): `decomposition`, `interface-design`, `scoping`, `test-strategy`, `validating-agent-improvements`, `zero-context-planning`. Symlinked into `.claude/skills`. |
+| [`skills/`](skills/) | The [`shepherd-pd`](skills/shepherd-pd/) entry-point skill (routes to the two coordinators; carries them as bundled files for packaging) plus the 6 doctrine skills the plan author and editor read before acting: `decomposition`, `interface-design`, `scoping`, `test-strategy`, `validating-agent-improvements`, `zero-context-planning`. Symlinked into `.claude/skills`. |
 | [`docs/practice/`](docs/practice/) | The practice docs: the [hub](docs/practice/README.md) plus deep dives on both pipelines, the [fleet](docs/practice/fleet.md), [routing](docs/practice/routing.md), and the [verification doctrine](docs/practice/verification.md). |
 | [`docs/workflows/`](docs/workflows/) | The dynamic-workflow substrate: the authoring rules every coordinator here is written against, never from memory. |
 | [`CONTEXT.md`](CONTEXT.md) | Domain glossary: the vocabulary for the practice and the substrate. |
 | [`STRATEGY.md`](STRATEGY.md) | Product direction: target problem, approach, metrics, tracks. |
+| [`.claude-plugin/`](.claude-plugin/) | The plugin manifest (`plugin.json`) and the single-plugin marketplace (`marketplace.json`) that make the repo installable. See [Install](#install). |
 
 Two boundaries worth stating up front:
 
@@ -99,7 +127,7 @@ Two boundaries worth stating up front:
 1. **The practice.** Read [`docs/practice/README.md`](docs/practice/README.md) first. It covers the plan-then-deliver model, why it exists, the design pillars, and the doctrine skills, then routes you to the deep dives ([`plan.md`](docs/practice/plan.md), [`deliver.md`](docs/practice/deliver.md), [`fleet.md`](docs/practice/fleet.md), [`routing.md`](docs/practice/routing.md), [`verification.md`](docs/practice/verification.md)).
 2. **The substrate.** Then read [`docs/workflows/README.md`](docs/workflows/README.md). It covers the coordinator contract, the primitives, the hard constraints, and the canonical patterns, the rules both coordinators are built against.
 
-Invocation is by convention: `/shepherd-plan` and `/shepherd-deliver` come from each script's `meta.name`, and the scripts in [`workflows/`](workflows/) are whole-directory symlinked into `.claude/workflows/`.
+Invocation: the [`/shepherd-pd`](skills/shepherd-pd/) skill is the front door and dispatches both coordinators (it is namespaced `/shepherd:shepherd-pd` on a fresh plugin install). The coordinators' own names `/shepherd-plan` and `/shepherd-deliver` come from each script's `meta.name`, and the scripts in [`workflows/`](workflows/) are whole-directory symlinked into `.claude/workflows/` — and into the skill, so they ride inside the plugin.
 
 A note on honesty: the metrics in [`STRATEGY.md`](STRATEGY.md) (escaped-defect rate, unattended completion rate, rework rate, cost per executed task) are aspirational. Nothing is instrumented yet; they are measured manually from run reports and git history.
 

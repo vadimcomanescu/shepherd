@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "shepherd",
+  "owner": {
+    "name": "Vadim Comanescu"
+  },
+  "metadata": {
+    "description": "The Shepherd plan -> deliver engineering practice, distributed as a single installable plugin."
+  },
+  "plugins": [
+    {
+      "name": "shepherd",
+      "source": "./",
+      "description": "The plan -> deliver practice: the /shepherd-pd skill drives two dynamic-workflow coordinators (plan, deliver) and bundles the agent fleet and doctrine skills they dispatch.",
+      "author": {
+        "name": "Vadim Comanescu"
+      },
+      "keywords": ["planning", "delivery", "dynamic-workflows", "agents", "codex", "pull-request"]
+    }
+  ]
+}

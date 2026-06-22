@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "shepherd",
+  "displayName": "Shepherd",
+  "version": "0.1.0",
+  "description": "The plan -> deliver engineering practice as one installable package: the /shepherd-pd skill drives the two dynamic-workflow coordinators (plan, deliver) and bundles the agent fleet they dispatch.",
+  "author": {
+    "name": "Vadim Comanescu"
+  },
+  "repository": "https://github.com/vadimcomanescu/shepherd",
+  "license": "MIT",
+  "keywords": ["planning", "delivery", "dynamic-workflows", "agents", "codex", "pull-request"]
+}
