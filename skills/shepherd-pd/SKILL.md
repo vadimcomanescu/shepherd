@@ -55,7 +55,10 @@ path, or a plan path). Trailing words like `ship`/`no-ship`, `commit`, `deep`,
 ### plan
 
 `request` vs `origin`: if the payload is a path to an existing doc (a brainstorm
-or requirements file), pass it as `origin`; otherwise pass it as `request`.
+or requirements file), pass it as `origin`; otherwise pass it as `request`. When
+you pass `origin`, also pass `originVersion` = `git hash-object <origin-path>` (a
+Bash call). The coordinator keys its resume cache on `originVersion`, so without
+it a re-run after the origin doc is edited replays stale cached research.
 
 ```
 Workflow({
@@ -63,6 +66,7 @@ Workflow({
   args: {
     request: "<payload, when it is a request>",
     // OR origin: "<payload, when it is a doc path>",
+    //    with origin, also: originVersion: "<git hash-object of the origin doc>"
     commit: <true only if the user said "commit"; else omit>,
     depth: "<lightweight|standard|deep, only if the user pinned one>",
     // pass through only flags the user actually named:
@@ -79,9 +83,20 @@ halted — surface `haltReason` and `nextStep`; do not pretend a plan exists.
 
 ### deliver
 
-The payload is the plan path. Deliver requires the plan **committed**. Unless the
-user supplied `planVersion`, re-derive it at execution time by running
-`git hash-object <plan-path>` (a Bash call) and pass the result.
+The payload is the plan path. Deliver requires the plan **committed** — verify it
+before dispatching. Do not rely on the coordinator to catch this: its only
+cleanliness check is `git diff --quiet HEAD`, which ignores untracked files, and
+`git hash-object` produces a hash for any working-tree file whether committed or
+not. Run both checks (Bash calls):
+
+1. `git cat-file -e HEAD:<plan-path>` — the plan must exist in `HEAD`. If it
+   fails, **stop**: the plan is uncommitted. Tell the user to
+   `git add <plan-path> && git commit` it, then re-run.
+2. `git hash-object <plan-path>` must equal `git rev-parse HEAD:<plan-path>` — the
+   committed blob must match the working copy. If they differ, **stop**: the plan
+   has uncommitted edits; tell the user to commit them first.
+
+Use that `git hash-object` value as `planVersion` unless the user supplied one.
 
 ```
 Workflow({
