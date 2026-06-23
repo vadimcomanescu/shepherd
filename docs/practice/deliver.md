@@ -62,7 +62,7 @@ plan doc (ce-plan)
       |
       v
   +---------+   dependency WAVES; each task in its OWN worktree;
-  | EXECUTE |   codex-runner | unit-executor; fallback/finisher; circuit breaker
+  | EXECUTE |   codex-executor | unit-executor; fallback/finisher; circuit breaker
   +---------+
       |
       v
@@ -104,9 +104,9 @@ plan doc (ce-plan)
   PR + run summary
 ```
 
-A note on the agents this pipeline dispatches: only the files under `agents/` are **personas** (dispatched with `agentType`, which resolves to `agents/<name>.md` by convention via the `.claude/agents` symlink and name-matching). The deliver-side personas are `task-splitter`, `executor-router`, `unit-executor`, `codex-runner`, `codex-reviewer`, `finding-verifier`, and `ci-watcher`. Everything else the script dispatches (`setup-integration`, `diffstat`, the integrator, the simplify passes, the wave triage, the fixers, `audit-fixes`, the validation agent, `gate-recheck`, the ship agent, the compound agent, `audit-compound`, the CI residual recorder) is an **inline-prompt agent**: dispatched with just a label and a schema (and usually a model), with no `agentType` and no persona file. The prompt carries everything.
+A note on the agents this pipeline dispatches: only the files under `agents/` are **personas** (dispatched with `agentType`, which resolves to `agents/<name>.md` by convention via the `.claude/agents` symlink and name-matching). The deliver-side personas are `task-splitter`, `executor-router`, `unit-executor`, `codex-executor`, `finding-verifier`, and `ci-watcher`. Everything else the script dispatches (`setup-integration`, `diffstat`, the integrator, the simplify passes, the wave triage, the fixers, `audit-fixes`, the validation agent, `gate-recheck`, the ship agent, the compound agent, `audit-compound`, the CI residual recorder) is an **inline-prompt agent**: dispatched with just a label and a schema (and usually a model), with no `agentType` and no persona file. The prompt carries everything.
 
-Personas do not carry an intrinsic model tier from their file, with two exceptions: `codex-runner` and `codex-reviewer` pin `model: sonnet` in their own frontmatter (the protocol operator is mechanical; Codex does the real work). Every other tier comes from the dispatch site. The `unit-executor`'s tier in particular comes from the `executor-router`'s `ROUTE_SCHEMA.model`, never from the session model.
+Personas do not carry an intrinsic model tier from their file, with one exception: `codex-executor` pins `model: sonnet` in its own frontmatter (the protocol operator is mechanical; Codex does the real work). Every other tier comes from the dispatch site. The `unit-executor`'s tier in particular comes from the `executor-router`'s `ROUTE_SCHEMA.model`, never from the session model.
 
 ---
 
@@ -149,7 +149,7 @@ Waves execute sequentially; within a wave, all tasks run in parallel (the barrie
 
 Dispatch per task:
 
-- **Codex-routed** (and circuit breaker not tripped) -> `codex-runner` (`agents/codex-runner.md`, `sonnet`, `EXEC_SCHEMA`). The runner is a protocol operator: it writes a schema and a structured `prompt.md` for Codex (with a `<testing>` section that forces test-first work and a `<verify>` section that forbids reporting `completed` unless tests pass), launches `codex exec` in the background, polls for the result file, classifies it, and commits the worktree. It never reports `completed` unless Codex reported completed AND a commit now exists on the branch.
+- **Codex-routed** (and circuit breaker not tripped) -> `codex-executor` (`agents/codex-executor.md`, `sonnet`, `EXEC_SCHEMA`), in `workspace-write` mode. The executor is a protocol operator: it writes a schema and a structured `prompt.md` for Codex (with a `<testing>` section that forces test-first work and a `<verify>` section that forbids reporting `completed` unless tests pass), launches `codex exec` in the background, polls for the result file, classifies it, and commits the worktree. It never reports `completed` unless Codex reported completed AND a commit now exists on the branch.
 - **Claude-routed** -> `unit-executor` (`agents/unit-executor.md`, `model: t.route.model || 'sonnet'`, `EXEC_SCHEMA`), at the routed tier. The unit-executor implements one dossier test-first (RED: write one minimal failing test for the slice and confirm it fails for the expected reason; GREEN: minimum code to pass; REFACTOR: only with tests green), skipping test-first only for trivial renames, pure configuration, and pure styling (and saying so). It reports `completed` / `partial` / `failed` honestly, verified against a fresh test run in the same session.
 
 `EXEC_SCHEMA` = `{ status: completed|partial|failed, branch, worktreePath, filesModified, verificationSummary, issues }`.
@@ -188,10 +188,10 @@ The **reviewer roster** is assembled, then fanned out:
 | migrations | `ce-data-migration-reviewer` | `riskSurfaces` includes migrations |
 | api-contract | `ce-api-contract-reviewer` | `riskSurfaces` includes public-api |
 | adversarial | `ce-adversarial-reviewer` | changed lines >=50 OR auth/payments |
-| codex | `codex-reviewer` persona (`sonnet`, second model family) | `codexUsable && !codexBroken` |
+| codex | `codex-executor` persona in `read-only` mode (`sonnet`, second model family) | `codexUsable && !codexBroken` |
 | removed-behavior, cross-file | inline single-angle prompts (no persona) | always |
 
-The persona reviewers are external compound-engineering reviewer agents reached via `agentType`. The `codex-reviewer` runs the Codex CLI read-only over the diff as a different model family (it catches what same-family review rationalizes away); its findings face the same Claude verifier as everyone else's. Each reviewer produces `FINDINGS_SCHEMA` findings, each with a `failure_scenario` (concrete inputs/state that produce the wrong outcome, or the concrete cost for cleanup-style findings).
+The persona reviewers are external compound-engineering reviewer agents reached via `agentType`. The `codex-executor` (in `read-only` mode) runs the Codex CLI read-only over the diff as a different model family (it catches what same-family review rationalizes away); its findings face the same Claude verifier as everyone else's. Each reviewer produces `FINDINGS_SCHEMA` findings, each with a `failure_scenario` (concrete inputs/state that produce the wrong outcome, or the concrete cost for cleanup-style findings).
 
 Findings stream through **proximity dedup** as each reviewer completes (the dedup runs inside the reviewer pipeline, so a duplicate never consumes a verifier slot). Two findings are the same defect when they share a file AND either both have line numbers within 5 of each other, or (when at least one is line-less) their normalized titles share a real 30-char prefix, falling back to exact title equality for short titles. A duplicate is absorbed into the kept entry, merging severities and write-ups; a blocking duplicate can escalate a suggested entry (refunding its slot) and even revive a previously refuted or budget-dropped entry for re-verification with the merged evidence.
 

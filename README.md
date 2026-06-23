@@ -109,7 +109,7 @@ Each clause below is one phase from the coordinator's `meta.phases`. The deep di
 | Path | What it is |
 |------|------------|
 | [`workflows/`](workflows/) | The two coordinator scripts ([`shepherd-plan.js`](workflows/shepherd-plan.js), [`shepherd-deliver.js`](workflows/shepherd-deliver.js)) and their tests. This is the practice, expressed as dynamic workflows. |
-| [`agents/`](agents/) | The 35-persona fleet (`agents/<name>.md` files dispatched by `agentType`): 27 plan-side personas (5 research, 2 authoring, 7 review lenses, 12 role-extracted gate/loop agents, 1 Codex executor) and 8 deliver/shared (5 delivery, 2 verifiers, 1 CI). Catalog: [`docs/practice/fleet.md`](docs/practice/fleet.md). Symlinked into `.claude/agents`. |
+| [`agents/`](agents/) | The 33-persona fleet (`agents/<name>.md` files dispatched by `agentType`): 27 plan-side personas (5 research, 2 authoring, 7 review lenses, 12 role-extracted gate/loop agents, 1 Codex executor) and 6 deliver/shared (3 delivery, 2 verifiers, 1 CI). Catalog: [`docs/practice/fleet.md`](docs/practice/fleet.md). Symlinked into `.claude/agents`. |
 | [`skills/`](skills/) | The [`shepherd-pd`](skills/shepherd-pd/) entry-point skill (routes to the two coordinators; carries them as bundled files for packaging) plus the 6 doctrine skills the plan author and editor read before acting: `decomposition`, `interface-design`, `scoping`, `test-strategy`, `validating-agent-improvements`, `zero-context-planning`. Symlinked into `.claude/skills`. |
 | [`docs/practice/`](docs/practice/) | The practice docs: the [hub](docs/practice/README.md) plus deep dives on both pipelines, the [fleet](docs/practice/fleet.md), [routing](docs/practice/routing.md), and the [verification doctrine](docs/practice/verification.md). |
 | [`docs/workflows/`](docs/workflows/) | The dynamic-workflow substrate: the authoring rules every coordinator here is written against, never from memory. |
@@ -119,7 +119,7 @@ Each clause below is one phase from the coordinator's `meta.phases`. The deep di
 
 Two boundaries worth stating up front:
 
-- **Inline-prompt agents are not personas.** On the plan side every dispatch now carries an `agentType` backed by a file in [`agents/`](agents/) — there are no inline-prompt agents left there. The deliver coordinator deliberately keeps some (repo-recon, integration merges, the diffstat and sweep, per-file fixes, ship-verify): a label and a schema only, no `agentType` and no file. The 35 files in [`agents/`](agents/) are the personas; an inline-prompt agent is any dispatch with no `agents/<name>.md` behind it.
+- **Inline-prompt agents are not personas.** On the plan side every dispatch now carries an `agentType` backed by a file in [`agents/`](agents/) — there are no inline-prompt agents left there. The deliver coordinator deliberately keeps some (repo-recon, integration merges, the diffstat and sweep, per-file fixes, ship-verify): a label and a schema only, no `agentType` and no file. The 33 files in [`agents/`](agents/) are the personas; an inline-prompt agent is any dispatch with no `agents/<name>.md` behind it.
 - **The `ce-*` skills are an external dependency, not files here.** Phases like Compound, Proof, and Ship lean on externally-installed compound-engineering skills (`ce-simplify-code`, `ce-test-browser`, `ce-compound`, `ce-commit-push-pr`, and a reviewer family). The 6 skills under [`skills/`](skills/) are this repo's own.
 
 ## Start here
