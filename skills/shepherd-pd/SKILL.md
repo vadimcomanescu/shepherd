@@ -2,6 +2,7 @@
 name: shepherd-pd
 description: Run the Shepherd plan -> deliver practice from one entry point. Invoke for "/shepherd-pd plan <request>", "/shepherd-pd deliver <plan-path>", or "/shepherd-pd plan-deliver <request>" to produce a ce-plan document, drive a committed plan to a pull request, or do both in sequence with the handoff automated.
 argument-hint: "[plan|deliver|plan-deliver] <request | plan-path> [flags…]"
+disable-model-invocation: true
 allowed-tools: Workflow, Read, Bash(git hash-object:*), Bash(git rev-parse:*)
 ---
 
