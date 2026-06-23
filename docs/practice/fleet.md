@@ -2,14 +2,14 @@
 
 Shepherd is an engineering practice (plan then deliver) built on dynamic-workflow coordinator scripts. The coordinators do no real work themselves: every file read, every edit, every test run, every git operation is performed by a dispatched agent. This page catalogs the **fleet** that does that work.
 
-The fleet is **35 single-purpose personas**, one Markdown file each under [`agents/`](../../agents/). A coordinator dispatches one by passing `agentType: '<name>'` to `agent()`; the runtime loads `agents/<name>.md` as that subagent's system prompt. The binding is **by convention**, not a registry: the repo symlinks `.claude/agents -> ../agents`, and the runtime resolves the `agentType` string against a file of the same name in that directory (the grounding principle). There is no manifest mapping names to files.
+The fleet is **33 single-purpose personas**, one Markdown file each under [`agents/`](../../agents/). A coordinator dispatches one by passing `agentType: '<name>'` to `agent()`; the runtime loads `agents/<name>.md` as that subagent's system prompt. The binding is **by convention**, not a registry: the repo symlinks `.claude/agents -> ../agents`, and the runtime resolves the `agentType` string against a file of the same name in that directory (the grounding principle). There is no manifest mapping names to files.
 
 Two facts shape everything below:
 
 - **Each persona gets a fresh context window.** It cannot see the coordinator's variables, the plan document, or any other agent's output unless that data is in its prompt. Every dispatch must ground the agent with exactly the paths, facts, and schema it needs (the grounding principle).
-- **Personas carry no intrinsic model tier**, with three exceptions (`codex-runner`, `codex-reviewer`, `codex-executor`, all pinned `sonnet` in frontmatter). Every other agent's model is decided at the dispatch site or inherited from the session. See the [Models](#models) note and [`./routing.md`](./routing.md).
+- **Personas carry no intrinsic model tier**, with one exception (`codex-executor`, pinned `sonnet` in frontmatter). Every other agent's model is decided at the dispatch site or inherited from the session. See the [Models](#models) note and [`./routing.md`](./routing.md).
 
-The 35 personas split as: **27 plan-side** (5 research + 2 authoring + 7 review lenses + 12 role-extracted gate and loop agents + 1 Codex executor mechanism) and **8 deliver/shared** (5 delivery + 2 verifiers + 1 CI). Every **plan-side** dispatch carries an `agentType` backed by a file in `agents/` — there are no inline-prompt agents on the plan side. The deliver coordinator deliberately keeps some inline-prompt dispatches (e.g. `repo-recon`, `merge-*`, `ship`); only `shepherd-plan` was de-inlined in this refactor. The groups below follow that split.
+The 33 personas split as: **27 plan-side** (5 research + 2 authoring + 7 review lenses + 12 role-extracted gate and loop agents + 1 Codex executor mechanism) and **6 deliver/shared** (3 delivery + 2 verifiers + 1 CI). Every **plan-side** dispatch carries an `agentType` backed by a file in `agents/` — there are no inline-prompt agents on the plan side. The deliver coordinator deliberately keeps some inline-prompt dispatches (e.g. `repo-recon`, `merge-*`, `ship`); only `shepherd-plan` was de-inlined in this refactor. The groups below follow that split.
 
 ---
 
@@ -68,7 +68,7 @@ Naming note (cosmetic): `adversarial-lens` self-labels "shepherd-plan fleet" in 
 
 ---
 
-## 4. Delivery (5 personas)
+## 4. Delivery (3 personas)
 
 The personas that turn a plan unit into merged, tested code in [`shepherd-deliver`](./deliver.md). Routing (who executes, at what tier) is decided per task and explained in [`./routing.md`](./routing.md).
 
@@ -77,12 +77,10 @@ The personas that turn a plan unit into merged, tested code in [`shepherd-delive
 | `task-splitter` | Splits one plan unit into context-window-sized task dossiers | One unit (goal, files, approach, scenarios), repo conventions, plan context; `Read, Grep, Glob, Bash` | `TASKS_SCHEMA` | inherited | **Read-only** (reads code only to judge size). A task fits one iteration when it is ONE concern, `<= ~5` impl files, `<= ~300` lines, self-contained, one test command. Same-unit tasks touching the same file are chained via `dependsOn` to avoid worktree collisions at merge. |
 | `executor-router` | Picks executor + effort + Claude tier for one task | Codex-availability flag, task metadata (risk, ambiguity, est-diff, files), full dossier; `Read, Grep, Glob` | `ROUTE_SCHEMA` (`executor` codex\|claude, `effort`, `model` haiku\|sonnet\|opus, `reason`) | sonnet | **Pure judgment, modifies nothing.** Routes to Codex only for mechanical, sandbox-verifiable work with no network. High risk escalates the **verification pass**, not the model. The Claude `model` it picks becomes `unit-executor`'s tier and the fallback/finisher tier. See [routing](./routing.md). |
 | `unit-executor` | Implements one task in an isolated worktree, test-first | Task dossier, worktree/branch coordinates, repo conventions, test command (no plan document) | `EXEC_SCHEMA` (`status`, `branch`, `worktreePath`, `filesModified`, `verificationSummary`, `issues`) | **routed tier** (`t.route.model`), never inherited | TDD RED-GREEN-REFACTOR per behavior slice; may spawn nested subagents for pattern archaeology. Reports `completed` only after a fresh passing test run **this session**; never weakens a test to get green; strict worktree discipline (no push, own branch only). Also serves as the codex **fallback** and **finisher** at its routed tier. |
-| `codex-runner` | Drives `codex exec` for one task and classifies the result | Codex binary path, worktree/branch, test command, sandbox flag, effort, dossier; `Bash, Read, Write` | `EXEC_SCHEMA` | **`sonnet` (pinned in frontmatter)** | **Mechanical protocol operator**: implements nothing; Codex does the work. Substitutes the literal scratch path into every Bash call (shell vars do not survive between calls), maps Codex's snake_case output to camelCase, and reports `completed` only if Codex did AND a commit now exists on the branch. |
-| `codex-reviewer` | Runs `codex exec` as a read-only second-model reviewer over a branch diff | Worktree path, branch, diff context; `Bash, Read, Write` | `CODEX_REVIEW_SCHEMA` (`ran`, `findings[]`) | **`sonnet` (pinned in frontmatter)** | **Mechanical protocol operator**: performs no review judgment and modifies nothing. Instructs Codex to hunt logic errors, broken edge cases, and contract violations a same-model reviewer might rationalize away. Verifies the worktree is untouched after the run; never invents or drops findings. |
 
-`codex-runner`, `codex-reviewer`, and `codex-executor` are the **three personas that pin a model in their own frontmatter** (all `sonnet`): the heavy reasoning is offloaded to the external Codex model, so the operator persona only needs sonnet. `unit-executor`'s tier comes exclusively from the router's `ROUTE_SCHEMA.model` and is never inherited from the session.
+Codex implementation and second-model review are both operated by the single `codex-executor` persona (in `workspace-write` and `read-only` mode respectively); it is the **only persona that pins a model in its own frontmatter** (`sonnet`): the heavy reasoning is offloaded to the external Codex model, so the operator persona only needs sonnet. `unit-executor`'s tier comes exclusively from the router's `ROUTE_SCHEMA.model` and is never inherited from the session.
 
-The third Codex mechanism, `codex-executor`, is detailed below in [Codex mechanisms](#codex-mechanisms).
+The Codex operator, `codex-executor`, is detailed below in [Codex mechanisms](#codex-mechanisms).
 
 ---
 
@@ -130,17 +128,15 @@ Every plan-side dispatch that was previously an inline-prompt agent is now a nam
 
 ---
 
-## 8. Codex mechanisms (3 personas)
+## 8. Codex mechanisms (1 persona)
 
-Three personas operate the Codex CLI as mechanical protocol operators. All three pin `model: 'sonnet'` in their own frontmatter (heavy reasoning is offloaded to the external Codex model) and never perform review or implementation judgment themselves.
+One persona operates the Codex CLI as a mechanical protocol operator. It pins `model: 'sonnet'` in its own frontmatter (heavy reasoning is offloaded to the external Codex model) and never performs review or implementation judgment itself. It is **mode-parameterized** by the caller-supplied `sandbox_mode`, mirroring the CLI: one `codex exec`, switched by `--sandbox`, with a caller-supplied `--output-schema`.
 
-| Persona | Coordinator | Role | Codex mode |
+| Persona | Dispatched by | Role | Codex mode |
 |---|---|---|---|
-| `codex-runner` | deliver | Drives `codex exec` for one implementation task; classifies the result | `read-write` (workspace sandbox) |
-| `codex-reviewer` | deliver | Runs `codex exec` as a read-only second-model reviewer over a branch diff | `read-only` (diff review) |
-| `codex-executor` | plan | Role-agnostic Codex operator: reads any lens role file from disk, concatenates it into `prompt.md`, launches `codex exec` read-only, and returns findings in the caller-supplied schema | `read-only` (plan review) |
+| `codex-executor` | plan + deliver | The single role-agnostic Codex operator. Reads its Codex model, reasoning-effort, output schema, and instructions from a `<codex-exec-brief>` DATA block (not a hard-coded charter). In `read-only` it reviews a document or diff — a plan-review lens (reading the named `role_file` from disk and concatenating it into `prompt.md`) or a deliver second-model code review — restoring anything Codex touched. In `workspace-write` it implements one task inside a worktree and commits exactly what the brief prescribes. | `read-only` (plan lens review **and** deliver diff review) / `workspace-write` (deliver implementation) |
 
-`codex-executor` is the **third Codex mechanism**, introduced to route the 7 review lenses through Codex at `gpt-5.5` / `xhigh`. It differs from the other two in being **role-agnostic**: it reads its Codex model, reasoning-effort, output schema, document path, and review instructions from a `<codex-exec-brief>` DATA block in its dispatch prompt (not from a hard-coded charter), then reads the named lens role file from disk and concatenates its content into `prompt.md` before launching Codex. It carries no lens-specific doctrine inline. On missing/malformed output or when Codex is not found (binary absent or nested-sandbox detected), it returns `{ ran: false, reason }` so the coordinator can re-dispatch that lens on its native Claude `agentType`.
+`codex-executor` is the **single Codex mechanism**, dispatched in three places (all via `agentType: 'codex-executor'`): the 7 plan-side review lenses (read-only, at `gpt-5.5` / `xhigh`), the deliver second-model code review (read-only), and deliver implementation (workspace-write, commits). It is **role-agnostic**: every per-call detail — Codex model, reasoning-effort, output schema, document path, sandbox mode, the role file path when reviewing a lens, and the review or implementation instructions — travels as DATA in the `<codex-exec-brief>` block in its dispatch prompt. The role-specific doctrine and Codex output schema live in those dispatch briefs in `workflows/shepherd-deliver.js`, not in the agent. It carries no role-specific doctrine inline. On missing/malformed output or when Codex is not found (binary absent or nested-sandbox detected), it returns `{ ran: false, reason }` so the coordinator can re-dispatch on the native Claude `agentType`.
 
 ---
 
@@ -184,7 +180,7 @@ Several deliver phases depend on the **compound-engineering plugin**, an externa
 | `compound-engineering:ce-api-contract-reviewer` | Conditional (public-api risk surface) |
 | `compound-engineering:ce-adversarial-reviewer` | Conditional (diff >= 50 lines or auth/payments risk surface) |
 
-**These reviewer personas have no `ceSkillsRoot` guard and no inline fallback today.** When the plugin is absent their `agentType` values do not resolve, so the Quality phase loses its structured persona-review roster; the local `codex-reviewer` and inline-angle reviewers still run, and `finding-verifier` still grades what they produce. This hard coupling, and the plan to make the product plugin-independent, is tracked in [#26](https://github.com/vadimcomanescu/shepherd/issues/26).
+**These reviewer personas have no `ceSkillsRoot` guard and no inline fallback today.** When the plugin is absent their `agentType` values do not resolve, so the Quality phase loses its structured persona-review roster; the local `codex-executor` second-model review and inline-angle reviewers still run, and `finding-verifier` still grades what they produce. This hard coupling, and the plan to make the product plugin-independent, is tracked in [#26](https://github.com/vadimcomanescu/shepherd/issues/26).
 
 **ce-* skills**, used as authoritative instruction sources via `skillGuide()`, with inline fallbacks when the plugin is absent:
 
@@ -201,7 +197,7 @@ The `skillGuide()` helper resolves these from the installed plugin's `skills/` d
 
 Model policy and its plan-side exceptions (see also [`./routing.md`](./routing.md) and the substrate's authoring rules in [`../workflows/README.md`](../workflows/README.md)):
 
-- **Only `codex-runner`, `codex-reviewer`, and `codex-executor` pin a model in their persona frontmatter**, all `model: sonnet`. They are mechanical protocol operators that drive the external Codex model, so sonnet is enough; the reasoning is offloaded.
+- **Only `codex-executor` pins a model in its persona frontmatter** (`model: sonnet`). It is a mechanical protocol operator that drives the external Codex model, so sonnet is enough; the reasoning is offloaded.
 - **Every other persona's tier is set at the dispatch site or inherited**, with a documented plan-side exception (below).
 - **Plan-side opus exception (deliberate override).** Five plan-side roles are pinned to `model: 'opus'` at the dispatch site: `plan-author` (label `author-plan`), `plan-editor` (label `editor-r${r}`), `intake-classifier` (label `intake`), `strategy-gate`, and `skeptical-refuter` (all four dispatch labels: `refute-halt-r*`, `refute-r*`, `ktd-refute-p*`, `refute-halt-ktd-p*`). Rationale: plan authoring, intake classification, the strategy gate, the editor verdict, and adversarial refutation are the highest-stakes judgment work in an autonomous pipeline that ships a plan with no human review between agents. Inherit-the-session-model is correct for self-paced interactive work; it is not correct here. All five of these roles, `intake-classifier` included, pin `opus` (it classifies intent for a no-human-in-the-loop pipeline, which is judgment work, not mechanical).
 - **All mechanical plan-side roles pin `model: 'sonnet'`**: the five researchers, `persona-classifier`, `cross-plan-scanner`, `plan-fixer`, `plan-checker`, `plan-parser`, `spike-investigator`, `releasability-checker`, `origin-coverage-auditor`, `committer`, `hygiene-checker`, and the `codex-executor` operator dispatch.

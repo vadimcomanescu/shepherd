@@ -1832,17 +1832,20 @@ S('S55 S40/S42 four-run union covers committer/hygiene/origin/spike on disk and 
 S('S56 codex-executor protocol pins: the untested-by-harness CLI invariants are content-guarded', async () => {
   // The harness stubs the dispatcher and never runs codex, so the executor's live
   // protocol is unexercised. Pin the load-bearing invariants in the role file so a
-  // prose regression (read-only -> workspace-write, dropped sandbox guard, lost stdin
-  // redirect, wrong effort key) is caught here rather than only on a live Codex host.
+  // prose regression (dropped sandbox guard, lost stdin redirect, wrong effort key,
+  // a read-only brief silently escalated to a writable sandbox) is caught here
+  // rather than only on a live Codex host. The single operator is mode-parameterized.
   const src = readFileSync(join(dir, '..', 'agents', 'codex-executor.md'), 'utf8')
-  assert.ok(src.includes('-s read-only'), 'launches read-only')
+  assert.ok(src.includes('-s <sandbox_mode>'), 'constructs the sandbox flag from the brief mode (read-only | workspace-write)')
+  assert.ok(/defaults to .?read-only/i.test(src) && /never escalate a read-only/i.test(src), 'defaults to read-only and never escalates a read-only brief to a writable sandbox')
+  assert.ok(/git -C <worktree>/.test(src), 'binds baseline/restore/commit git commands to the worktree (a bare git would inspect the session cwd, not the linked worktree Codex ran in)')
   assert.ok(src.includes('--output-schema') && /-o\s+<scratch>\/result\.json/.test(src), 'uses --output-schema and -o result.json (proven flag forms)')
   assert.ok(src.includes('- < <scratch>/prompt.md'), 'pipes the prompt via stdin, never as a positional arg')
   assert.ok(src.includes('model_reasoning_effort'), 'maps effort onto the model_reasoning_effort config key')
   assert.ok(src.includes('$CODEX_SANDBOX') && src.includes('$CODEX_SESSION_ID'), 'guards the nested-sandbox case before launching')
   assert.ok(src.includes('command -v codex'), 'probes the binary before launching')
   assert.ok(/EVERY object level/i.test(src) && /forced into .?required/i.test(src), 'strictifies schema.json at EVERY object level with every property forced into required (not just the root object)')
-  assert.ok(/ran: true/.test(src) && /ran: false/.test(src) && /findings: \[\]/.test(src), 'every return carries ran + findings (success ran:true; failure ran:false + findings:[])')
+  assert.ok(/ran: true/.test(src) && /ran: false/.test(src) && src.includes("status: 'failed'"), 'dual-mode return envelope: read-only ran/findings; workspace-write status')
   return 'codex-executor.md load-bearing CLI/protocol invariants are content-pinned'
 })
 

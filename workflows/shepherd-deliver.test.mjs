@@ -7,7 +7,6 @@ import assert from 'node:assert'
 // as the dynamic-workflow runtime (body runs in an async function scope).
 const dir = dirname(fileURLToPath(import.meta.url))
 const scriptSrc = readFileSync(join(dir, 'shepherd-deliver.js'), 'utf8').replace(/^export const meta = /, 'const meta = ')
-const codexReviewerSrc = readFileSync(join(dir, '..', 'agents', 'codex-reviewer.md'), 'utf8')
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
 const body = new AsyncFunction('args', 'agent', 'parallel', 'pipeline', 'phase', 'log', 'budget', 'workflow', scriptSrc)
 const coordinator = ({ args, agent, parallel, pipeline, phase, log, budget, workflow }) => body(args, agent, parallel, pipeline, phase, log, budget, workflow)
@@ -162,12 +161,12 @@ S('S1 happy path: 4 units, mixed routing, all merged + validated', async () => {
   const types = Object.fromEntries(trace.calls.map((c) => [c.label, c.agentType]))
   assert.equal(types['split-U1'], 'task-splitter')
   assert.equal(types['route-U1'], 'executor-router')
-  assert.equal(types['exec-U1-codex'], 'codex-runner')
+  assert.equal(types['exec-U1-codex'], 'codex-executor')
   assert.equal(types['exec-U2-claude'], 'unit-executor')
   assert.equal(types['review-migrations'], 'compound-engineering:ce-data-migration-reviewer')
   assert.equal(types['review-standards'], 'compound-engineering:ce-project-standards-reviewer')
   assert.equal(types['review-adversarial'], 'compound-engineering:ce-adversarial-reviewer', 'adversarial persona on (120 lines >= 50)')
-  assert.equal(types['review-codex'], 'codex-reviewer', 'codex second-model reviewer dispatched')
+  assert.equal(types['review-codex'], 'codex-executor', 'codex second-model reviewer dispatched via the single codex-executor')
   assert.equal(types['review-removed-behavior'], undefined, 'removed-behavior reviewer is inline, no agentType')
   assert.equal(types['review-cross-file'], undefined, 'cross-file reviewer is inline, no agentType')
   // inline angle reviewers: base review prompt + grounding + angle text + FINDINGS_SCHEMA
@@ -694,7 +693,7 @@ S('S22 codex second-model reviewer: findings verified by claude verifier; ran=fa
   // (b) codex review fails to run -> logged with detail AND recorded as a
   // missing perspective: zero findings, surviving reviewers unaffected, but
   // the run is no longer pretending the codex perspective was covered
-  const broken = makeDispatcher({ 'review-codex': () => ({ ran: false, findings: [], detail: 'codex binary crashed' }) })
+  const broken = makeDispatcher({ 'review-codex': () => ({ ran: false, findings: [], reason: 'codex binary crashed' }) })
   const b = await run(broken)
   assert.ifError(b.error)
   assert.ok(b.trace.logs.some((m) => /Codex second-model review did not run: codex binary crashed/.test(m)))
@@ -1159,12 +1158,15 @@ S('S32 verify- calls dispatch the finding-verifier persona', async () => {
   return `${verifies.length} verify call(s), all finding-verifier`
 })
 
-S('S33 codex-reviewer doc requires and prompts for failure_scenario', async () => {
-  assert.ok(codexReviewerSrc.includes('"failure_scenario":{"type":"string"}'), 'codex reviewer schema defines failure_scenario')
-  assert.ok(codexReviewerSrc.includes('"required":["title","file","line","severity","detail","failure_scenario"]'), 'codex reviewer schema requires failure_scenario')
-  assert.ok(codexReviewerSrc.includes('failure_scenario (the concrete inputs/state that produce the wrong outcome'), 'codex reviewer prompt defines failure_scenario')
-  assert.ok(codexReviewerSrc.includes('independent verifier judges them next'), 'codex reviewer prompt has pass-through instruction')
-  return 'codex-reviewer schema and prompt mention failure_scenario'
+S('S33 codex review brief requires and prompts for failure_scenario', async () => {
+  // The doctrine moved out of the deleted agents/codex-reviewer.md into the
+  // deliver coordinator (CODEX_REVIEW_OUTPUT_SCHEMA + the read-only review brief),
+  // dispatched through the single codex-executor.
+  assert.ok(scriptSrc.includes("failure_scenario: { type: 'string' }"), 'codex review output schema defines failure_scenario')
+  assert.ok(scriptSrc.includes("'severity', 'detail', 'failure_scenario'"), 'codex review output schema requires failure_scenario')
+  assert.ok(scriptSrc.includes('failure_scenario (the concrete inputs/state that produce the wrong outcome'), 'codex review brief defines failure_scenario')
+  assert.ok(scriptSrc.includes('independent verifier judges them next'), 'codex review brief has pass-through instruction')
+  return 'codex review schema and brief mention failure_scenario'
 })
 
 S('S31 nit cap is loud: deferred nits are logged, listed in the result, and never verified', async () => {
