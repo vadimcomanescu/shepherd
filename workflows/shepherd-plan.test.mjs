@@ -1838,6 +1838,7 @@ S('S56 codex-executor protocol pins: the untested-by-harness CLI invariants are 
   const src = readFileSync(join(dir, '..', 'agents', 'codex-executor.md'), 'utf8')
   assert.ok(src.includes('-s <sandbox_mode>'), 'constructs the sandbox flag from the brief mode (read-only | workspace-write)')
   assert.ok(/defaults to .?read-only/i.test(src) && /never escalate a read-only/i.test(src), 'defaults to read-only and never escalates a read-only brief to a writable sandbox')
+  assert.ok(/git -C <worktree>/.test(src), 'binds baseline/restore/commit git commands to the worktree (a bare git would inspect the session cwd, not the linked worktree Codex ran in)')
   assert.ok(src.includes('--output-schema') && /-o\s+<scratch>\/result\.json/.test(src), 'uses --output-schema and -o result.json (proven flag forms)')
   assert.ok(src.includes('- < <scratch>/prompt.md'), 'pipes the prompt via stdin, never as a positional arg')
   assert.ok(src.includes('model_reasoning_effort'), 'maps effort onto the model_reasoning_effort config key')

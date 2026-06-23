@@ -326,8 +326,8 @@ Run every subsequent command from inside the worktree directory (absolute path).
 Commit your work inside the worktree with a conventional message (no attribution
 footers). Do NOT push. Do NOT touch branches other than your own.`
 
-// Codex CLI protocol fragments shared by the runner (Execute) and the
-// second-model reviewer (Quality) so the two briefs cannot drift.
+// Codex CLI protocol fragments shared by the implementation dispatch (Execute)
+// and the second-model review (Quality) so the two briefs cannot drift.
 const CODEX_OUTPUT_ARGS = `--output-schema "<scratch>/schema.json" -o "<scratch>/result.json" \\
     - < "<scratch>/prompt.md"`
 const CODEX_POLL_BLOCK = `Poll command (separate foreground Bash calls, literal <scratch> path):
@@ -574,7 +574,7 @@ ${t.dossier}
 Repo conventions:
 ${recon.conventionsDigest}`
 
-const codexRunnerPrompt = (t) => `Delegate one implementation task to the Codex CLI through your mechanical protocol.
+const codexImplPrompt = (t) => `Delegate one implementation task to the Codex CLI through your mechanical protocol.
 sandbox_mode: workspace-write
 Task ${t.id}: ${t.title}
 Codex binary: ${recon.codexPath}
@@ -656,7 +656,7 @@ for (let w = 0; w < waves.length; w++) {
   const execs = await parallel(wave.map((t) => () => {
     const useCodex = t.route.executor === 'codex' && !codexBroken
     return agent(
-      useCodex ? codexRunnerPrompt(t) : claudeExecutorPrompt(t),
+      useCodex ? codexImplPrompt(t) : claudeExecutorPrompt(t),
       {
         label: `exec-${t.id}-${useCodex ? 'codex' : 'claude'}`,
         phase: 'Execute',
@@ -671,7 +671,7 @@ for (let w = 0; w < waves.length; w++) {
   // classification table: failed AND partial increment the streak; only
   // completed resets it. Any partial (codex or claude) gets a finisher; any
   // codex failure gets a claude fallback in a FRESH worktree after cleaning up
-  // whatever the dead runner may have left behind.
+  // whatever the dead codex executor may have left behind.
   const staleCleanup = (t, branch) => `
 IMPORTANT — a previous attempt at this task may have left stale state. Before
 creating your worktree, clean it up:
@@ -696,7 +696,7 @@ verify, and commit. Report "completed" only if verification passes.`
         if (codexFailStreak >= 3 && !codexBroken) { codexBroken = true; log('Circuit breaker: 3 consecutive non-completed codex results — all remaining codex tasks route to claude') }
       }
       if (status === 'failed') {
-        log(`${e.t.id}: codex failed (${e.r ? e.r.issues.join('; ') : 'runner returned null'}) — re-dispatching to claude in a fresh worktree`)
+        log(`${e.t.id}: codex failed (${e.r ? e.r.issues.join('; ') : 'codex executor returned null'}) — re-dispatching to claude in a fresh worktree`)
         retried.push(agent(
           `${staleCleanup(e.t, `wf/${SLUG}/${e.t.id.toLowerCase()}`)}\n${claudeExecutorPrompt(e.t)}`,
           { label: `exec-${e.t.id}-claude-fallback`, phase: 'Execute', agentType: 'unit-executor', model: e.t.route.model || 'sonnet', schema: EXEC_SCHEMA },
