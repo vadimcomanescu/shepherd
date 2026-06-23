@@ -214,9 +214,40 @@ const CODEX_REVIEW_SCHEMA = {
   properties: {
     ran: { type: 'boolean', description: 'false when codex could not produce a result — distinct from a clean review' },
     findings: FINDINGS_SCHEMA.properties.findings,
-    detail: { type: 'string' },
+    reason: { type: 'string', description: 'why codex was unusable when ran=false; "" on a clean run' },
   },
-  required: ['ran', 'findings', 'detail'],
+  required: ['ran', 'findings', 'reason'],
+}
+
+// Codex OUTPUT schemas: the shape codex writes to result.json, which the single
+// codex-executor serializes to schema.json for `--output-schema`. Distinct from
+// the agent-RETURN schemas (EXEC_SCHEMA, CODEX_REVIEW_SCHEMA) that the executor
+// maps codex's snake_case result onto. These two moved out of the former
+// codex-runner / codex-reviewer agents when the three Codex operators merged.
+const CODEX_REVIEW_OUTPUT_SCHEMA = {
+  type: 'object',
+  properties: {
+    findings: { type: 'array', items: { type: 'object', properties: {
+      title: { type: 'string' },
+      file: { type: 'string' },
+      line: { type: 'number' },
+      severity: { enum: ['blocking', 'suggested', 'nit'] },
+      detail: { type: 'string' },
+      failure_scenario: { type: 'string' },
+    }, required: ['title', 'file', 'line', 'severity', 'detail', 'failure_scenario'] } },
+  },
+  required: ['findings'],
+}
+const CODEX_IMPL_OUTPUT_SCHEMA = {
+  type: 'object',
+  properties: {
+    status: { enum: ['completed', 'partial', 'failed'] },
+    files_modified: { type: 'array', items: { type: 'string' } },
+    issues: { type: 'array', items: { type: 'string' } },
+    summary: { type: 'string' },
+    verification_summary: { type: 'string' },
+  },
+  required: ['status', 'files_modified', 'issues', 'summary', 'verification_summary'],
 }
 
 const FIX_SCHEMA = {
@@ -283,7 +314,7 @@ const TRIAGE_SCHEMA = {
 
 // ============================================================
 // Shared prompt blocks. Personas live in agents/*.md (task-splitter,
-// executor-router, unit-executor, codex-runner, finding-verifier), resolved
+// executor-router, unit-executor, codex-executor, finding-verifier), resolved
 // via agentType. Prompts below carry only per-run grounding.
 // ============================================================
 const WORKTREE_HOWTO = (repoRoot, integrationBranch) => `
@@ -543,14 +574,16 @@ ${t.dossier}
 Repo conventions:
 ${recon.conventionsDigest}`
 
-const codexRunnerPrompt = (t) => `
+const codexRunnerPrompt = (t) => `Delegate one implementation task to the Codex CLI through your mechanical protocol.
+sandbox_mode: workspace-write
 Task ${t.id}: ${t.title}
 Codex binary: ${recon.codexPath}
 Branch: wf/${SLUG}/${t.id.toLowerCase()}   Worktree: ${recon.repoRoot}/.worktrees/${t.id}
 ${WORKTREE_HOWTO(recon.repoRoot, INTEGRATION_BRANCH).replace(/<TASK_ID>/g, t.id).replace(/<BRANCH>/g, `wf/${SLUG}/${t.id.toLowerCase()}`)}
-Test command (for the <verify> section of the codex prompt): ${recon.testCommand}
+Test command: ${recon.testCommand}
 Scratch template for mktemp: -t ce-work-${t.id}-XXXXXX
 Wait-round cap: ${CODEX_WAIT_ROUNDS}
+Return shape: { status, branch, worktreePath, filesModified, verificationSummary, issues }. Map codex's snake_case result (files_modified -> filesModified, verification_summary -> verificationSummary), and fill branch + worktreePath from the coordinates above. Commit policy: on codex 'completed' verify the worktree changed (git status) then commit with a conventional message from the task title; on 'partial' commit "wip(${t.id}): partial — <summary>"; on 'failed' or a missing/malformed result, run the cleanup commands and return status 'failed' (carry codex's issues/summary). Never report 'completed' unless codex reported completed AND a commit now exists. Do NOT push.
 
 Launch command (run from INSIDE the worktree, literal <scratch> path substituted):
   cd ${recon.repoRoot}/.worktrees/${t.id} && ${recon.codexPath} exec \\
@@ -560,9 +593,15 @@ Launch command (run from INSIDE the worktree, literal <scratch> path substituted
 
 ${CODEX_POLL_BLOCK}
 
+output_schema (serialize to schema.json per your strict-output rules):
+${JSON.stringify(CODEX_IMPL_OUTPUT_SCHEMA, null, 2)}
+
 Cleanup commands (on failure):
   git -C "${recon.repoRoot}" worktree remove --force "${recon.repoRoot}/.worktrees/${t.id}"
   git -C "${recon.repoRoot}" branch -D "wf/${SLUG}/${t.id.toLowerCase()}"
+
+context (there is no role_file; write this into prompt.md as XML sections filled from the dossier below, then append the dossier):
+Implement this task. Fill these sections from the dossier: <task> (the goal and end state); <files> (the file list); <patterns> (patterns to follow, or "No explicit patterns referenced — follow existing conventions in the modified files."); <approach>; <constraints> (do NOT run git commit/push or create PRs; restrict modifications to the worktree; keep changes tightly scoped — no unrelated refactors; resolve the task fully before stopping; report anything you could not do via the issues field); <testing> (the dossier's test scenarios plus: cover happy/edge/error/integration and supplement gaps; work test-first — write the failing tests, run them to confirm they fail because the behavior is missing, then implement until green; never delete or weaken an existing test to get green); <verify> (run all tests together in one command using the test command above; fix and re-run until green; never report "completed" unless verification passes — the orchestrator will not re-verify); <output_contract> (fill every schema field; status "completed" ONLY if all changes made AND verification passes).
 
 <dossier>
 ${t.dossier}
@@ -621,9 +660,9 @@ for (let w = 0; w < waves.length; w++) {
       {
         label: `exec-${t.id}-${useCodex ? 'codex' : 'claude'}`,
         phase: 'Execute',
-        agentType: useCodex ? 'codex-runner' : 'unit-executor',
+        agentType: useCodex ? 'codex-executor' : 'unit-executor',
         schema: EXEC_SCHEMA,
-        model: useCodex ? 'sonnet' : (t.route.model || 'sonnet'), // runner is mechanical; claude executor uses the routed tier (never inherits the session model)
+        model: useCodex ? 'sonnet' : (t.route.model || 'sonnet'), // codex-executor is mechanical; claude executor uses the routed tier (never inherits the session model)
       },
     ).then((r) => ({ t, usedCodex: useCodex, r }))
   }))
@@ -914,21 +953,29 @@ if (codexUsable && !codexBroken) {
   reviewers.push({
     key: 'codex',
     spawn: () => agent(
-      `Run the Codex CLI as a read-only second-model reviewer.
+      `Run the Codex CLI as a read-only second-model reviewer through your mechanical protocol.
+sandbox_mode: read-only
 Codex binary: ${recon.codexPath}
 Worktree: ${INTEGRATION_WT}   Branch: ${INTEGRATION_BRANCH}   Base: ${BASE} (diff origin/${BASE}...HEAD, fall back to ${BASE})
 The work implements the plan at ${PLAN}.
 Scratch template for mktemp: -t ce-review-${SLUG}-XXXXXX
 Wait-round cap: 10
+Return shape: { ran, findings, reason } — reason carries why codex was unusable when ran=false, "" on a clean run.
 
 Launch command (run from INSIDE the worktree, literal <scratch> path substituted):
   cd ${INTEGRATION_WT} && ${recon.codexPath} exec -s read-only \\
     ${CODEX_OUTPUT_ARGS}
 
-${CODEX_POLL_BLOCK}`,
-      { label: 'review-codex', phase: 'Quality', agentType: 'codex-reviewer', model: 'sonnet', schema: CODEX_REVIEW_SCHEMA }, // protocol operator is mechanical; codex does the reviewing
+${CODEX_POLL_BLOCK}
+
+output_schema (serialize to schema.json per your strict-output rules):
+${JSON.stringify(CODEX_REVIEW_OUTPUT_SCHEMA, null, 2)}
+
+context (there is no role_file; write this verbatim into prompt.md as the review instructions):
+Review the diff between the base and HEAD in the worktree (git diff ${BASE}...HEAD, fall back to ${BASE}), reading surrounding code as needed. Hunt specifically for logic errors, broken edge cases, contract violations, and risky changes a reviewer from the authoring model family might rationalize away. Each finding MUST carry: title; file; line (0 when no specific line applies); severity (blocking | suggested | nit); failure_scenario (the concrete inputs/state that produce the wrong outcome — for cleanup-style findings, state the concrete cost instead of a crash); and enough detail that a fixer who has not seen the reasoning can act. Pass every candidate with a nameable failure scenario through — do not silently drop half-believed candidates; an independent verifier judges them next. Style nits without consequence are not findings. The review is READ-ONLY: no edits, no commits.`,
+      { label: 'review-codex', phase: 'Quality', agentType: 'codex-executor', model: 'sonnet', schema: CODEX_REVIEW_SCHEMA }, // the single mechanical codex operator; codex does the reviewing
     ).then((r) => {
-      if (r && !r.ran) log(`Codex second-model review did not run: ${r.detail}`)
+      if (r && !r.ran) log(`Codex second-model review did not run: ${r.reason}`)
       return r && r.ran ? { findings: r.findings } : null
     }),
   })
