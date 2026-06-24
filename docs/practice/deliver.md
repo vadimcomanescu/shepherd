@@ -1,6 +1,6 @@
 # shepherd-deliver: the delivery pipeline
 
-`shepherd-deliver` is one of the two coordinator scripts that make up the Shepherd practice. It takes a committed `ce-plan` plan document (the kind [`shepherd-plan`](./plan.md) produces) and drives it to a pull request: split each plan unit into context-window-sized tasks, route each task to a Codex or Claude executor, build them test-first in isolated git worktrees, merge them in dependency order, then review, validate, browser-proof, document, ship, and watch CI. The whole thing runs unattended; anything it cannot resolve becomes a durable residual in the PR body rather than a silent drop or a blocking question.
+`shepherd-deliver` is one of the two coordinator scripts that make up the Shepherd practice. It takes a committed plan document in the Shepherd plan format (the kind [`shepherd-plan`](./plan.md) produces) and drives it to a pull request: split each plan unit into context-window-sized tasks, route each task to a Codex or Claude executor, build them test-first in isolated git worktrees, merge them in dependency order, then review, validate, browser-proof, document, ship, and watch CI. The whole thing runs unattended; anything it cannot resolve becomes a durable residual in the PR body rather than a silent drop or a blocking question.
 
 It is implemented as a dynamic-workflow coordinator: a JavaScript script body that orchestrates context-less agents and does no real-world I/O itself. If that substrate is unfamiliar, read [the dynamic-workflow docs](../workflows/README.md) first. This page is the deep dive on the delivery script (`workflows/shepherd-deliver.js`) and the agents it dispatches. For the agent fleet catalog see [`./fleet.md`](./fleet.md); for the executor/model routing rubric see [`./routing.md`](./routing.md); for the verification doctrine see [`./verification.md`](./verification.md).
 
@@ -16,20 +16,20 @@ All coordinator input arrives through `args` (the script body reads nothing from
 
 | Arg | Default | Meaning |
 |-----|---------|---------|
-| `plan` | required | Path to the `ce-plan` document to execute. Absent, the script throws before doing anything. |
+| `plan` | required | Path to the Shepherd-plan-format document to execute. Absent, the script throws before doing anything. |
 | `planVersion` | `unversioned` | A hash or mtime for the plan file. **Pass a NEW value whenever you edit the plan**, so a resumed run re-parses it instead of replaying a stale cached parse. |
 | `base` | `recon.defaultBranch` | Base branch to fork the integration branch from. |
 | `slug` | `planDoc.slug` | Branch slug. Defaults to a kebab-case slug derived from the plan title. |
 | `codex` | `true` | Whether the Codex executor is permitted. `CODEX_ENABLED = args.codex !== false`. |
 | `sandbox` | `yolo` | Codex sandbox mode: `yolo` (`--dangerously-bypass-approvals-and-sandbox`) or `full-auto` (`-s workspace-write`). |
-| `effortFloor` | from config | Minimum Codex reasoning effort: `minimal` / `low` / `medium` / `high` / `xhigh`. If unset, read from `.compound-engineering/config.local.yaml` (`work_delegate_effort`). |
+| `effortFloor` | none | Minimum Codex reasoning effort: `minimal` / `low` / `medium` / `high` / `xhigh`. If unset, no floor is applied and the router's pick stands. |
 | `proof` | `true` | Whether the Proof phase browser-tests affected routes. |
 | `ship` | `true` | Whether to commit, push, and open a PR. **`ship: true` IS the consent to push and open a PR.** |
 | `compound` | `true` | Whether the Compound phase documents solved problems under `docs/solutions/`. |
 | `ciRounds` | `3` | Max CI watch-fix-push iterations, hard-clamped to 1..10 so a bad arg cannot unbound the loop. |
 | `repo` | session cwd | Target repository (not in the `whenToUse` contract). When set, every agent dispatch is prefixed with a `TARGET REPOSITORY` grounding block so agents resolve all paths against it. |
 
-`effortFloor` resolution: `args.effortFloor` wins over the config value. When a floor is set, the router's `default` pick is substituted to `medium`, then `max(pick, floor)` wins on the scale `minimal < low < medium < high < xhigh`. One other input, `codexWaitRounds`, is used internally as the per-Codex-task poll-round cap. `startedAt` appears in the `meta.whenToUse` descriptor but is not currently read by the script body. Neither is part of the documented contract.
+`effortFloor` resolution: the floor comes only from `args.effortFloor`. When a floor is set, the router's `default` pick is substituted to `medium`, then `max(pick, floor)` wins on the scale `minimal < low < medium < high < xhigh`; with no floor set, the router's pick stands unchanged. One other input, `codexWaitRounds`, is used internally as the per-Codex-task poll-round cap. `startedAt` appears in the `meta.whenToUse` descriptor but is not currently read by the script body. Neither is part of the documented contract.
 
 The codex availability the rest of the run depends on is a three-way AND: `codexUsable = CODEX_ENABLED && recon.codexAvailable && !recon.insideCodexSandbox`. Even with `codex: true`, Codex is off when it is not installed or when the run is itself already inside a Codex sandbox.
 
@@ -38,7 +38,7 @@ The codex availability the rest of the run depends on is a three-way AND: `codex
 ## The 12 phases
 
 ```
-plan doc (ce-plan)
+plan doc (Shepherd plan format)
       |
       v
   +---------+   parse plan -> units(U-IDs)+requirements(R-IDs)+riskSurfaces;
@@ -117,7 +117,7 @@ Personas do not carry an intrinsic model tier from their file, with one exceptio
 Two agents run in parallel (the only strict barrier in this region of the script, justified because both Setup and Split need both results):
 
 - **parse-plan** (inline, `sonnet`, `UNITS_SCHEMA`) reads the plan document at `args.plan` and extracts it: `planTitle`, `slug`, `riskSurfaces` (a subset of `auth`, `payments`, `migrations`, `crypto`, `public-api`, `deps`), plan-level `requirements` (each an `{id, text}` R-ID), `deferredQuestions`, `scopeBoundaries`, and every implementation unit. The prompt passes `args.planVersion` to bust a stale cache, and instructs the agent to quote field text rather than paraphrase. If the file is missing or carries `execution: knowledge-work` frontmatter, it returns zero units and explains in `planTitle`. Each unit carries `uid` (the U-ID, e.g. `U3`), `name`, `goal`, `dependsOn` (other U-IDs), `files`, `approach`, optional `executionNote`, `patterns`, `testScenarios`, and `verification`.
-- **repo-recon** (inline, `sonnet`, `RECON_SCHEMA`) probes the repository: `repoRoot`, `defaultBranch`, `baselineClean` (is `git diff --quiet HEAD` clean on the main checkout), the real `testCommand` and `lintCommand`, a `conventionsDigest` (<=20 lines distilled from `AGENTS.md`/`CLAUDE.md`), `codexAvailable`/`codexPath`, `effortFloor` (from `.compound-engineering/config.local.yaml`), `insideCodexSandbox` (true when `$CODEX_SANDBOX` or `$CODEX_SESSION_ID` is set), `ceSkillsRoot` (the highest-installed compound-engineering plugin's `skills/` dir), `agentBrowserAvailable`, and `ghAvailable`.
+- **repo-recon** (inline, `sonnet`, `RECON_SCHEMA`) probes the repository: `repoRoot`, `defaultBranch`, `baselineClean` (is `git diff --quiet HEAD` clean on the main checkout), the real `testCommand` and `lintCommand`, a `conventionsDigest` (<=20 lines distilled from `AGENTS.md`/`CLAUDE.md`), `codexAvailable`/`codexPath`, `insideCodexSandbox` (true when `$CODEX_SANDBOX` or `$CODEX_SESSION_ID` is set), `agentBrowserAvailable`, and `ghAvailable`.
 
 Recon is inline (no persona file). After it, the script throws if either agent returned null, if no units were extracted, or if the main checkout has uncommitted tracked changes (commit or stash first). It then computes `codexUsable`, derives `SLUG` and `BASE`, the effort floor, `INTEGRATION_BRANCH = feat/<slug>`, and `INTEGRATION_WT = <repoRoot>/.worktrees/<slug>`.
 
@@ -171,7 +171,7 @@ The integrator (inline, `sonnet`, `MERGE_SCHEMA`) runs `git merge --no-ff <branc
 Two between-wave behaviors:
 
 - **Wave-boundary triage** (inline, `TRIAGE_SCHEMA`) fires when executor discoveries exist AND tasks remain. It is a stop-loss, not re-planning: it halts ONLY when a discovery falsifies a premise the remaining tasks are built on (a module they extend turns out not to exist, an API contract they assume is wrong, the capability they add already exists). Routine friction continues; the plan was human-reviewed, so executing it is the default and halting hands the decision back to the human (who edits the plan and re-runs with a new `planVersion`).
-- **Simplify-as-you-go**: after a wave that merged 2 or more tasks (and is not the final wave), an inline simplify agent (`SIMPLIFY_SCHEMA`) consolidates duplication on the integration branch via the `ce-simplify-code` skill (or its inline fallback when the plugin is absent) BEFORE the next wave's worktrees fork from it. Behavior preservation is non-negotiable, and dead-code deletion requires a grep for remaining references; candidates it keeps are recorded in `kept` and surfaced as PR residuals. The final wave is covered by the Quality simplify instead.
+- **Simplify-as-you-go**: after a wave that merged 2 or more tasks (and is not the final wave), an inline simplify agent (`SIMPLIFY_SCHEMA`) consolidates duplication on the integration branch under inline simplify doctrine carried in the coordinator BEFORE the next wave's worktrees fork from it. Behavior preservation is non-negotiable, and dead-code deletion requires a grep for remaining references; candidates it keeps are recorded in `kept` and surfaced as PR residuals. The final wave is covered by the Quality simplify instead.
 
 If no task merged at all, the script throws (nothing to review). If the run halted (plan invalidated or budget exhausted), Quality and Validate are skipped and the branch holds the merged partial work for the human.
 
@@ -183,15 +183,15 @@ The **reviewer roster** is assembled, then fanned out:
 
 | Reviewer | Type | Condition |
 |----------|------|-----------|
-| correctness, maintainability, testing, standards | compound-engineering persona reviewers (`agentType`) | always |
-| security | `ce-security-reviewer` | `riskSurfaces` includes auth/payments/crypto/public-api |
-| migrations | `ce-data-migration-reviewer` | `riskSurfaces` includes migrations |
-| api-contract | `ce-api-contract-reviewer` | `riskSurfaces` includes public-api |
-| adversarial | `ce-adversarial-reviewer` | changed lines >=50 OR auth/payments |
+| correctness, maintainability, testing, standards | Shepherd persona reviewers (`correctness-reviewer`, `maintainability-reviewer`, `testing-reviewer`, `standards-reviewer`, via `agentType`) | always |
+| security | `security-reviewer` | `riskSurfaces` includes auth/payments/crypto/public-api |
+| migrations | `data-migration-reviewer` | `riskSurfaces` includes migrations |
+| api-contract | `api-contract-reviewer` | `riskSurfaces` includes public-api |
+| adversarial | `adversarial-reviewer` | changed lines >=50 OR auth/payments |
 | codex | `codex-executor` persona in `read-only` mode (`sonnet`, second model family) | `codexUsable && !codexBroken` |
 | removed-behavior, cross-file | inline single-angle prompts (no persona) | always |
 
-The persona reviewers are external compound-engineering reviewer agents reached via `agentType`. The `codex-executor` (in `read-only` mode) runs the Codex CLI read-only over the diff as a different model family (it catches what same-family review rationalizes away); its findings face the same Claude verifier as everyone else's. Each reviewer produces `FINDINGS_SCHEMA` findings, each with a `failure_scenario` (concrete inputs/state that produce the wrong outcome, or the concrete cost for cleanup-style findings).
+The persona reviewers are Shepherd's own sovereign code-review fleet — the eight `agents/*-reviewer.md` files — reached via `agentType`. The `codex-executor` (in `read-only` mode) runs the Codex CLI read-only over the diff as a different model family (it catches what same-family review rationalizes away); its findings face the same Claude verifier as everyone else's. Each reviewer produces `FINDINGS_SCHEMA` findings, each with a `failure_scenario` (concrete inputs/state that produce the wrong outcome, or the concrete cost for cleanup-style findings).
 
 Findings stream through **proximity dedup** as each reviewer completes (the dedup runs inside the reviewer pipeline, so a duplicate never consumes a verifier slot). Two findings are the same defect when they share a file AND either both have line numbers within 5 of each other, or (when at least one is line-less) their normalized titles share a real 30-char prefix, falling back to exact title equality for short titles. A duplicate is absorbed into the kept entry, merging severities and write-ups; a blocking duplicate can escalate a suggested entry (refunding its slot) and even revive a previously refuted or budget-dropped entry for re-verification with the merged evidence.
 
@@ -224,19 +224,19 @@ The independent **ship-gate recheck** described under Ship is a second, fresh-co
 
 ### Proof
 
-Gated on `args.proof`, green validation, `agent-browser` availability, and budget (in that order; each failed gate sets a `skipped` proof object with the reason). When it runs, an inline proof agent (`sonnet`, `PROOF_SCHEMA`) browser-tests the affected routes following the `ce-test-browser` skill, or its baked-in inline fallback when the plugin is absent (`mode:pipeline`: port detection, dev-server auto-start, mapping changed files to routes, per-route checks with the `agent-browser` CLI). It returns `not-applicable` when no changed file maps to a route (it does not invent routes) and `tool-missing` when `agent-browser` is unusable.
+Gated on `args.proof`, green validation, `agent-browser` availability, and budget (in that order; each failed gate sets a `skipped` proof object with the reason). When it runs, an inline proof agent (`sonnet`, `PROOF_SCHEMA`) browser-tests the affected routes following the proof doctrine the coordinator carries inline (port detection, dev-server auto-start, mapping changed files to routes, per-route checks with the `agent-browser` CLI). It returns `not-applicable` when no changed file maps to a route (it does not invent routes) and `tool-missing` when `agent-browser` is unusable.
 
 On route failures it runs **exactly one** fix round: a proof-fix agent diagnoses the root cause and commits (reporting `committed` only if a commit now exists), then a proof-retest re-checks the previously failing routes. Because that fix committed code after the final validation, the full validation is re-run (`proof-revalidate`), failing closed if the re-validation agent dies. If no fix lands, the honest failure is kept (retesting identical code invites a flaky pass masquerading as a fix), and the failures become PR residuals.
 
 ### Compound
 
-Gated on `args.compound`, passing tests, and budget. It runs BEFORE Ship deliberately, so the docs commit rides the one push (a post-ship push would restart CI from zero). An inline compound agent (`sonnet`, `COMPOUND_SCHEMA`) documents non-trivial solved-and-verified problems from the run under `docs/solutions/` following the `ce-compound` skill (or its inline fallback when the plugin is absent), committing `docs(solutions): compound learnings from <slug>` but NOT pushing. Candidate material the coordinator hands it (tasks recovered via fallback/finisher, fixed review findings, a successful proof fix) is flagged as a self-report requiring confirmation against the actual commits. A routine run with no surprises documents nothing. An inline `audit-compound` agent then verifies each claimed path exists, is committed, and has parseable frontmatter, demoting any that fail.
+Gated on `args.compound`, passing tests, and budget. It runs BEFORE Ship deliberately, so the docs commit rides the one push (a post-ship push would restart CI from zero). An inline compound agent (`sonnet`, `COMPOUND_SCHEMA`) documents non-trivial solved-and-verified problems from the run under `docs/solutions/` following the compound doctrine the coordinator carries inline, committing `docs(solutions): compound learnings from <slug>` but NOT pushing. Candidate material the coordinator hands it (tasks recovered via fallback/finisher, fixed review findings, a successful proof fix) is flagged as a self-report requiring confirmation against the actual commits. A routine run with no surprises documents nothing. An inline `audit-compound` agent then verifies each claimed path exists, is committed, and has parseable frontmatter, demoting any that fail.
 
 ### Ship
 
 `ship: true` is the consent to push and open a PR. The phase is gated on `args.ship`, a validation result, both tests and lint green, and budget. The push is the one irreversible step, so it is fronted by the independent **`gate-recheck`** agent (inline, `sonnet`): a fresh context runs exactly the test and lint commands and reports their exit codes. If it dies or contradicts validation, the branch is left unpushed (fail closed).
 
-Past the gate, an inline ship agent (`sonnet`, `SHIP_SCHEMA`) ships via the `ce-commit-push-pr` skill (or its inline fallback when the plugin is absent): flip the plan's frontmatter `status: active` to `status: completed` inside the worktree (skipping if the plan file is not found under the worktree, and never editing files outside it), commit any uncommitted changes by name, push, and create or update the PR. The PR body must contain, verbatim, a `## Requirements` section (per-R-ID verdict and evidence), an `## Evidence` section (tests, lint, browser proof), a conditional `## Residuals` section (every residual category below), and a `## Post-Deploy Monitoring & Validation` section. After it self-reports, an inline `ship-verify` agent independently observes the actual remote state (`git fetch` + HEAD vs `@{u}`, and `gh pr view`); on contradiction, the observed state overrides the self-report, since `pushed`/`prUrl` gate the CI phase.
+Past the gate, an inline ship agent (`sonnet`, `SHIP_SCHEMA`) ships under the commit/push/open-PR doctrine the coordinator carries inline: flip the plan's frontmatter `status: active` to `status: completed` inside the worktree (skipping if the plan file is not found under the worktree, and never editing files outside it), commit any uncommitted changes by name, push, and create or update the PR. The PR body must contain, verbatim, a `## Requirements` section (per-R-ID verdict and evidence), an `## Evidence` section (tests, lint, browser proof), a conditional `## Residuals` section (every residual category below), and a `## Post-Deploy Monitoring & Validation` section. After it self-reports, an inline `ship-verify` agent independently observes the actual remote state (`git fetch` + HEAD vs `@{u}`, and `gh pr view`); on contradiction, the observed state overrides the self-report, since `pushed`/`prUrl` gate the CI phase.
 
 ### CI
 
@@ -266,14 +266,9 @@ The full run summary returned by the coordinator carries the same information st
 
 ---
 
-## External skills this pipeline depends on
+## Self-contained doctrine and reviewer fleet
 
-Several phases delegate to the **`ce-*`** skill family, which is an **externally installed** dependency (the compound-engineering plugin), not files in this repo. The deliver pipeline depends on:
+The deliver pipeline depends on no external plugin. Its review and tail-phase doctrine ships in this repo.
 
-- **`ce-simplify-code`**: the simplify-as-you-go (Integrate) and Quality simplify passes.
-- **`ce-test-browser`**: the Proof phase browser run (`mode:pipeline`).
-- **`ce-compound`**: the Compound phase solution docs (`mode:headless`).
-- **`ce-commit-push-pr`**: the Ship phase commit/push/PR mechanics.
-- The compound-engineering **reviewer family** (`ce-correctness-reviewer`, `ce-maintainability-reviewer`, `ce-testing-reviewer`, `ce-project-standards-reviewer`, `ce-security-reviewer`, `ce-data-migration-reviewer`, `ce-api-contract-reviewer`, `ce-adversarial-reviewer`): the Quality persona reviewers, reached via `agentType`.
-
-The four `skillGuide()` skill call sites (`ce-simplify-code`, `ce-test-browser`, `ce-compound`, `ce-commit-push-pr`) each supply an inline fallback, so those phases still run in degraded form when the plugin is not installed; recon's `ceSkillsRoot` and `agentBrowserAvailable` flags decide which path is taken, and skill paths resolve from the highest installed plugin version under the session's plugin cache. The Quality **reviewer family** (reached via `agentType`) is the exception: it has no inline fallback and no `ceSkillsRoot` guard today, so without the plugin the Quality phase loses its structured persona-review roster. That hard coupling, and the plan to make the product plugin-independent, is tracked in [#26](https://github.com/vadimcomanescu/shepherd/issues/26).
+- **Tail-phase doctrine, inline in the coordinator.** The simplify-as-you-go and Quality simplify passes, the Proof phase browser run, the Compound phase solution docs, and the Ship phase commit/push/PR mechanics each carry their rules as inline prompt text written at the dispatch site. There is no SKILL.md probe and no fallback path, because there is nothing external to fall back from.
+- **The Quality reviewer fleet, Shepherd's own personas.** The eight `agents/*-reviewer.md` files are dispatched via `agentType`: the always-on quartet `correctness-reviewer`, `maintainability-reviewer`, `testing-reviewer`, `standards-reviewer`, plus the conditional `security-reviewer`, `data-migration-reviewer`, `api-contract-reviewer`, and `adversarial-reviewer`. They are sovereign files in this repo, so the Quality phase's structured persona-review roster always resolves.

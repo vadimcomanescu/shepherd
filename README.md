@@ -119,8 +119,8 @@ Each clause below is one phase from the coordinator's `meta.phases`. The deep di
 
 Two boundaries worth stating up front:
 
-- **Inline-prompt agents are not personas.** On the plan side every dispatch now carries an `agentType` backed by a file in [`agents/`](agents/) — there are no inline-prompt agents left there. The deliver coordinator deliberately keeps some (repo-recon, integration merges, the diffstat and sweep, per-file fixes, ship-verify): a label and a schema only, no `agentType` and no file. The 33 files in [`agents/`](agents/) are the personas; an inline-prompt agent is any dispatch with no `agents/<name>.md` behind it.
-- **The `ce-*` skills are an external dependency, not files here.** Phases like Compound, Proof, and Ship lean on externally-installed compound-engineering skills (`ce-simplify-code`, `ce-test-browser`, `ce-compound`, `ce-commit-push-pr`, and a reviewer family). The 6 skills under [`skills/`](skills/) are this repo's own.
+- **Inline-prompt agents are not personas.** On the plan side every dispatch now carries an `agentType` backed by a file in [`agents/`](agents/) — there are no inline-prompt agents left there. The deliver coordinator deliberately keeps some (repo-recon, integration merges, the diffstat and sweep, per-file fixes, ship-verify): a label and a schema only, no `agentType` and no file. The files in [`agents/`](agents/) are the personas; an inline-prompt agent is any dispatch with no `agents/<name>.md` behind it.
+- **Shepherd is self-contained — no other plugin required.** The deliver Quality phase reviews with Shepherd's own code-review fleet (`agents/*-reviewer.md`), and the tail phases (simplify-as-you-go, browser-proof, compound, commit/push/PR) carry their doctrine inline in the coordinator. Shepherd installs and runs standalone with zero dependency on any external plugin.
 
 ## Start here
 

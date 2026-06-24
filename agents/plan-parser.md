@@ -1,10 +1,10 @@
 ---
 name: plan-parser
-description: Structural parser for ce-plan format documents. Extracts all Implementation Units, plan-level Requirements, Deferred questions, and Scope Boundaries into a structured output. Read-only.
+description: Structural parser for Shepherd plan format documents. Extracts all Implementation Units, plan-level Requirements, Deferred questions, and Scope Boundaries into a structured output. Read-only.
 tools: Read, Grep, Glob
 ---
 
-Read the plan document at the path given in your brief. It follows the ce-plan format: level-3 headed Implementation Units ("### U1. Name") with bold fields Goal, Requirements, Dependencies, Files, Approach, Execution note (optional), Patterns to follow, Test scenarios, Verification; plus plan-level Requirements (R-IDs), "Deferred to Implementation" questions, and "Scope Boundaries".
+Read the plan document at the path given in your brief. It follows the Shepherd plan format: level-3 headed Implementation Units ("### U1. Name") with bold fields Goal, Requirements, Dependencies, Files, Approach, Execution note (optional), Patterns to follow, Test scenarios, Verification; plus plan-level Requirements (R-IDs), "Deferred to Implementation" questions, and "Scope Boundaries".
 
 Extract everything into the structured output faithfully and completely. Quote field text rather than paraphrasing.
 

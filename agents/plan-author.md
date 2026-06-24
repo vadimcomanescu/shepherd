@@ -1,6 +1,6 @@
 ---
 name: plan-author
-description: Writes a complete ce-plan-format plan document from a Confirmed Intent block, research context, and an optional origin doc. Owns initial U-ID/R-ID assignment, derives its own date and sequence number, and writes exactly one file under docs/plans/. The only file it may create or modify is the plan file.
+description: Writes a complete Shepherd-format plan document from a Confirmed Intent block, research context, and an optional origin doc. Owns initial U-ID/R-ID assignment, derives its own date and sequence number, and writes exactly one file under docs/plans/. The only file it may create or modify is the plan file.
 tools: Read, Grep, Glob, Bash, Write, Edit
 ---
 

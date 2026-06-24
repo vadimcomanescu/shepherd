@@ -237,7 +237,7 @@ S('S1 happy path / anti-churn THRESHOLD', async () => {
   assert.equal(result.depthTier, 'standard')
   assert.equal(result.unitCount, 4)
   assert.equal(result.requirementCount, 2)
-  assert.ok(result.nextStep.includes('git add') && result.nextStep.includes('shepherd-deliver') && result.nextStep.includes('abc123'), 'nextStep carries commit hint + ce-work invocation + planVersion')
+  assert.ok(result.nextStep.includes('git add') && result.nextStep.includes('shepherd-deliver') && result.nextStep.includes('abc123'), 'nextStep carries commit hint + shepherd-deliver invocation + planVersion')
   assert.deepEqual([...new Set(trace.phases)], ['Intake', 'Research', 'Gate', 'Draft', 'Review', 'Gates', 'Finalize'])
   assert.ok(!trace.logs.some((m) => /verified agent registry/.test(m)), 'no stale registry-gap log')
   return `${trace.calls.length} agent calls, ready in round 1 with zero churn`
@@ -561,7 +561,7 @@ S('S14 commit:false vs commit:true vs hygiene violation', async () => {
   assert.ok(!a.trace.calls.some((c) => c.label === 'commit-plan'))
   assert.equal(a.result.committed, false)
   assert.ok(a.result.nextStep.includes('git add ' + PLAN_PATH))
-  // (b) commit:true -> commit before hygiene, bare ce-work nextStep
+  // (b) commit:true -> commit before hygiene, bare shepherd-deliver nextStep
   const b = await run(makeDispatcher(), { args: { ...ARGS, commit: true } })
   assert.ifError(b.error)
   assert.equal(b.result.committed, true)
@@ -1395,10 +1395,14 @@ S('S38 verbatim-surface pins: GATE_AUTHORITY (both dispatches), research-cap log
 // and is excluded from the 40-80 band assertion.
 const DOCTRINE_SKILLS = ['decomposition', 'interface-design', 'scoping', 'test-strategy', 'zero-context-planning']
 
-S('S39 rented-dispatch pin: coordinator contains zero compound-engineering: references', async () => {
-  const hits = (scriptSrc.match(/compound-engineering:/g) || []).length
-  assert.strictEqual(hits, 0, `Expected 0 occurrences of 'compound-engineering:' in coordinator source, found ${hits}`)
-  return 'coordinator source is free of compound-engineering: plugin-namespaced dispatches'
+S('S39 sovereignty pin: coordinator source carries zero external-plugin coupling', async () => {
+  const ce = (scriptSrc.match(/compound-engineering/g) || []).length
+  const ceDash = (scriptSrc.match(/\bce-[a-z]/g) || []).length
+  const lfg = (scriptSrc.match(/\blfg\b/g) || []).length
+  assert.strictEqual(ce, 0, `Expected 0 'compound-engineering' in coordinator source, found ${ce}`)
+  assert.strictEqual(ceDash, 0, `Expected 0 'ce-*' references in coordinator source, found ${ceDash}`)
+  assert.strictEqual(lfg, 0, `Expected 0 'lfg' lineage references in coordinator source, found ${lfg}`)
+  return 'coordinator source is sovereign: no compound-engineering / ce-* / lfg references'
 })
 
 S('S40 persona-on-disk pin: every dispatched agentType has a backing agents/*.md file', async () => {
@@ -1434,6 +1438,29 @@ S('S41 no-dangling-skills pin: every skills/ reference in agents/*.md has a skil
     assert.ok(existsSync(skillMd), `skills/${name}/SKILL.md not found (referenced in agents/*.md)`)
   }
   return `${allRefs.size} skill reference(s) all resolve to SKILL.md: ${[...allRefs].join(', ')}`
+})
+
+S('S41b plugin-namespace pin: agentNamespace/shepherdRoot namespace every Shepherd dispatch and root every prompt', async () => {
+  // Installed-as-a-plugin path: the skill passes agentNamespace + shepherdRoot.
+  const ns = await run(makeDispatcher(), { args: { ...ARGS, agentNamespace: 'shepherd', shepherdRoot: '/cache/shepherd' } })
+  assert.ifError(ns.error)
+  const typed = ns.trace.calls.filter((c) => c.agentType)
+  assert.ok(typed.length > 0, 'at least one agentType dispatched')
+  const agentsDir = join(dir, '..', 'agents')
+  for (const c of typed) {
+    assert.ok(c.agentType.startsWith('shepherd:'), `dispatch ${c.label} agentType ${c.agentType} is not namespaced`)
+    const bare = c.agentType.slice('shepherd:'.length)
+    assert.ok(existsSync(join(agentsDir, `${bare}.md`)), `agents/${bare}.md missing for namespaced agentType ${c.agentType}`)
+  }
+  const ungrounded = ns.trace.calls.filter((c) => !c.prompt.startsWith('SHEPHERD HOME: /cache/shepherd\n'))
+  assert.deepEqual(ungrounded.map((c) => c.label), [], 'every prompt carries the SHEPHERD HOME grounding rooted at shepherdRoot')
+  // Portability is opt-in: the bare default run (no args) namespaces nothing and injects no home block,
+  // so direct in-repo invocation and the rest of this suite keep the home-repo behavior verbatim.
+  const bareRun = await run(makeDispatcher())
+  assert.ifError(bareRun.error)
+  assert.ok(!bareRun.trace.calls.some((c) => c.agentType && c.agentType.includes(':')), 'no namespaced agentType in the default run')
+  assert.ok(!bareRun.trace.calls.some((c) => c.prompt.includes('SHEPHERD HOME:')), 'no SHEPHERD HOME block in the default run')
+  return `${typed.length} dispatches namespaced shepherd: and rooted at shepherdRoot; default run stays bare`
 })
 
 S('S42 budget pin: trace-derived persona fleet < 1471 lines; doctrine skills each 40-80 lines', async () => {

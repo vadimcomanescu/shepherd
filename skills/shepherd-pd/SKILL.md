@@ -1,6 +1,6 @@
 ---
 name: shepherd-pd
-description: Run the Shepherd plan -> deliver practice from one entry point. Invoke for "/shepherd-pd plan <request>", "/shepherd-pd deliver <plan-path>", or "/shepherd-pd plan-deliver <request>" to produce a ce-plan document, drive a committed plan to a pull request, or do both in sequence with the handoff automated.
+description: Run the Shepherd plan -> deliver practice from one entry point. Invoke for "/shepherd-pd plan <request>", "/shepherd-pd deliver <plan-path>", or "/shepherd-pd plan-deliver <request>" to produce a Shepherd plan document, drive a committed plan to a pull request, or do both in sequence with the handoff automated.
 argument-hint: "[plan|deliver|plan-deliver] <request | plan-path> [flags…]"
 disable-model-invocation: true
 allowed-tools: Workflow, Read, Bash(git hash-object:*), Bash(git rev-parse:*)
@@ -17,19 +17,30 @@ Calling the `Workflow` tool from this skill is the explicit opt-in to multi-agen
 orchestration — that is the whole point of invoking `/shepherd-pd`. Run the
 coordinator named for the mode; do not reimplement its logic inline.
 
-## Bundled coordinator scripts
+## Bundled coordinator scripts + namespace resolution
 
-These resolve whether this skill runs in its home repo or is installed as a
-plugin (the path is the skill's own directory, with `workflows/` symlinked in):
+The coordinators, the agent fleet they dispatch, and the doctrine skills the plan
+author reads all ship inside this plugin. Resolve their install root and Shepherd's
+agent namespace **once, here**, and feed both into every `Workflow` call below.
+When Shepherd runs as an installed plugin (marketplace or `--plugin-dir`),
+`CLAUDE_PLUGIN_ROOT` points at the install root and the agents resolve under the
+`shepherd:` namespace; in a plain checkout of this repo it is unset and the agents
+are bare-named. The coordinators default to bare/relative, so the values below are
+what makes a plugin install actually dispatch its own fleet.
 
-- plan coordinator: `${CLAUDE_SKILL_DIR}/workflows/shepherd-plan.js`
-- deliver coordinator: `${CLAUDE_SKILL_DIR}/workflows/shepherd-deliver.js`
+Run this once and reuse its output (it prints `shepherdRoot`, `agentNamespace`, and
+the two coordinator paths; if either path is missing, stop and report it):
+!`ROOT="${CLAUDE_PLUGIN_ROOT:-${CLAUDE_PROJECT_DIR:-$PWD}}"; NS=""; [ -n "$CLAUDE_PLUGIN_ROOT" ] && NS="shepherd"; printf 'shepherdRoot=%s\nagentNamespace=%s\n' "$ROOT" "$NS"; ls -1 "$ROOT/workflows/shepherd-plan.js" "$ROOT/workflows/shepherd-deliver.js" 2>&1`
 
-Verification (must list two real files; if either is missing, stop and report it):
-!`ls -1 "${CLAUDE_SKILL_DIR}/workflows/shepherd-plan.js" "${CLAUDE_SKILL_DIR}/workflows/shepherd-deliver.js" 2>&1`
+From that output:
 
-Pass these exact paths as the `Workflow` tool's `scriptPath`. Do **not** pass
-`name:` — name-resolution only works in the home repo and breaks once installed.
+- Pass the printed `shepherd-plan.js` / `shepherd-deliver.js` path as the `Workflow`
+  tool's `scriptPath`. Do **not** pass `name:` — name-resolution breaks once installed.
+- Pass `shepherdRoot` and `agentNamespace` (verbatim; `agentNamespace` may be empty)
+  in the `Workflow` `args` for **both** coordinators. They tell the coordinator how to
+  reach Shepherd's own agent fleet (`shepherd:`-namespaced when installed) and doctrine
+  files (under `shepherdRoot`) from inside any repo. Omitting them breaks every agent
+  dispatch when Shepherd runs as an installed plugin.
 
 ## Step 1 — Pick the mode
 
@@ -65,6 +76,8 @@ it a re-run after the origin doc is edited replays stale cached research.
 Workflow({
   scriptPath: "<shepherd-plan.js path printed above>",
   args: {
+    shepherdRoot: "<shepherdRoot printed above>",
+    agentNamespace: "<agentNamespace printed above — may be empty>",
     request: "<payload, when it is a request>",
     // OR origin: "<payload, when it is a doc path>",
     //    with origin, also: originVersion: "<git hash-object of the origin doc>"
@@ -103,6 +116,8 @@ Use that `git hash-object` value as `planVersion` unless the user supplied one.
 Workflow({
   scriptPath: "<shepherd-deliver.js path printed above>",
   args: {
+    shepherdRoot: "<shepherdRoot printed above>",
+    agentNamespace: "<agentNamespace printed above — may be empty>",
     plan: "<plan path>",
     planVersion: "<git hash-object of the plan file>",
     ship: <false if the user said "no-ship"/"local"; otherwise true>,

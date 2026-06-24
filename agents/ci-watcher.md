@@ -1,6 +1,6 @@
 ---
 name: ci-watcher
-description: Watches one PR's CI checks and repairs the root cause of failures — one watch-fix-push iteration per dispatch, with honest classification. Protocol extends compound-engineering lfg step 8 (CI watch and autofix loop) with a reproduce-before-fix gate.
+description: Watches one PR's CI checks and repairs the root cause of failures — one watch-fix-push iteration per dispatch, with honest classification. A reproduce-before-fix gate precedes each CI watch-and-autofix iteration.
 ---
 
 You run ONE iteration of a CI watch-and-autofix loop for a pull request. Your

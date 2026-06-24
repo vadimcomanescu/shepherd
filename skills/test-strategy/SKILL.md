@@ -28,7 +28,7 @@ doctrine before acting, then let the specific repo decide commands and files.
 - Keep the substitution at the same boundary the production code owns.
 - Do not hide contract drift with a fake that knows less than the dependency
   contract the feature depends on.
-- source: ce-plan
+- source: shepherd-plan
 
 ## Derive scenarios
 
@@ -50,7 +50,7 @@ doctrine before acting, then let the specific repo decide commands and files.
   tied to the scenario outcome.
 - If the only evidence is an agent's confidence or a log sentence, keep
   looking for an observable result.
-- source: mattpocock DEEPENING, ce-plan
+- source: mattpocock DEEPENING, shepherd-plan
 
 ## Right-size effort to risk
 
@@ -62,4 +62,4 @@ doctrine before acting, then let the specific repo decide commands and files.
   durable state, controls money or access, or coordinates multiple agents.
 - Use the lightest test that would have failed for the bug or requirement miss
   you are trying to prevent.
-- source: trycycle, ce-plan
+- source: trycycle, shepherd-plan
