@@ -40,7 +40,7 @@ Before going online, check if curated knowledge exists in skills:
 
 1. **Discover skills**: glob for `SKILL.md` in `.claude/skills/**/SKILL.md`, `.codex/skills/**/SKILL.md`, `.agents/skills/**/SKILL.md` and their `~/` home-directory equivalents. In Codex environments, `.agents/skills/` may be discovered from `cwd` upward to the repo root; if an `AGENTS.md` skill inventory is provided, use it as the initial discovery index then open only the relevant files.
 
-2. **Match topic to skills** — common mappings: Rails/Ruby → `ce-dhh-rails-style`; Frontend/Design → `ce-frontend-design`; TypeScript/React → `react-best-practices`; AI/Agents → `ce-agent-native-architecture`.
+2. **Match topic to skills** — match the topic to the most specific installed skill: a language/framework style guide, frontend/design guidance, a React/TypeScript best-practices skill, agent-architecture patterns, and so on. Prefer the most specific skill the discovery step actually found.
 
 3. **Extract patterns**: read the full `SKILL.md` for relevant skills; extract best practices, code patterns, Dos/Don'ts, code examples.
 

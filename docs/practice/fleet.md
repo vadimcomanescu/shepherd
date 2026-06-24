@@ -163,33 +163,31 @@ These are illustrative, not the complete inline-agent inventory: the deliver coo
 
 ---
 
-## External integration surface (compound-engineering)
+## Quality-phase reviewer fleet (Shepherd's own)
 
-Several deliver phases depend on the **compound-engineering plugin**, an externally-installed dependency not shipped in this repo's `agents/` or `skills/` directories. The two kinds of dependency below behave differently when the plugin is absent: the `skillGuide()` skills fall back to inline prompts, but the reviewer personas currently do not.
-
-**Quality-phase reviewer personas**, dispatched via `agentType: 'compound-engineering:<name>'`, these are not files in this repo:
+The Quality phase reviews with Shepherd's **own** code-review fleet — eight persona files in `agents/`, dispatched via `agentType`. They are sovereign files in this repo, not an external dependency, so the roster always resolves:
 
 | agentType | Always-on? |
 |---|---|
-| `compound-engineering:ce-correctness-reviewer` | Always-on |
-| `compound-engineering:ce-maintainability-reviewer` | Always-on |
-| `compound-engineering:ce-testing-reviewer` | Always-on |
-| `compound-engineering:ce-project-standards-reviewer` | Always-on |
-| `compound-engineering:ce-security-reviewer` | Conditional (auth/payments/crypto/public-api risk surface) |
-| `compound-engineering:ce-data-migration-reviewer` | Conditional (migrations risk surface) |
-| `compound-engineering:ce-api-contract-reviewer` | Conditional (public-api risk surface) |
-| `compound-engineering:ce-adversarial-reviewer` | Conditional (diff >= 50 lines or auth/payments risk surface) |
+| `correctness-reviewer` | Always-on |
+| `maintainability-reviewer` | Always-on |
+| `testing-reviewer` | Always-on |
+| `standards-reviewer` | Always-on |
+| `security-reviewer` | Conditional (auth/payments/crypto/public-api risk surface) |
+| `data-migration-reviewer` | Conditional (migrations risk surface) |
+| `api-contract-reviewer` | Conditional (public-api risk surface) |
+| `adversarial-reviewer` | Conditional (diff >= 50 lines or auth/payments risk surface) |
 
-**These reviewer personas have no `ceSkillsRoot` guard and no inline fallback today.** When the plugin is absent their `agentType` values do not resolve, so the Quality phase loses its structured persona-review roster; the local `codex-executor` second-model review and inline-angle reviewers still run, and `finding-verifier` still grades what they produce. This hard coupling, and the plan to make the product plugin-independent, is tracked in [#26](https://github.com/vadimcomanescu/shepherd/issues/26).
+Alongside the personas, the local `codex-executor` second-model review and the inline-angle reviewers run in the same Quality gate, and `finding-verifier` grades what they all produce.
 
-**ce-* skills**, used as authoritative instruction sources via `skillGuide()`, with inline fallbacks when the plugin is absent:
+## Tail-phase doctrine (inline in the coordinator)
 
-- `ce-simplify-code`: guides the Simplify (dead-code elimination) step
-- `ce-test-browser`: guides browser-proof route verification
-- `ce-compound`: guides the learnings-recording (Compound) step
-- `ce-commit-push-pr`: guides commit conventions, push mechanics, and PR creation
+The deliver tail phases carry their doctrine inline at each dispatch site — there is no installed SKILL.md to read and no fallback path:
 
-The `skillGuide()` helper resolves these from the installed plugin's `skills/` directory. When the plugin is not installed, `ceSkillsRoot` is empty and each call falls back to the inline fallback string baked into the coordinator.
+- the Simplify (dead-code elimination) step
+- the browser-proof route verification (Proof)
+- the learnings-recording step (Compound)
+- the commit conventions, push mechanics, and PR creation (Ship)
 
 ---
 

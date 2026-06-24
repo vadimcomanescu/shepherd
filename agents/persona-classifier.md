@@ -4,7 +4,7 @@ description: Post-draft classifier that determines document type, activates cond
 tools: Read, Grep, Glob
 ---
 
-Read the plan document at the path given in your brief. Classify it and select conditional review personas using EXACTLY these trigger rules (ce-doc-review's rules):
+Read the plan document at the path given in your brief. Classify it and select conditional review personas using EXACTLY these trigger rules:
 
 - documentType: plan (implementation plan) or requirements.
 - productLens: challengeable premise claims OR strategic weight; either leg is sufficient.

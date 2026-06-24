@@ -1,7 +1,7 @@
 export const meta = {
   name: 'shepherd-deliver',
-  description: 'Drives a committed ce-plan document to a pull request: it splits each plan unit into context-window-sized tasks, routes each to a Codex or Claude executor, builds them test-first in isolated git worktrees, and merges them in dependency order. It then reviews the integrated branch (simplification plus persona and second-model passes with independently verified fixes), validates against the plan\'s requirements, browser-proofs affected routes, records reusable learnings, opens the PR, and watches CI with a bounded auto-fix loop.',
-  whenToUse: 'Executing a ce-plan plan document end-to-end with mixed codex/claude executors, through to a PR. Invoking with ship enabled IS the consent to push and open a PR. args: { plan: "<path>", planVersion?: "<hash-or-mtime — pass a NEW value after editing the plan so resume does not replay a stale cached parse>", base?: "<branch>", slug?: "<branch-slug>", codex?: true|false, sandbox?: "yolo"|"full-auto", effortFloor?: "<minimal|low|medium|high|xhigh>", proof?: true|false, ship?: true|false, compound?: true|false, ciRounds?: <max CI fix iterations, default 3>, startedAt?: <ms> }',
+  description: 'Drives a committed Shepherd plan document to a pull request: it splits each plan unit into context-window-sized tasks, routes each to a Codex or Claude executor, builds them test-first in isolated git worktrees, and merges them in dependency order. It then reviews the integrated branch (simplification plus persona and second-model passes with independently verified fixes), validates against the plan\'s requirements, browser-proofs affected routes, records reusable learnings, opens the PR, and watches CI with a bounded auto-fix loop.',
+  whenToUse: 'Executing a Shepherd plan document end-to-end with mixed codex/claude executors, through to a PR. Invoking with ship enabled IS the consent to push and open a PR. args: { plan: "<path>", planVersion?: "<hash-or-mtime — pass a NEW value after editing the plan so resume does not replay a stale cached parse>", base?: "<branch>", slug?: "<branch-slug>", codex?: true|false, sandbox?: "yolo"|"full-auto", effortFloor?: "<minimal|low|medium|high|xhigh>", proof?: true|false, ship?: true|false, compound?: true|false, ciRounds?: <max CI fix iterations, default 3>, startedAt?: <ms> }',
   phases: [
     { title: 'Recon', detail: 'Parse plan, probe repo + codex availability' },
     { title: 'Setup', detail: 'Create integration worktree and branch' },
@@ -26,7 +26,7 @@ export const meta = {
 // args.plan read undefined). Accept both forms at the boundary.
 if (typeof args === 'string') { try { args = JSON.parse(args) } catch { /* fall through — the contract check below dies legibly */ } }
 if (!args || !args.plan) {
-  throw new Error('shepherd-deliver requires args.plan = path to a ce-plan document')
+  throw new Error('shepherd-deliver requires args.plan = path to a Shepherd plan document')
 }
 const PLAN = args.plan
 const CODEX_ENABLED = args.codex !== false           // invoking with codex enabled is the consent act
@@ -35,25 +35,48 @@ const CODEX_WAIT_ROUNDS = args.codexWaitRounds || 30 // x ~60s poll blocks ≈ 3
 const PROOF_ENABLED = args.proof !== false
 const SHIP_ENABLED = args.ship !== false             // invoking with ship enabled is the consent to push + open a PR
 const COMPOUND_ENABLED = args.compound !== false
-const CI_ROUNDS = Math.max(1, Math.min(10, args.ciRounds || 3)) // lfg default 3; hard-clamped 1..10 so a bad arg cannot unbound the loop
+const CI_ROUNDS = Math.max(1, Math.min(10, args.ciRounds || 3)) // default 3; hard-clamped 1..10 so a bad arg cannot unbound the loop
 // Args echo — a launch whose args never arrived (observed live: a scriptPath
 // launch delivered no tool-level args) must die loudly AND legibly, never silently.
-log(`shepherd-deliver args resolved: plan=${PLAN}, base=${args.base || '(default)'}, slug=${args.slug || '(derived)'}, codex=${CODEX_ENABLED}, sandbox=${SANDBOX}, proof=${PROOF_ENABLED}, ship=${SHIP_ENABLED}, compound=${COMPOUND_ENABLED}, ciRounds=${CI_ROUNDS}, repo=${args.repo || '(session cwd)'}`)
+log(`shepherd-deliver args resolved: plan=${PLAN}, base=${args.base || '(default)'}, slug=${args.slug || '(derived)'}, codex=${CODEX_ENABLED}, sandbox=${SANDBOX}, proof=${PROOF_ENABLED}, ship=${SHIP_ENABLED}, compound=${COMPOUND_ENABLED}, ciRounds=${CI_ROUNDS}, repo=${args.repo || '(session cwd)'}, shepherdRoot=${args.shepherdRoot || '(none)'}, agentNamespace=${args.agentNamespace || '(bare)'}`)
+
+// ---- plugin portability: agent-namespace + own-file resolution ----
+// Installed as a plugin, Shepherd's agents resolve under a namespace ("shepherd:")
+// and its own files (agents/*.md role files) live in the plugin cache, NOT the
+// session cwd. The /shepherd-pd skill passes shepherdRoot (the install root) and
+// agentNamespace ("shepherd" when installed, "" in a checkout). T() resolves a role
+// name to its dispatchable agentType. It defaults to bare, so direct in-repo
+// invocation and the test harness (which pass neither arg) keep behavior verbatim.
+const SHEPHERD_ROOT = args.shepherdRoot ? String(args.shepherdRoot).replace(/\/+$/, '') : ''
+const AGENT_NS = args.agentNamespace ? String(args.agentNamespace).replace(/:+$/, '') + ':' : ''
+const T = (role) => AGENT_NS + role
+// A namespace without a root is an inconsistent launch: agents would resolve under
+// "<ns>:" (installed plugin) but their own files would resolve relative to the
+// working tree, where they do not exist. Fail loudly, not silently.
+if (AGENT_NS && !SHEPHERD_ROOT) throw new Error('args.agentNamespace is set but args.shepherdRoot is empty — pass both (the /shepherd-pd skill does) or neither')
 
 // ---- target-repo grounding (first-class repo arg) ----
 // Every agent runs with the session cwd, which is NOT necessarily the repo the
 // plan targets (observed live: executing against a sibling checkout required
 // shimming a grounding prefix into every prompt). One chokepoint grounds every dispatch.
+// When shepherdRoot is set, a SHEPHERD HOME block is prepended so context-less
+// agents read Shepherd's own files from the install root, not the working tree.
 const REPO = args.repo ? String(args.repo).replace(/\/+$/, '') : ''
-if (REPO) {
-  const ungroundedAgent = agent
-  agent = (prompt, opts) => ungroundedAgent(`TARGET REPOSITORY: ${REPO}
+const shepherdHomeGrounding = SHEPHERD_ROOT ? `SHEPHERD HOME: ${SHEPHERD_ROOT}
+Shepherd's own files live under ${SHEPHERD_ROOT}, NOT the working directory. Any path under skills/ (doctrine skills) or agents/ (role and lens files) — named in this brief or in your own role instructions — resolves there (e.g. read agents/unit-executor.md as ${SHEPHERD_ROOT}/agents/unit-executor.md). Never look for these under the working directory${REPO ? ' or the TARGET REPOSITORY' : ''}.
+` : ''
+const repoGrounding = REPO ? `TARGET REPOSITORY: ${REPO}
 You are working on the repository at ${REPO}, NOT your current working directory.
 Resolve every relative path in this brief (the plan document, worktrees, test
 and git commands) against ${REPO}: cd into it first in any shell command, search
 and read only there, and write only under ${REPO} and its worktrees.
+Exception: any path under skills/ or agents/ (Shepherd's own files) resolves from ${SHEPHERD_ROOT || "the session's starting directory"}, NOT ${REPO} — they are Shepherd's own files and do not exist in the target repo.
 
-${prompt}`, opts)
+` : ''
+const groundingPrefix = shepherdHomeGrounding + repoGrounding
+if (groundingPrefix) {
+  const ungroundedAgent = agent
+  agent = (prompt, opts) => ungroundedAgent(`${groundingPrefix}${prompt}`, opts)
 }
 
 // ============================================================
@@ -102,15 +125,13 @@ const RECON_SCHEMA = {
     conventionsDigest: { type: 'string', description: '<=20 lines distilled from AGENTS.md/CLAUDE.md' },
     codexAvailable: { type: 'boolean' },
     codexPath: { type: 'string' },
-    effortFloor: { type: 'string', description: 'work_delegate_effort from .compound-engineering/config.local.yaml if set to one of minimal|low|medium|high|xhigh, else ""' },
     insideCodexSandbox: { type: 'boolean' },
     baselineClean: { type: 'boolean' },
-    ceSkillsRoot: { type: 'string', description: 'skills/ dir of the highest installed compound-engineering plugin version, or ""' },
     agentBrowserAvailable: { type: 'boolean' },
     ghAvailable: { type: 'boolean' },
     notes: { type: 'array', items: { type: 'string' } },
   },
-  required: ['repoRoot', 'defaultBranch', 'testCommand', 'lintCommand', 'codexAvailable', 'insideCodexSandbox', 'baselineClean', 'conventionsDigest', 'ceSkillsRoot', 'agentBrowserAvailable', 'ghAvailable'],
+  required: ['repoRoot', 'defaultBranch', 'testCommand', 'lintCommand', 'codexAvailable', 'insideCodexSandbox', 'baselineClean', 'conventionsDigest', 'agentBrowserAvailable', 'ghAvailable'],
 }
 
 const TASKS_SCHEMA = {
@@ -342,7 +363,7 @@ log(`Plan: ${PLAN}`)
 // Barrier justified: Setup and Split both need the full output of BOTH recon agents.
 const [planDoc, recon] = await parallel([
   () => agent(
-    `Read the plan document at "${PLAN}" (version: ${args.planVersion || 'unversioned'}) in this repository. It follows the ce-plan format:
+    `Read the plan document at "${PLAN}" (version: ${args.planVersion || 'unversioned'}) in this repository. It follows the Shepherd plan format:
 level-3 headed Implementation Units ("### U1. Name") with bold fields Goal,
 Requirements, Dependencies, Files, Approach, Execution note (optional), Patterns
 to follow, Test scenarios, Verification; plus plan-level Requirements (R-IDs),
@@ -367,13 +388,7 @@ planTitle.`,
   coding conventions an implementer must follow into <=20 lines
 - codexAvailable: command -v codex prints an absolute path
 - codexPath: that path or ""
-- effortFloor: read .compound-engineering/config.local.yaml at the repo root if it
-  exists; if work_delegate_effort is one of minimal|low|medium|high|xhigh report
-  it, otherwise report ""
 - insideCodexSandbox: true if $CODEX_SANDBOX or $CODEX_SESSION_ID is set
-- ceSkillsRoot: the skills/ directory of the HIGHEST installed version under
-  ~/.claude/plugins/cache/compound-engineering-plugin/compound-engineering/*/skills
-  (expand ~, report an absolute path; "" if none exists)
 - agentBrowserAvailable: command -v agent-browser succeeds
 - ghAvailable: gh auth status exits 0`,
     { label: 'repo-recon', phase: 'Recon', model: 'sonnet', schema: RECON_SCHEMA },
@@ -393,7 +408,7 @@ const BASE = args.base || recon.defaultBranch
 // Effort floor (reference: "Floor and resolution — hard rules"): when a floor is
 // configured, substitute default->medium in the pick, then take max(pick, floor).
 const EFFORT_ORDER = { minimal: 0, low: 1, medium: 2, high: 3, xhigh: 4 }
-const EFFORT_FLOOR = args.effortFloor || (recon.effortFloor && EFFORT_ORDER[recon.effortFloor] !== undefined ? recon.effortFloor : '')
+const EFFORT_FLOOR = args.effortFloor && EFFORT_ORDER[args.effortFloor] !== undefined ? args.effortFloor : ''
 const effectiveEffort = (picked) => {
   if (!EFFORT_FLOOR) return picked
   const p = picked === 'default' ? 'medium' : picked
@@ -402,16 +417,9 @@ const effectiveEffort = (picked) => {
 const INTEGRATION_BRANCH = `feat/${SLUG}`
 const INTEGRATION_WT = `${recon.repoRoot}/.worktrees/${SLUG}`
 
-// Installed compound-engineering skills are the authoritative instructions for
-// the tail phases — agents read and follow the SKILL.md at run time rather than
-// this script mirroring its content. Each call site supplies a fallback so the
-// phase still runs when the plugin is not installed.
-const skillGuide = (name, withSkill, fallback) => (recon.ceSkillsRoot
-  ? `Read and follow the ${name} skill at ${recon.ceSkillsRoot}/${name}/SKILL.md${withSkill}`
-  : fallback)
-const SIMPLIFY_GUIDE = skillGuide('ce-simplify-code',
-  ': run its reuse, quality, and efficiency review passes over the diff vs the base and apply the fixes it prescribes.',
-  'Review the full diff vs the base for simplification — duplicated patterns to consolidate, shared helpers to extract, dead code introduced by the changes, needless indirection.')
+// Tail-phase doctrine is Shepherd's own, written inline at each phase so deliver
+// runs standalone with no external-plugin dependency.
+const SIMPLIFY_GUIDE = 'Review the full diff vs the base for simplification — duplicated patterns to consolidate, shared helpers to extract, dead code introduced by the changes, needless indirection.'
 const simplifyPrompt = (extraContext, commitMessage) => `
 In the worktree ${INTEGRATION_WT} (branch ${INTEGRATION_BRANCH}, base ${BASE}):
 ${SIMPLIFY_GUIDE}${extraContext}
@@ -482,7 +490,7 @@ Plan-level deferred questions the implementer must know about:
 ${(planDoc.deferredQuestions || []).join('\n') || 'none'}
 Scope boundaries (non-goals):
 ${(planDoc.scopeBoundaries || []).join('\n') || 'none'}`,
-    { label: `split-${u.uid}`, phase: 'Split', agentType: 'task-splitter', schema: TASKS_SCHEMA },
+    { label: `split-${u.uid}`, phase: 'Split', agentType: T('task-splitter'), schema: TASKS_SCHEMA },
   ),
   (split, u) => {
     if (!split) return null
@@ -493,7 +501,7 @@ ${(planDoc.scopeBoundaries || []).join('\n') || 'none'}`,
 Task ${t.id} (${t.title}) — risk: ${t.risk}, ambiguity: ${t.ambiguity}, est diff: ${t.estDiffLines} lines, files: ${t.files.join(', ')}
 Dossier:
 ${t.dossier}`,
-        { label: `route-${t.id}`, phase: 'Route', agentType: 'executor-router', model: 'sonnet', schema: ROUTE_SCHEMA }, // routing is mechanical; output is a ROUTE_SCHEMA enum, not a design judgment
+        { label: `route-${t.id}`, phase: 'Route', agentType: T('executor-router'), model: 'sonnet', schema: ROUTE_SCHEMA }, // routing is mechanical; output is a ROUTE_SCHEMA enum, not a design judgment
       ).then((route) => ({ ...t, route: route || { executor: 'claude', effort: 'default', model: 'sonnet', reason: 'router failed — defaulted to claude/sonnet' } })),
     )).then((routed) => ({ unit: u, tasks: routed.filter(Boolean) }))
   },
@@ -581,7 +589,7 @@ Codex binary: ${recon.codexPath}
 Branch: wf/${SLUG}/${t.id.toLowerCase()}   Worktree: ${recon.repoRoot}/.worktrees/${t.id}
 ${WORKTREE_HOWTO(recon.repoRoot, INTEGRATION_BRANCH).replace(/<TASK_ID>/g, t.id).replace(/<BRANCH>/g, `wf/${SLUG}/${t.id.toLowerCase()}`)}
 Test command: ${recon.testCommand}
-Scratch template for mktemp: -t ce-work-${t.id}-XXXXXX
+Scratch template for mktemp: -t shepherd-unit-${t.id}-XXXXXX
 Wait-round cap: ${CODEX_WAIT_ROUNDS}
 Return shape: { status, branch, worktreePath, filesModified, verificationSummary, issues }. Map codex's snake_case result (files_modified -> filesModified, verification_summary -> verificationSummary), and fill branch + worktreePath from the coordinates above. Commit policy: on codex 'completed' verify the worktree changed (git status) then commit with a conventional message from the task title; on 'partial' commit "wip(${t.id}): partial — <summary>"; on 'failed' or a missing/malformed result, run the cleanup commands and return status 'failed' (carry codex's issues/summary). Never report 'completed' unless codex reported completed AND a commit now exists. Do NOT push.
 
@@ -660,7 +668,7 @@ for (let w = 0; w < waves.length; w++) {
       {
         label: `exec-${t.id}-${useCodex ? 'codex' : 'claude'}`,
         phase: 'Execute',
-        agentType: useCodex ? 'codex-executor' : 'unit-executor',
+        agentType: useCodex ? T('codex-executor') : T('unit-executor'),
         schema: EXEC_SCHEMA,
         model: useCodex ? 'sonnet' : (t.route.model || 'sonnet'), // codex-executor is mechanical; claude executor uses the routed tier (never inherits the session model)
       },
@@ -699,16 +707,16 @@ verify, and commit. Report "completed" only if verification passes.`
         log(`${e.t.id}: codex failed (${e.r ? e.r.issues.join('; ') : 'codex executor returned null'}) — re-dispatching to claude in a fresh worktree`)
         retried.push(agent(
           `${staleCleanup(e.t, `wf/${SLUG}/${e.t.id.toLowerCase()}`)}\n${claudeExecutorPrompt(e.t)}`,
-          { label: `exec-${e.t.id}-claude-fallback`, phase: 'Execute', agentType: 'unit-executor', model: e.t.route.model || 'sonnet', schema: EXEC_SCHEMA },
+          { label: `exec-${e.t.id}-claude-fallback`, phase: 'Execute', agentType: T('unit-executor'), model: e.t.route.model || 'sonnet', schema: EXEC_SCHEMA },
         ).then((r) => ({ t: e.t, usedCodex: false, r, wasFallback: true })))
       } else if (status === 'partial') {
         log(`${e.t.id}: codex partial — dispatching claude finisher in the same worktree`)
-        retried.push(agent(finisherPrompt(e.t, e.r), { label: `finish-${e.t.id}`, phase: 'Execute', agentType: 'unit-executor', model: e.t.route.model || 'sonnet', schema: EXEC_SCHEMA })
+        retried.push(agent(finisherPrompt(e.t, e.r), { label: `finish-${e.t.id}`, phase: 'Execute', agentType: T('unit-executor'), model: e.t.route.model || 'sonnet', schema: EXEC_SCHEMA })
           .then((r) => ({ t: e.t, usedCodex: false, r, wasFinisher: true })))
       }
     } else if (status === 'partial' && e.r.branch) {
       log(`${e.t.id}: claude partial — dispatching finisher in the same worktree`)
-      retried.push(agent(finisherPrompt(e.t, e.r), { label: `finish-${e.t.id}`, phase: 'Execute', agentType: 'unit-executor', model: e.t.route.model || 'sonnet', schema: EXEC_SCHEMA }) // finisher continues the unit at its routed tier, same as the codex-partial path
+      retried.push(agent(finisherPrompt(e.t, e.r), { label: `finish-${e.t.id}`, phase: 'Execute', agentType: T('unit-executor'), model: e.t.route.model || 'sonnet', schema: EXEC_SCHEMA }) // finisher continues the unit at its routed tier, same as the codex-partial path
         .then((r) => ({ t: e.t, usedCodex: false, r, wasFinisher: true })))
     }
   }
@@ -736,7 +744,7 @@ verify, and commit. Report "completed" only if verification passes.`
 \nNOTE: an earlier attempt conflicted when merging into ${INTEGRATION_BRANCH}.
 After the cleanup above, create a FRESH worktree from the CURRENT tip of
 ${INTEGRATION_BRANCH} and implement the dossier against the code as it now stands.`,
-        { label: `redo-${t.id}`, phase: 'Execute', agentType: 'unit-executor', model: t.route.model || 'sonnet', schema: EXEC_SCHEMA },
+        { label: `redo-${t.id}`, phase: 'Execute', agentType: T('unit-executor'), model: t.route.model || 'sonnet', schema: EXEC_SCHEMA },
       )
       if (redo && redo.status === 'completed' && redo.branch) {
         e = { t, usedCodex: false, r: redo, wasRedo: true } // rebind so reporting reflects the work that actually merged
@@ -839,7 +847,7 @@ inconsistent (e.g. its own text argues for continuing), OR you are uncertain. Re
     }
   }
 
-  // Simplify as you go (ce-work-beta Phase 2, step 5): after a wave that merged
+  // Simplify as you go: after a wave that merged
   // 2+ tasks, consolidate on the integration branch BEFORE the next wave's
   // worktrees fork from it. The final wave is covered by the Quality simplify.
   const mergedThisWave = wave.filter((t) => results[t.id] && results[t.id].status === 'merged')
@@ -876,7 +884,7 @@ let confirmedCount = 0
 let reviewStats = null        // { candidates, verified, refuted, dupes, budgetDropped, verifierFailed } — null when the run halts before Quality
 let validation = null
 const reviewDrops = { refuted: [], verifierDied: [], reviewerDied: [] } // coverage lost in the Quality gate, loud, never silent: refuted-with-evidence and no-verdict (refuter died/skipped) are per-verdict instance records (a duplicate of a refuted instance may still be confirmed via another reviewer; fail-closed by design); reviewerDied lists reviewer perspectives that produced NO result at all — their entire viewpoint is missing from the review.
-let residuals = []            // confirmed-but-unfixed findings — made durable in the PR body (lfg residual contract)
+let residuals = []            // confirmed-but-unfixed findings — made durable in the PR body, never silently dropped
 let fixAudit = null           // independent audit of fixer "fixed" self-reports — { claimed, unsupported, unaudited } or null when nothing was claimed fixed
 let shipGate = null           // independent fresh-context recheck of tests+lint at the ship boundary — null when ship never reached the gate
 let proof = null
@@ -909,26 +917,26 @@ if (changedLines >= 30) {
   log(`Simplify skipped: diff is ${changedLines} lines (<30)`)
 }
 
-// Persona reviewers — reuse compound-engineering reviewer agents via agentType.
-// Always-on quartet (mirrors ce-code-review's always-on set minus the PR-only
-// personas) plus conditional personas from the plan's risk surfaces and diff size.
+// Persona reviewers — Shepherd's own sovereign code-review fleet (agents/*.md),
+// resolved through T() so they namespace under shepherd: when installed as a plugin.
+// Always-on quartet plus conditional personas from the plan's risk surfaces and diff size.
 const personas = [
-  { key: 'correctness', type: 'compound-engineering:ce-correctness-reviewer' },
-  { key: 'maintainability', type: 'compound-engineering:ce-maintainability-reviewer' },
-  { key: 'testing', type: 'compound-engineering:ce-testing-reviewer' },
-  { key: 'standards', type: 'compound-engineering:ce-project-standards-reviewer' },
+  { key: 'correctness', type: T('correctness-reviewer') },
+  { key: 'maintainability', type: T('maintainability-reviewer') },
+  { key: 'testing', type: T('testing-reviewer') },
+  { key: 'standards', type: T('standards-reviewer') },
 ]
 if (planDoc.riskSurfaces.some((s) => ['auth', 'payments', 'crypto', 'public-api'].includes(s))) {
-  personas.push({ key: 'security', type: 'compound-engineering:ce-security-reviewer' })
+  personas.push({ key: 'security', type: T('security-reviewer') })
 }
 if (planDoc.riskSurfaces.includes('migrations')) {
-  personas.push({ key: 'migrations', type: 'compound-engineering:ce-data-migration-reviewer' })
+  personas.push({ key: 'migrations', type: T('data-migration-reviewer') })
 }
 if (planDoc.riskSurfaces.includes('public-api')) {
-  personas.push({ key: 'api-contract', type: 'compound-engineering:ce-api-contract-reviewer' })
+  personas.push({ key: 'api-contract', type: T('api-contract-reviewer') })
 }
 if (changedLines >= 50 || planDoc.riskSurfaces.some((s) => ['auth', 'payments'].includes(s))) {
-  personas.push({ key: 'adversarial', type: 'compound-engineering:ce-adversarial-reviewer' })
+  personas.push({ key: 'adversarial', type: T('adversarial-reviewer') })
 }
 
 const reviewPrompt = () => `
@@ -947,7 +955,7 @@ Pass every candidate with a nameable failure scenario through — do not silentl
 // review rationalizes away, and its findings face the same Claude verifier.
 const reviewers = personas.map((p) => ({
   key: p.key,
-  spawn: () => agent(reviewPrompt(), { label: `review-${p.key}`, phase: 'Quality', agentType: p.type, schema: FINDINGS_SCHEMA }),
+  spawn: () => agent(reviewPrompt(), { label: `review-${p.key}`, phase: 'Quality', agentType: p.type, schema: FINDINGS_SCHEMA }), // p.type is already T()-resolved in the roster above
 }))
 if (codexUsable && !codexBroken) {
   reviewers.push({
@@ -958,7 +966,7 @@ sandbox_mode: read-only
 Codex binary: ${recon.codexPath}
 Worktree: ${INTEGRATION_WT}   Branch: ${INTEGRATION_BRANCH}   Base: ${BASE} (diff origin/${BASE}...HEAD, fall back to ${BASE})
 The work implements the plan at ${PLAN}.
-Scratch template for mktemp: -t ce-review-${SLUG}-XXXXXX
+Scratch template for mktemp: -t shepherd-review-${SLUG}-XXXXXX
 Wait-round cap: 10
 Return shape: { ran, findings, reason } — reason carries why codex was unusable when ran=false, "" on a clean run.
 
@@ -973,7 +981,7 @@ ${JSON.stringify(CODEX_REVIEW_OUTPUT_SCHEMA, null, 2)}
 
 context (there is no role_file; write this verbatim into prompt.md as the review instructions):
 Review the diff between the base and HEAD in the worktree (git diff ${BASE}...HEAD, fall back to ${BASE}), reading surrounding code as needed. Hunt specifically for logic errors, broken edge cases, contract violations, and risky changes a reviewer from the authoring model family might rationalize away. Each finding MUST carry: title; file; line (0 when no specific line applies); severity (blocking | suggested | nit); failure_scenario (the concrete inputs/state that produce the wrong outcome — for cleanup-style findings, state the concrete cost instead of a crash); and enough detail that a fixer who has not seen the reasoning can act. Pass every candidate with a nameable failure scenario through — do not silently drop half-believed candidates; an independent verifier judges them next. Style nits without consequence are not findings. The review is READ-ONLY: no edits, no commits.`,
-      { label: 'review-codex', phase: 'Quality', agentType: 'codex-executor', model: 'sonnet', schema: CODEX_REVIEW_SCHEMA }, // the single mechanical codex operator; codex does the reviewing
+      { label: 'review-codex', phase: 'Quality', agentType: T('codex-executor'), model: 'sonnet', schema: CODEX_REVIEW_SCHEMA }, // the single mechanical codex operator; codex does the reviewing
     ).then((r) => {
       if (r && !r.ran) log(`Codex second-model review did not run: ${r.reason}`)
       return r && r.ran ? { findings: r.findings } : null
@@ -1035,7 +1043,7 @@ Verdict ladder — CONFIRMED only when you can name the concrete triggering
 inputs/state AND quote the offending line; REFUTED only when the refutation is
 constructible from the code (quote the disproving line, invariant, or guard);
 otherwise PLAUSIBLE, the default for realistic-but-unproven findings.`,
-  { label: `verify-${rvKey}-${entry.file.split('/').pop()}`, phase: 'Quality', model: 'sonnet', agentType: 'finding-verifier', schema: VERDICT_SCHEMA },
+  { label: `verify-${rvKey}-${entry.file.split('/').pop()}`, phase: 'Quality', model: 'sonnet', agentType: T('finding-verifier'), schema: VERDICT_SCHEMA },
 ).then((v) => {
   if (v && v.verdict !== 'REFUTED') { entry.verdict = v.verdict; entry.evidence = v.evidence || ''; return entry }
   if (v) {
@@ -1257,8 +1265,8 @@ ${fs.map((f) => `- (${f.severity}, ${f.verdict}, ${f.persona}) ${f.title}: ${f.d
       claimedFixed.push(...fs.filter((f) => fx.fixed.includes(f.title)))
     }
   }
-  // Fixer "fixed" lists are self-reports, not facts (lfg: "an unverified fix is
-  // not finished"). One fresh-context auditor checks every claim against the
+  // Fixer "fixed" lists are self-reports, not facts (an unverified fix is
+  // not finished). One fresh-context auditor checks every claim against the
   // actual commits: unsupported claims demote to residuals; a dead or
   // budget-skipped audit leaves a durable UNAUDITED residual instead of
   // silently trusting the claims.
@@ -1346,8 +1354,8 @@ phase('Validate')
 validation = await runValidation('final-validation', 'Final ')
 
 // ============================================================
-// Tail phases — the rest of the lfg pipeline (browser proof, compound, ship,
-// CI watch), still inside the !halted block: a halted run skips them all.
+// Tail phases — browser proof, compound, ship, and CI watch,
+// still inside the !halted block: a halted run skips them all.
 // Autopilot contract: never prompt; anything unresolved becomes a durable
 // residual in the PR body.
 // ============================================================
@@ -1357,7 +1365,7 @@ const tailBudget = (phaseName) => {
   return false
 }
 
-// ---- Phase: Proof (lfg step 6) — browser-test the merged work, ONE fix round.
+// ---- Phase: Proof — browser-test the merged work, ONE fix round.
 // Gated on green validation: browser-proofing a branch the ship gate already
 // rejects burns dev-server + browser wall-clock for a report nobody ships. ----
 if (!PROOF_ENABLED) {
@@ -1374,7 +1382,7 @@ if (!PROOF_ENABLED) {
   phase('Proof')
   const proofPrompt = (focus) => `
 Browser-proof the merged work in the worktree ${INTEGRATION_WT} (branch ${INTEGRATION_BRANCH}, base ${BASE}).
-${skillGuide('ce-test-browser', ' in mode:pipeline — it covers port detection, auto-starting the dev server, mapping changed files to routes, and per-route checks with the agent-browser CLI.', 'Use the agent-browser CLI headlessly (open / snapshot -i / click / screenshot): detect the dev port (AGENTS.md, CLAUDE.md, package.json, .env*; default 3000; scan upward for a free one), start the dev server in the background, map the changed files to affected routes, and verify each route renders without errors and its primary interactions work.')}
+Use the agent-browser CLI headlessly (open / snapshot -i / click / screenshot): detect the dev port (AGENTS.md, CLAUDE.md, package.json, .env*; default 3000; scan upward for a free one), start the dev server in the background, map the changed files to affected routes, and verify each route renders without errors and its primary interactions work.
 Changed files: git diff --name-only origin/${BASE}...HEAD (fall back to ${BASE}).
 Start the dev server from INSIDE the worktree so you test the merged code, and
 kill any server you started when done.${focus}
@@ -1437,7 +1445,7 @@ if (COMPOUND_ENABLED) {
     ]
     compounded = await agent(
       `Compound the learnings from a finished implementation run.
-${skillGuide('ce-compound', ' in mode:headless.', 'Write solved-problem docs under docs/solutions/<category>/<slug>.md with frontmatter (module, date, problem_type, component, severity) and sections Problem / Symptoms / What Didn\'t Work / Solution / Why This Works / Prevention.')}
+Write solved-problem docs under docs/solutions/<category>/<slug>.md with frontmatter (module, date, problem_type, component, severity) and sections Problem / Symptoms / What Didn't Work / Solution / Why This Works / Prevention.
 Work from INSIDE the worktree ${INTEGRATION_WT} (branch ${INTEGRATION_BRANCH}); read the
 branch's commits and the diff vs origin/${BASE}...HEAD (fall back to ${BASE}) for the
 full story. Candidate material — problems actually solved AND verified this run:
@@ -1445,10 +1453,10 @@ ${solvedProblems.join('\n') || '- none flagged by the orchestrator; check commit
 Document ONLY non-trivial solved problems a future implementer would otherwise
 re-discover the hard way; a routine implementation with no surprises produces
 nothing. If nothing qualifies, write nothing and return documented=false.
-If you write docs: validate their frontmatter as the skill requires and commit
-("docs(solutions): compound learnings from ${SLUG}"). Do NOT push — the Ship
-phase owns pushing.`,
-      { label: 'compound', phase: 'Compound', model: 'sonnet', schema: COMPOUND_SCHEMA }, // mechanical authoring from enumerated solved-problem candidates; skill prescribes template and commit
+If you write docs: validate their frontmatter (module, date, problem_type,
+component, severity) and commit ("docs(solutions): compound learnings from
+${SLUG}"). Do NOT push — the Ship phase owns pushing.`,
+      { label: 'compound', phase: 'Compound', model: 'sonnet', schema: COMPOUND_SCHEMA }, // mechanical authoring from enumerated solved-problem candidates; template and commit prescribed inline above
     )
     if (!compounded) log('Compound agent failed — nothing documented')
     else if (!compounded.documented) log(`Compound: nothing qualifying (${compounded.detail})`)
@@ -1483,7 +1491,7 @@ asserts you checked every path listed and each one passed.`,
   }
 }
 
-// ---- Phase: Ship (lfg steps 4/5/7) — hard gate: tests + lint green, or no push ----
+// ---- Phase: Ship — hard gate: tests + lint green, or no push ----
 if (!SHIP_ENABLED) {
   ship.detail = 'disabled by args.ship=false'
   log('Ship disabled by args.ship=false — branch stays local')
@@ -1541,7 +1549,7 @@ Do not fix anything, do not commit — observe and report.`,
       : `${proof.status}${proof.routes.length ? ` (${proof.routes.filter((r) => r.result === 'pass').length}/${proof.routes.length} routes passing)` : ''}`
     const shipRes = await agent(
       `Ship the integration branch from the worktree ${INTEGRATION_WT} (branch ${INTEGRATION_BRANCH}, base ${BASE}).
-${skillGuide('ce-commit-push-pr', ' for commit conventions, push mechanics, and PR creation (write the PR body to a temp file and pass it via --body-file; never stdin).', 'Conventions: conventional commits; stage files by name (never git add -A or .); push with git push -u origin HEAD; create the PR with gh pr create --title "<title>" --body-file <tempfile>.')}
+Conventions: conventional commits; stage files by name (never git add -A or .); push with git push -u origin HEAD; create the PR with gh pr create --title "<title>" --body-file <tempfile>.
 Steps:
 1. Plan status flip — locate the plan document INSIDE the worktree: the caller
    referenced it as "${PLAN}"; if that is not already a path under
@@ -1558,7 +1566,7 @@ Steps:
    the PR with base ${BASE}. If gh is unavailable or PR creation fails, still
    push and report prCreated=false with the reason in detail.
 PR title: conventional, derived from the plan title "${planDoc.planTitle}".
-The PR body must include these sections verbatim (plus whatever the skill prescribes):
+The PR body must include these sections verbatim:
 
 ## Requirements
 ${reqLines.join('\n') || '- none traced'}
@@ -1609,7 +1617,7 @@ Change nothing: no push, no commit, no PR edits.`,
     }
 }
 
-// ---- Phase: CI (lfg step 8) — watch checks, bounded autofix, durable residuals ----
+// ---- Phase: CI — watch checks, bounded autofix, durable residuals ----
 if (ship.pushed && ship.prUrl) {
   phase('CI')
   let ciStop = ''            // why the loop ended while still red: budget | no-fix-path | rounds
@@ -1627,7 +1635,7 @@ pushed fixes, that round's diagnosis was likely wrong or partial: diagnose
 afresh from the code (including reverting the prior fix if it proves to be a
 symptom patch), and do not repeat an approach listed here:
 ${ciHistory.join('\n')}` : ''}`,
-      { label: `ci-watch-${attempt}`, phase: 'CI', agentType: 'ci-watcher', schema: CI_SCHEMA },
+      { label: `ci-watch-${attempt}`, phase: 'CI', agentType: T('ci-watcher'), schema: CI_SCHEMA },
     )
     ci.attempts = attempt
     if (!r) { ci.status = 'unknown'; ci.detail = 'ci watch agent failed'; log('CI watch agent failed — PR checks state unknown'); break }

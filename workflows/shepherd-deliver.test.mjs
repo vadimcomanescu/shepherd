@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import assert from 'node:assert'
@@ -70,8 +70,8 @@ const UNITS = (overrides = {}) => ({
 const RECON = (overrides = {}) => ({
   repoRoot: '/repo', defaultBranch: 'main', testCommand: 'npm test', lintCommand: 'npm run lint',
   conventionsDigest: 'conventions', codexAvailable: true, codexPath: '/usr/local/bin/codex',
-  effortFloor: '', insideCodexSandbox: false, baselineClean: true,
-  ceSkillsRoot: '/plugins/compound-engineering/skills', agentBrowserAvailable: true, ghAvailable: true,
+  insideCodexSandbox: false, baselineClean: true,
+  agentBrowserAvailable: true, ghAvailable: true,
   notes: [],
   ...overrides,
 })
@@ -163,9 +163,9 @@ S('S1 happy path: 4 units, mixed routing, all merged + validated', async () => {
   assert.equal(types['route-U1'], 'executor-router')
   assert.equal(types['exec-U1-codex'], 'codex-executor')
   assert.equal(types['exec-U2-claude'], 'unit-executor')
-  assert.equal(types['review-migrations'], 'compound-engineering:ce-data-migration-reviewer')
-  assert.equal(types['review-standards'], 'compound-engineering:ce-project-standards-reviewer')
-  assert.equal(types['review-adversarial'], 'compound-engineering:ce-adversarial-reviewer', 'adversarial persona on (120 lines >= 50)')
+  assert.equal(types['review-migrations'], 'data-migration-reviewer')
+  assert.equal(types['review-standards'], 'standards-reviewer')
+  assert.equal(types['review-adversarial'], 'adversarial-reviewer', 'adversarial persona on (120 lines >= 50)')
   assert.equal(types['review-codex'], 'codex-executor', 'codex second-model reviewer dispatched via the single codex-executor')
   assert.equal(types['review-removed-behavior'], undefined, 'removed-behavior reviewer is inline, no agentType')
   assert.equal(types['review-cross-file'], undefined, 'cross-file reviewer is inline, no agentType')
@@ -180,7 +180,7 @@ S('S1 happy path: 4 units, mixed routing, all merged + validated', async () => {
   assert.ok(crossFile.prompt.includes('/repo/.worktrees/test-plan') && crossFile.prompt.includes('docs/plans/test.md'), 'cross-file prompt carries worktree + plan grounding')
   assert.ok(crossFile.schema && crossFile.schema.properties.findings, 'cross-file uses FINDINGS_SCHEMA')
   assert.equal(types['ci-watch-1'], 'ci-watcher')
-  // full lfg tail ran
+  // full tail ran
   assert.equal(result.proof.status, 'pass')
   assert.equal(result.ship.pushed, true)
   assert.match(result.ship.prUrl, /pull\/7/)
@@ -435,9 +435,9 @@ S('S14 grounding: NO dispatched prompt contains unresolved placeholders or "unde
   return `all ${trace.calls.length} prompts clean of placeholders/undefined`
 })
 
-S('S15 effort floor: config floor high lifts a medium pick to high', async () => {
-  const d = makeDispatcher({}, { recon: { effortFloor: 'high' }, routeExecutor: () => 'codex' })
-  const { result, trace, error } = await run(d)
+S('S15 effort floor: args floor high lifts a medium pick to high', async () => {
+  const d = makeDispatcher({}, { routeExecutor: () => 'codex' })
+  const { result, trace, error } = await run(d, { args: { ...ARGS, effortFloor: 'high' } })
   assert.ifError(error)
   const codexRun = trace.calls.find((c) => c.label === 'exec-U1-codex')
   assert.ok(codexRun.prompt.includes(`model_reasoning_effort="high"`), 'floor applied: medium -> high')
@@ -722,7 +722,7 @@ S('S23 fixer-skipped finding becomes a residual and lands in the PR body', async
   assert.equal(result.residualReviewFindings[0].severity, 'blocking')
   const shipCall = trace.calls.find((c) => c.label === 'ship')
   assert.ok(shipCall.prompt.includes('## Residuals') && shipCall.prompt.includes('off-by-one'), 'residual durable in PR body')
-  return 'lfg residual contract: skipped fix -> PR body, never silently dropped'
+  return 'residual contract: skipped fix -> PR body, never silently dropped'
 })
 
 S('S24 simplify-as-you-go: fires only after a multi-merge wave, never after the final wave', async () => {
@@ -733,7 +733,7 @@ S('S24 simplify-as-you-go: fires only after a multi-merge wave, never after the 
   assert.deepEqual(waves, ['simplify-wave-1'], 'only the 2-task non-final wave triggers it')
   const call = trace.calls.find((c) => c.label === 'simplify-wave-1')
   assert.ok(call.prompt.includes('U1, U4') || call.prompt.includes('U4, U1'), 'grounded with the merged task ids')
-  assert.ok(call.prompt.includes('ce-simplify-code'), 'follows the installed skill')
+  assert.ok(call.prompt.includes('simplification'), 'carries the inline simplify doctrine')
   assert.ok(call.prompt.includes('Dead code'), 'dead-code grep gate present in the prompt')
   const quality = trace.calls.find((c) => c.label === 'simplify')
   assert.ok(quality.prompt.includes('Dead code'), 'dead-code grep gate present in the quality pass too')
@@ -1548,6 +1548,42 @@ S('S55 first-class repo arg: every dispatch is grounded with the target reposito
   assert.ifError(stringly.error)
   assert.ok(stringly.trace.calls.every((c) => c.prompt.startsWith('TARGET REPOSITORY: /sibling/target-repo\n')), 'JSON-string args are parsed at the boundary and behave identically')
   return 'one chokepoint grounds every contextless agent with the target repo'
+})
+
+S('S57 plugin-namespace pin: every dispatched agent is Shepherd-owned and namespaces under shepherd:', async () => {
+  // Installed-as-a-plugin path: the skill passes agentNamespace + shepherdRoot.
+  const ns = await run(makeDispatcher(), { args: { ...ARGS, agentNamespace: 'shepherd', shepherdRoot: '/cache/shepherd' } })
+  assert.ifError(ns.error)
+  const typed = ns.trace.calls.filter((c) => c.agentType)
+  assert.ok(typed.length > 0, 'at least one agentType dispatched')
+  const agentsDir = join(dir, '..', 'agents')
+  for (const c of typed) {
+    assert.ok(c.agentType.startsWith('shepherd:'), `dispatch ${c.label} agentType ${c.agentType} is not namespaced (no external personas should remain)`)
+    const bare = c.agentType.slice('shepherd:'.length)
+    assert.ok(existsSync(join(agentsDir, `${bare}.md`)), `agents/${bare}.md missing for namespaced agentType ${c.agentType}`)
+  }
+  const ungrounded = ns.trace.calls.filter((c) => !c.prompt.startsWith('SHEPHERD HOME: /cache/shepherd\n'))
+  assert.deepEqual(ungrounded.map((c) => c.label), [], 'every prompt carries the SHEPHERD HOME grounding rooted at shepherdRoot')
+  // Portability is opt-in: the bare default run namespaces nothing and injects no home block.
+  const bareRun = await run(makeDispatcher())
+  assert.ifError(bareRun.error)
+  assert.ok(!bareRun.trace.calls.some((c) => c.agentType && c.agentType.includes(':')), 'no namespaced agentType in the default run')
+  assert.ok(!bareRun.trace.calls.some((c) => c.prompt.includes('SHEPHERD HOME:')), 'no SHEPHERD HOME block in the default run')
+  // Asymmetric args (namespace without root) is a loud failure, not a silent degrade.
+  const asym = await run(makeDispatcher(), { args: { ...ARGS, agentNamespace: 'shepherd' } })
+  assert.ok(asym.error && /agentNamespace is set but args\.shepherdRoot is empty/.test(asym.error.message), 'namespace without shepherdRoot throws loudly')
+  return `${typed.length} dispatches all Shepherd-owned and namespaced; default run stays bare; asymmetric args rejected`
+})
+
+S('S58 sovereignty pin: deliver coordinator source carries zero external-plugin coupling', async () => {
+  // No compound-engineering dispatches, no ce-* skill/agent names, no lfg lineage prose.
+  const ce = (scriptSrc.match(/compound-engineering/g) || []).length
+  const ceDash = (scriptSrc.match(/\bce-[a-z]/g) || []).length
+  const lfg = (scriptSrc.match(/\blfg\b/g) || []).length
+  assert.strictEqual(ce, 0, `expected 0 'compound-engineering' in deliver source, found ${ce}`)
+  assert.strictEqual(ceDash, 0, `expected 0 'ce-*' references in deliver source, found ${ceDash}`)
+  assert.strictEqual(lfg, 0, `expected 0 'lfg' lineage references in deliver source, found ${lfg}`)
+  return 'deliver coordinator is sovereign: no compound-engineering / ce-* / lfg references'
 })
 
 let pass = 0, fail = 0
