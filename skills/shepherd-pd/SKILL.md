@@ -3,7 +3,7 @@ name: shepherd-pd
 description: Run the Shepherd plan -> deliver practice from one entry point. Invoke for "/shepherd-pd plan <request>", "/shepherd-pd deliver <plan-path>", or "/shepherd-pd plan-deliver <request>" to produce a Shepherd plan document, drive a committed plan to a pull request, or do both in sequence with the handoff automated.
 argument-hint: "[plan|deliver|plan-deliver] <request | plan-path> [flags…]"
 disable-model-invocation: true
-allowed-tools: Workflow, Read, Bash(git hash-object:*), Bash(git rev-parse:*)
+allowed-tools: Workflow, Read, Bash(git hash-object:*), Bash(git rev-parse:*), Bash(git cat-file:*)
 ---
 
 # Shepherd
@@ -30,7 +30,7 @@ what makes a plugin install actually dispatch its own fleet.
 
 Run this once and reuse its output (it prints `shepherdRoot`, `agentNamespace`, and
 the two coordinator paths; if either path is missing, stop and report it):
-!`ROOT="${CLAUDE_PLUGIN_ROOT:-${CLAUDE_PROJECT_DIR:-$PWD}}"; NS=""; [ -n "$CLAUDE_PLUGIN_ROOT" ] && NS="shepherd"; printf 'shepherdRoot=%s\nagentNamespace=%s\n' "$ROOT" "$NS"; ls -1 "$ROOT/workflows/shepherd-plan.js" "$ROOT/workflows/shepherd-deliver.js" 2>&1`
+!`ROOT="${CLAUDE_PLUGIN_ROOT:-${CLAUDE_PROJECT_DIR:-$PWD}}"; NS=""; if [ -n "$CLAUDE_PLUGIN_ROOT" ]; then NS=$(sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$CLAUDE_PLUGIN_ROOT/.claude-plugin/plugin.json" 2>/dev/null | head -1); [ -z "$NS" ] && NS="shepherd"; fi; printf 'shepherdRoot=%s\nagentNamespace=%s\n' "$ROOT" "$NS"; ls -1 "$ROOT/workflows/shepherd-plan.js" "$ROOT/workflows/shepherd-deliver.js" 2>&1`
 
 From that output:
 

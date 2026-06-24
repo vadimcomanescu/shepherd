@@ -38,20 +38,22 @@ const COMPOUND_ENABLED = args.compound !== false
 const CI_ROUNDS = Math.max(1, Math.min(10, args.ciRounds || 3)) // default 3; hard-clamped 1..10 so a bad arg cannot unbound the loop
 // Args echo — a launch whose args never arrived (observed live: a scriptPath
 // launch delivered no tool-level args) must die loudly AND legibly, never silently.
-log(`shepherd-deliver args resolved: plan=${PLAN}, base=${args.base || '(default)'}, slug=${args.slug || '(derived)'}, codex=${CODEX_ENABLED}, sandbox=${SANDBOX}, proof=${PROOF_ENABLED}, ship=${SHIP_ENABLED}, compound=${COMPOUND_ENABLED}, ciRounds=${CI_ROUNDS}, repo=${args.repo || '(session cwd)'}`)
+log(`shepherd-deliver args resolved: plan=${PLAN}, base=${args.base || '(default)'}, slug=${args.slug || '(derived)'}, codex=${CODEX_ENABLED}, sandbox=${SANDBOX}, proof=${PROOF_ENABLED}, ship=${SHIP_ENABLED}, compound=${COMPOUND_ENABLED}, ciRounds=${CI_ROUNDS}, repo=${args.repo || '(session cwd)'}, shepherdRoot=${args.shepherdRoot || '(none)'}, agentNamespace=${args.agentNamespace || '(bare)'}`)
 
 // ---- plugin portability: agent-namespace + own-file resolution ----
 // Installed as a plugin, Shepherd's agents resolve under a namespace ("shepherd:")
 // and its own files (agents/*.md role files) live in the plugin cache, NOT the
 // session cwd. The /shepherd-pd skill passes shepherdRoot (the install root) and
 // agentNamespace ("shepherd" when installed, "" in a checkout). T() resolves a role
-// name to its dispatchable agentType; ownFile() resolves a Shepherd-owned path.
-// Both default to bare/relative, so direct in-repo invocation and the test harness
-// (which pass neither) keep the home-repo behavior verbatim.
+// name to its dispatchable agentType. It defaults to bare, so direct in-repo
+// invocation and the test harness (which pass neither arg) keep behavior verbatim.
 const SHEPHERD_ROOT = args.shepherdRoot ? String(args.shepherdRoot).replace(/\/+$/, '') : ''
 const AGENT_NS = args.agentNamespace ? String(args.agentNamespace).replace(/:+$/, '') + ':' : ''
 const T = (role) => AGENT_NS + role
-const ownFile = (rel) => (SHEPHERD_ROOT ? `${SHEPHERD_ROOT}/${rel}` : rel)
+// A namespace without a root is an inconsistent launch: agents would resolve under
+// "<ns>:" (installed plugin) but their own files would resolve relative to the
+// working tree, where they do not exist. Fail loudly, not silently.
+if (AGENT_NS && !SHEPHERD_ROOT) throw new Error('args.agentNamespace is set but args.shepherdRoot is empty — pass both (the /shepherd-pd skill does) or neither')
 
 // ---- target-repo grounding (first-class repo arg) ----
 // Every agent runs with the session cwd, which is NOT necessarily the repo the
@@ -68,6 +70,7 @@ You are working on the repository at ${REPO}, NOT your current working directory
 Resolve every relative path in this brief (the plan document, worktrees, test
 and git commands) against ${REPO}: cd into it first in any shell command, search
 and read only there, and write only under ${REPO} and its worktrees.
+Exception: any path under skills/ or agents/ (Shepherd's own files) resolves from ${SHEPHERD_ROOT || "the session's starting directory"}, NOT ${REPO} — they are Shepherd's own files and do not exist in the target repo.
 
 ` : ''
 const groundingPrefix = shepherdHomeGrounding + repoGrounding
@@ -1450,10 +1453,10 @@ ${solvedProblems.join('\n') || '- none flagged by the orchestrator; check commit
 Document ONLY non-trivial solved problems a future implementer would otherwise
 re-discover the hard way; a routine implementation with no surprises produces
 nothing. If nothing qualifies, write nothing and return documented=false.
-If you write docs: validate their frontmatter as the skill requires and commit
-("docs(solutions): compound learnings from ${SLUG}"). Do NOT push — the Ship
-phase owns pushing.`,
-      { label: 'compound', phase: 'Compound', model: 'sonnet', schema: COMPOUND_SCHEMA }, // mechanical authoring from enumerated solved-problem candidates; skill prescribes template and commit
+If you write docs: validate their frontmatter (module, date, problem_type,
+component, severity) and commit ("docs(solutions): compound learnings from
+${SLUG}"). Do NOT push — the Ship phase owns pushing.`,
+      { label: 'compound', phase: 'Compound', model: 'sonnet', schema: COMPOUND_SCHEMA }, // mechanical authoring from enumerated solved-problem candidates; template and commit prescribed inline above
     )
     if (!compounded) log('Compound agent failed — nothing documented')
     else if (!compounded.documented) log(`Compound: nothing qualifying (${compounded.detail})`)
@@ -1563,7 +1566,7 @@ Steps:
    the PR with base ${BASE}. If gh is unavailable or PR creation fails, still
    push and report prCreated=false with the reason in detail.
 PR title: conventional, derived from the plan title "${planDoc.planTitle}".
-The PR body must include these sections verbatim (plus whatever the skill prescribes):
+The PR body must include these sections verbatim:
 
 ## Requirements
 ${reqLines.join('\n') || '- none traced'}

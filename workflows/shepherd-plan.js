@@ -52,7 +52,7 @@ const SPIKES_ENABLED = args.spikes !== false
 const EXTERNAL_RESEARCH = args.externalResearch !== false
 // Args echo — a launch whose args never arrived (observed live: a scriptPath
 // launch delivered no tool-level args) must die loudly AND legibly, never silently.
-log(`shepherd-plan args resolved: request=${REQUEST ? `"${REQUEST.slice(0, 80)}${REQUEST.length > 80 ? '…' : ''}"` : '(none)'}, origin=${ORIGIN || '(none)'}, depth=${PINNED_DEPTH || '(auto)'}, date=${PLAN_DATE || '(derived)'}, commit=${COMMIT}, editorRounds=${EDITOR_ROUNDS}, reviewRounds=${PERSONA_ROUNDS} (tier default may lower at lightweight), tokenBudget=${Number.isFinite(args.tokenBudget) ? args.tokenBudget : '(none)'}, spikes=${SPIKES_ENABLED}, externalResearch=${EXTERNAL_RESEARCH}, repo=${args.repo || '(session cwd)'}`)
+log(`shepherd-plan args resolved: request=${REQUEST ? `"${REQUEST.slice(0, 80)}${REQUEST.length > 80 ? '…' : ''}"` : '(none)'}, origin=${ORIGIN || '(none)'}, depth=${PINNED_DEPTH || '(auto)'}, date=${PLAN_DATE || '(derived)'}, commit=${COMMIT}, editorRounds=${EDITOR_ROUNDS}, reviewRounds=${PERSONA_ROUNDS} (tier default may lower at lightweight), tokenBudget=${Number.isFinite(args.tokenBudget) ? args.tokenBudget : '(none)'}, spikes=${SPIKES_ENABLED}, externalResearch=${EXTERNAL_RESEARCH}, repo=${args.repo || '(session cwd)'}, shepherdRoot=${args.shepherdRoot || '(none)'}, agentNamespace=${args.agentNamespace || '(bare)'}`)
 
 // ---- plugin portability: agent-namespace + own-file resolution ----
 // Installed as a plugin, Shepherd's agents resolve under a namespace ("shepherd:")
@@ -66,6 +66,10 @@ const SHEPHERD_ROOT = args.shepherdRoot ? String(args.shepherdRoot).replace(/\/+
 const AGENT_NS = args.agentNamespace ? String(args.agentNamespace).replace(/:+$/, '') + ':' : ''
 const T = (role) => AGENT_NS + role
 const ownFile = (rel) => (SHEPHERD_ROOT ? `${SHEPHERD_ROOT}/${rel}` : rel)
+// A namespace without a root is an inconsistent launch: agents would resolve under
+// "<ns>:" (installed plugin) but their own files (role_file, doctrine) would resolve
+// relative to the working tree, where they do not exist. Fail loudly, not silently.
+if (AGENT_NS && !SHEPHERD_ROOT) throw new Error('args.agentNamespace is set but args.shepherdRoot is empty — pass both (the /shepherd-pd skill does) or neither')
 
 // ---- target-repo grounding (first-class repo arg) ----
 // Every agent runs with the session cwd, which is NOT necessarily the repo the

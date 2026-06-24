@@ -1460,7 +1460,11 @@ S('S41b plugin-namespace pin: agentNamespace/shepherdRoot namespace every Shephe
   assert.ifError(bareRun.error)
   assert.ok(!bareRun.trace.calls.some((c) => c.agentType && c.agentType.includes(':')), 'no namespaced agentType in the default run')
   assert.ok(!bareRun.trace.calls.some((c) => c.prompt.includes('SHEPHERD HOME:')), 'no SHEPHERD HOME block in the default run')
-  return `${typed.length} dispatches namespaced shepherd: and rooted at shepherdRoot; default run stays bare`
+  // Asymmetric args (namespace without root) is a loud failure, not a silent degrade:
+  // namespaced agents whose own files would resolve relative to a tree that lacks them.
+  const asym = await run(makeDispatcher(), { args: { ...ARGS, agentNamespace: 'shepherd' } })
+  assert.ok(asym.error && /agentNamespace is set but args\.shepherdRoot is empty/.test(asym.error.message), 'namespace without shepherdRoot throws loudly')
+  return `${typed.length} dispatches namespaced shepherd: and rooted at shepherdRoot; default run stays bare; asymmetric args rejected`
 })
 
 S('S42 budget pin: trace-derived persona fleet < 1471 lines; doctrine skills each 40-80 lines', async () => {

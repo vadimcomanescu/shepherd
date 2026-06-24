@@ -1569,7 +1569,10 @@ S('S57 plugin-namespace pin: every dispatched agent is Shepherd-owned and namesp
   assert.ifError(bareRun.error)
   assert.ok(!bareRun.trace.calls.some((c) => c.agentType && c.agentType.includes(':')), 'no namespaced agentType in the default run')
   assert.ok(!bareRun.trace.calls.some((c) => c.prompt.includes('SHEPHERD HOME:')), 'no SHEPHERD HOME block in the default run')
-  return `${typed.length} dispatches all Shepherd-owned and namespaced; default run stays bare`
+  // Asymmetric args (namespace without root) is a loud failure, not a silent degrade.
+  const asym = await run(makeDispatcher(), { args: { ...ARGS, agentNamespace: 'shepherd' } })
+  assert.ok(asym.error && /agentNamespace is set but args\.shepherdRoot is empty/.test(asym.error.message), 'namespace without shepherdRoot throws loudly')
+  return `${typed.length} dispatches all Shepherd-owned and namespaced; default run stays bare; asymmetric args rejected`
 })
 
 S('S58 sovereignty pin: deliver coordinator source carries zero external-plugin coupling', async () => {

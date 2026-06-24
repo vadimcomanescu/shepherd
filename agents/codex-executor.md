@@ -55,9 +55,13 @@ Protocol:
    property forced into `required`, so the caller's schema stays byte-identical in
    their code while the on-disk schema satisfies Codex strict structured output.
 3. **Prompt.** Write `<scratch>/prompt.md` by concatenating, in order: the
-   `role_file`'s full content if the brief gives one (read it from the SESSION's
-   starting directory — this fleet's own `agents/`, NOT any `args.repo` target;
-   the role files are this project's own and do not exist under a target repo),
+   `role_file`'s full content if the brief gives one — resolve its path this way:
+   if it is absolute, read it as-is; if it is relative, resolve it against the
+   SHEPHERD HOME root named in the prompt's grounding block when one is present
+   (Shepherd's install root — this fleet's own `agents/` live there, NOT in the
+   working directory), otherwise from the SESSION's starting directory; never
+   resolve a role file against an `args.repo` target — the role files are this
+   project's own and do not exist under a target repo —
    then the brief's inline `instructions`/context block, then the `target` (the
    document path, or the dossier). For `workspace-write` the brief's instructions
    carry the implementation contract (test-first, scope limits, the constraint to
