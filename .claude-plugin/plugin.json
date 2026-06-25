@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "shepherd",
   "displayName": "Shepherd",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "The plan -> deliver engineering practice as one installable package: the /shepherd-pd skill drives the two dynamic-workflow coordinators (plan, deliver) and bundles the agent fleet they dispatch.",
   "author": {
     "name": "Vadim Comanescu"

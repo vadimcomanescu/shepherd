@@ -3,7 +3,7 @@ name: shepherd-pd
 description: Run the Shepherd plan -> deliver practice from one entry point. Invoke for "/shepherd-pd plan <request>", "/shepherd-pd deliver <plan-path>", or "/shepherd-pd plan-deliver <request>" to produce a Shepherd plan document, drive a committed plan to a pull request, or do both in sequence with the handoff automated.
 argument-hint: "[plan|deliver|plan-deliver] <request | plan-path> [flags…]"
 disable-model-invocation: true
-allowed-tools: Workflow, Read, Bash(git hash-object:*), Bash(git rev-parse:*), Bash(git cat-file:*)
+allowed-tools: Workflow, Read, Bash
 ---
 
 # Shepherd
@@ -29,8 +29,14 @@ are bare-named. The coordinators default to bare/relative, so the values below a
 what makes a plugin install actually dispatch its own fleet.
 
 Run this once and reuse its output (it prints `shepherdRoot`, `agentNamespace`, and
-the two coordinator paths; if either path is missing, stop and report it):
-!`ROOT="${CLAUDE_PLUGIN_ROOT:-${CLAUDE_PROJECT_DIR:-$PWD}}"; NS=""; if [ -n "$CLAUDE_PLUGIN_ROOT" ]; then NS=$(sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$CLAUDE_PLUGIN_ROOT/.claude-plugin/plugin.json" 2>/dev/null | head -1); [ -z "$NS" ] && NS="shepherd"; fi; printf 'shepherdRoot=%s\nagentNamespace=%s\n' "$ROOT" "$NS"; ls -1 "$ROOT/workflows/shepherd-plan.js" "$ROOT/workflows/shepherd-deliver.js" 2>&1`
+the two coordinator paths; if either path is missing, stop and report it). It resolves
+the root in three ordered ways so it works in every harness: (1) `CLAUDE_PLUGIN_ROOT`
+when the harness exports it into the skill shell; (2) the current checkout when you are
+developing the Shepherd source repo itself (working tree wins over any installed copy);
+(3) the latest installed plugin cache — so it still resolves even when the harness does
+not export `CLAUDE_PLUGIN_ROOT`. This whole line needs `Bash` in `allowed-tools` (above)
+— a narrower allowlist blocks it and the skill silently fails to locate the plugin:
+!`ROOT=""; NS=""; if [ -n "$CLAUDE_PLUGIN_ROOT" ] && [ -f "$CLAUDE_PLUGIN_ROOT/workflows/shepherd-plan.js" ]; then ROOT="$CLAUDE_PLUGIN_ROOT"; NS="shepherd"; fi; if [ -z "$ROOT" ]; then D="${CLAUDE_PROJECT_DIR:-$PWD}"; if [ -f "$D/workflows/shepherd-plan.js" ] && [ -f "$D/.claude-plugin/plugin.json" ]; then ROOT="$D"; NS=""; fi; fi; if [ -z "$ROOT" ]; then c=$(ls -d "$HOME"/.claude/plugins/cache/shepherd/shepherd/*/ 2>/dev/null | sort -V | tail -1); c="${c%/}"; if [ -n "$c" ] && [ -f "$c/workflows/shepherd-plan.js" ]; then ROOT="$c"; NS="shepherd"; fi; fi; if [ -n "$NS" ] && [ -f "$ROOT/.claude-plugin/plugin.json" ]; then N=$(sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$ROOT/.claude-plugin/plugin.json" | head -1); [ -n "$N" ] && NS="$N"; fi; printf 'shepherdRoot=%s\nagentNamespace=%s\n' "$ROOT" "$NS"; ls -1 "$ROOT/workflows/shepherd-plan.js" "$ROOT/workflows/shepherd-deliver.js" 2>&1`
 
 From that output:
 
