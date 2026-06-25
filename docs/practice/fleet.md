@@ -2,14 +2,14 @@
 
 Shepherd is an engineering practice (plan then deliver) built on dynamic-workflow coordinator scripts. The coordinators do no real work themselves: every file read, every edit, every test run, every git operation is performed by a dispatched agent. This page catalogs the **fleet** that does that work.
 
-The fleet is **33 single-purpose personas**, one Markdown file each under [`agents/`](../../agents/). A coordinator dispatches one by passing `agentType: '<name>'` to `agent()`; the runtime loads `agents/<name>.md` as that subagent's system prompt. The binding is **by convention**, not a registry: the repo symlinks `.claude/agents -> ../agents`, and the runtime resolves the `agentType` string against a file of the same name in that directory (the grounding principle). There is no manifest mapping names to files.
+The fleet is **41 single-purpose personas**, one Markdown file each under [`agents/`](../../agents/). A coordinator dispatches one by passing `agentType: '<name>'` to `agent()`; the runtime loads `agents/<name>.md` as that subagent's system prompt. The binding is **by convention**, not a registry: the repo symlinks `.claude/agents -> ../agents`, and the runtime resolves the `agentType` string against a file of the same name in that directory (the grounding principle). There is no manifest mapping names to files.
 
 Two facts shape everything below:
 
 - **Each persona gets a fresh context window.** It cannot see the coordinator's variables, the plan document, or any other agent's output unless that data is in its prompt. Every dispatch must ground the agent with exactly the paths, facts, and schema it needs (the grounding principle).
 - **Personas carry no intrinsic model tier**, with one exception (`codex-executor`, pinned `sonnet` in frontmatter). Every other agent's model is decided at the dispatch site or inherited from the session. See the [Models](#models) note and [`./routing.md`](./routing.md).
 
-The 33 personas split as: **27 plan-side** (5 research + 2 authoring + 7 review lenses + 12 role-extracted gate and loop agents + 1 Codex executor mechanism) and **6 deliver/shared** (3 delivery + 2 verifiers + 1 CI). Every **plan-side** dispatch carries an `agentType` backed by a file in `agents/` — there are no inline-prompt agents on the plan side. The deliver coordinator deliberately keeps some inline-prompt dispatches (e.g. `repo-recon`, `merge-*`, `ship`); only `shepherd-plan` was de-inlined in this refactor. The groups below follow that split.
+The 41 personas split as: **27 plan-side** (5 research + 2 authoring + 7 review lenses + 12 role-extracted gate and loop agents + 1 Codex executor mechanism) and **14 deliver/shared** (3 delivery + 2 verifiers + 1 CI + the 8-persona code-review fleet, `agents/*-reviewer.md`). Every **plan-side** dispatch carries an `agentType` backed by a file in `agents/` — there are no inline-prompt agents on the plan side. The deliver coordinator deliberately keeps some inline-prompt dispatches (e.g. `repo-recon`, `merge-*`, `ship`); only `shepherd-plan` was de-inlined in this refactor. The groups below follow that split.
 
 ---
 
